@@ -1,5 +1,5 @@
 ---
-platforms:
+tasks:
   centos7:
     shell_commands:
       - sed -i.bak -e 's/^# android_sdk_repository/android_sdk_repository/' -e 's/^#
@@ -33,6 +33,39 @@ platforms:
       - "-//src/test/shell/bazel:bazel_cc_code_coverage_test"
       - "-//src/test/shell/bazel:bazel_coverage_cc_test_gcc"
       - "-//src/test/shell/bazel:bazel_coverage_sh_test"
+  debian-unstable:
+    shell_commands:
+      - sed -i.bak -e 's/^# android_sdk_repository/android_sdk_repository/' -e 's/^#
+        android_ndk_repository/android_ndk_repository/' WORKSPACE
+      - rm -f WORKSPACE.bak
+    build_targets:
+      - "//src:bazel"
+      - "//src:bazel_jdk_minimal"
+    test_flags:
+      - "--test_timeout=1200"
+    test_targets:
+      - "--"
+      - "//scripts/..."
+      - "//src/java_tools/..."
+      - "//src/test/..."
+      - "//src/tools/execlog/..."
+      - "//src/tools/singlejar/..."
+      - "//src/tools/workspacelog/..."
+      - "//third_party/ijar/..."
+      - "//tools/android/..."
+      - "//tools/aquery_differ/..."
+      - "//tools/python/..."
+      # Disable Slow Tests
+      - "-//src/test/shell/bazel:bazel_determinism_test"
+      # Re-enable once fixed: https://github.com/bazelbuild/bazel/issues/4663
+      - "-//src/test/shell/bazel/android:android_ndk_integration_test"
+      # Some prebuilt jars don't run with Java 11
+      - "-//src/test/shell/bazel:external_integration_test"
+      - "-//src/test/shell/bazel:maven_test"
+      # Re-enable once bootstrap works with Java 11
+      - "-//src/test/shell/bazel:bazel_bootstrap_distfile_test"
+      # Re-enable once fixed: https://github.com/bazelbuild/bazel/issues/8162
+      - "-//src/java_tools/import_deps_checker/..."
   ubuntu1604:
     shell_commands:
       - sed -i.bak -e 's/^# android_sdk_repository/android_sdk_repository/' -e 's/^#
