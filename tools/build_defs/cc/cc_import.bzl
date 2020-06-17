@@ -113,6 +113,7 @@ def _cc_import_impl(ctx):
 
     linking_context = cc_common.create_linking_context(
         libraries_to_link = [library_to_link],
+        user_link_flags = ctx.attr.linkopts
     )
     (compilation_context, compilation_outputs) = cc_common.compile(
         actions = ctx.actions,
@@ -137,6 +138,7 @@ cc_import = rule(
         ),
         "system_provided": attr.bool(default = False),
         "alwayslink": attr.bool(default = False),
+        "linkopts": attr.string_list(),
         "_cc_toolchain": attr.label(default = "@bazel_tools//tools/cpp:current_cc_toolchain"),
     },
     toolchains = ["@rules_cc//cc:toolchain_type"],  # copybara-use-repo-external-label
