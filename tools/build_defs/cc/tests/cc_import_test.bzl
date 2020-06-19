@@ -11,10 +11,12 @@ def _cc_import_linkopts_test_impl(ctx):
     actions = analysistest.target_actions(env)
 
     found = False
-    for arg in actions[3].argv:
-        if arg.find("-testlinkopt") != -1:
-            found = True
-            break
+    for action in actions:
+        if action.mnemonic == "CppLink":
+             for arg in action.argv:
+                if arg.find("-testlinkopt") != -1:
+                    found = True
+                    break
     asserts.true(env, found, "'-testlinkopt' should be included in arguments passed to linked")
 
     return analysistest.end(env)
