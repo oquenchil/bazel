@@ -51,4 +51,9 @@ def cc_import_test_suite(name):
         tests = [
             ":cc_import_linkopts_test",
         ],
+        tags = [
+            "manual",
+            "nobuilder",
+        ],
+    )
     )
