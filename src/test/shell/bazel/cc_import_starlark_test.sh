@@ -24,12 +24,20 @@ source "${CURRENT_DIR}/../integration_test_setup.sh" \
   || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
 function test_all_starlark_written_tests() {
+  local workspace_name="${FUNCNAME[0]}"
+  mkdir -p "${workspace_name}"
+
+  workspace_dir=$(pwd)/"$workspace_name"
 
   TEST_FILES_DIR="$RUNFILES_DIR/io_bazel"
-  cp --parents "${TEST_FILES_DIR}/tools/build_defs/cc/cc_import.bzl" .
-  cp -r --parents "${TEST_FILES_DIR}/tools/build_defs/cc/tests" .
+  cd $TEST_FILES_DIR
+  cp --parents "tools/build_defs/cc/BUILD" "$workspace_dir"
+  cp --parents "tools/build_defs/cc/cc_import.bzl" "$workspace_dir"
+  cp -r --parents "tools/build_defs/cc/tests" "$workspace_dir"
 
-  ls tools/build_defs/cc/cc_import.bzl
+  cd "$workspace_dir"
+
+  create_workspace_with_default_repos "$workspace_dir"/WORKSPACE
 
   bazel test --experimental_starlark_cc_import tools/build_defs/cc/tests:cc_import_tests
 }
