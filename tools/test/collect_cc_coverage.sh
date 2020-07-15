@@ -73,8 +73,23 @@ function init_gcov() {
 function llvm_coverage() {
   local output_file="${1}"; shift
   export LLVM_PROFILE_FILE="${COVERAGE_DIR}/%h-%p-%m.profraw"
-  "${COVERAGE_GCOV_PATH}" merge -output "${output_file}" \
+  "${COVERAGE_GCOV_PATH}" merge -output "${output_file}.data" \
       "${COVERAGE_DIR}"/*.profraw
+
+
+  local object_param=""
+  while read -r line; do
+    if [[ ${line: -17} == "_objects_list.txt" ]]; then
+      while read -r line_runtime_object; do
+          object_param+=" -object ${RUNFILES_DIR}/${TEST_WORKSPACE}/${line_runtime_object}"
+      done < "${line}"
+    fi
+  done < "${COVERAGE_MANIFEST}"
+
+  /usr/bin/llvm-cov-9 export -instr-profile "${output_file}.data" -format=lcov \
+      -ignore-filename-regex='.*external/.+' \
+      -ignore-filename-regex='/tmp/.+' \
+      ${object_param} | sed 's#/proc/self/cwd/##' > "${output_file}"
 }
 
 # Generates a code coverage report in gcov intermediate text format by invoking
@@ -168,7 +183,7 @@ function main() {
   # format, generating the final code coverage report.
   case "$BAZEL_CC_COVERAGE_TOOL" in
         ("GCOV") gcov_coverage "$COVERAGE_DIR/_cc_coverage.gcov" ;;
-        ("PROFDATA") llvm_coverage "$COVERAGE_DIR/_cc_coverage.profdata" ;;
+        ("PROFDATA") llvm_coverage "$COVERAGE_DIR/_cc_coverage.dat" ;;
         (*) echo "Coverage tool $BAZEL_CC_COVERAGE_TOOL not supported" \
             && exit 1
   esac
