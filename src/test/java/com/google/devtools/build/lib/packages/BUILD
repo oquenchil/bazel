@@ -135,6 +135,9 @@ java_library(
 java_library(
     name = "testutil",
     srcs = glob(["util/*.java"]),
+    data = [
+        "//tools/cpp:embedded_tools",
+    ],
     resources = [
         "//src/test/java/com/google/devtools/build/lib/packages/util/mock:android_cc_toolchain_config.bzl",
         "//src/test/java/com/google/devtools/build/lib/packages/util/mock:osx_cc_toolchain_config.bzl",

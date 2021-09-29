@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.io.MoreFiles;
+import com.google.common.io.Resources;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.ShellConfiguration;
 import com.google.devtools.build.lib.analysis.util.AnalysisMock;
@@ -60,6 +61,16 @@ public final class BazelAnalysisMock extends AnalysisMock {
     String localConfigPlatformWorkspace =
         config.getPath("local_config_platform_workspace").getPathString();
 
+     try {
+       // setupMockToolsRepository(config);
+       config.linkTool("tools/cpp/embedded_tools/tools/cpp", "embedded_tools/tools/cpp");
+       config.linkTool("tools/cpp/embedded_tools/tools/build_defs/cc", "embedded_tools/tools/build_defs/cc");
+     } catch (IOException io) {
+
+    }
+
+
+
     return new ArrayList<>(
         ImmutableList.of(
             "local_repository(name = 'bazel_tools', path = '" + bazelToolWorkspace + "')",
@@ -79,7 +90,8 @@ public final class BazelAnalysisMock extends AnalysisMock {
             "register_toolchains('@bazel_tools//tools/python:autodetecting_toolchain')",
             "local_repository(name = 'local_config_platform', path = '"
                 + localConfigPlatformWorkspace
-                + "')"));
+                + "')",
+            "cc_configure()"));
   }
 
   @Override
@@ -499,6 +511,8 @@ public final class BazelAnalysisMock extends AnalysisMock {
         "  pass");
     config.create(
         "embedded_tools/tools/cpp/cc_configure.bzl", "def cc_configure(**kwargs):", "  pass");
+    // config.create(
+    //     "embedded_tools/tools/cpp/BUILD", "toolchain_type(name = 'toolchain_type')");
 
     config.create("embedded_tools/tools/sh/BUILD");
     config.create(

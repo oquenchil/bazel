@@ -427,7 +427,7 @@ public abstract class BuildIntegrationTestCase {
                 .put(LocalRepositoryRule.NAME, new LocalRepositoryFunction())
                 .put(AndroidSdkRepositoryRule.NAME, new AndroidSdkRepositoryFunction())
                 .put(AndroidNdkRepositoryRule.NAME, new AndroidNdkRepositoryFunction());
-        builder.addSkyFunction(
+/*        builder.addSkyFunction(
             SkyFunctions.REPOSITORY_DIRECTORY,
             new RepositoryDelegatorFunction(
                 repositoryHandlers.build(),
@@ -436,7 +436,7 @@ public abstract class BuildIntegrationTestCase {
                 ImmutableMap::of,
                 directories,
                 ManagedDirectoriesKnowledge.NO_MANAGED_DIRECTORIES,
-                BazelSkyframeExecutorConstants.EXTERNAL_PACKAGE_HELPER));
+                BazelSkyframeExecutorConstants.EXTERNAL_PACKAGE_HELPER));*/
       }
 
       @Override
