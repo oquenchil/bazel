@@ -140,16 +140,6 @@ cc_toolchain(
     toolchain_identifier = "local_linux",
 )
 
-cc_toolchain_config(
-    name = "local_linux",
-    compiler = "compiler",
-    cpu = "local",
-    disable_static_cc_toolchains = select({
-        ":disable_static_cc_toolchains": True,
-        "//conditions:default": False,
-    }),
-)
-
 toolchain(
     name = "cc-toolchain-local",
     exec_compatible_with = [
@@ -339,16 +329,6 @@ cc_toolchain(
     toolchain_identifier = "local_darwin",
 )
 
-cc_toolchain_config(
-    name = "local_darwin",
-    compiler = "compiler",
-    cpu = "darwin",
-    disable_static_cc_toolchains = select({
-        ":disable_static_cc_toolchains": True,
-        "//conditions:default": False,
-    }),
-)
-
 toolchain(
     name = "cc-toolchain-darwin",
     exec_compatible_with = [
@@ -376,16 +356,6 @@ cc_toolchain(
     supports_param_files = 0,
     toolchain_config = ":local_freebsd",
     toolchain_identifier = "local_freebsd",
-)
-
-cc_toolchain_config(
-    name = "local_freebsd",
-    compiler = "compiler",
-    cpu = "freebsd",
-    disable_static_cc_toolchains = select({
-        ":disable_static_cc_toolchains": True,
-        "//conditions:default": False,
-    }),
 )
 
 toolchain(
@@ -417,16 +387,6 @@ cc_toolchain(
     toolchain_identifier = "local_windows_msys64",
 )
 
-cc_toolchain_config(
-    name = "local_windows_msys64",
-    compiler = "windows_msys64",
-    cpu = "x64_windows",
-    disable_static_cc_toolchains = select({
-        ":disable_static_cc_toolchains": True,
-        "//conditions:default": False,
-    }),
-)
-
 toolchain(
     name = "cc-toolchain-x64_windows",
     exec_compatible_with = [
@@ -454,16 +414,6 @@ cc_toolchain(
     supports_param_files = 1,
     toolchain_config = ":vc_14_0_x64",
     toolchain_identifier = "vc_14_0_x64",
-)
-
-cc_toolchain_config(
-    name = "vc_14_0_x64",
-    compiler = "cl",
-    cpu = "x64_windows_msvc",
-    disable_static_cc_toolchains = select({
-        ":disable_static_cc_toolchains": True,
-        "//conditions:default": False,
-    }),
 )
 
 toolchain(

@@ -38,6 +38,7 @@ import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.runfiles.Runfiles;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -59,9 +60,34 @@ public final class BazelAnalysisMock extends AnalysisMock {
     String rulesJavaWorkspace = config.getPath("rules_java_workspace").getPathString();
     String localConfigPlatformWorkspace =
         config.getPath("local_config_platform_workspace").getPathString();
+    String localConfigCcWorkspace =
+        config.getPath("local_config_cc").getPathString();
+    String localConfigCcToolchainsWorkspace =
+        config.getPath("local_config_cc_toolchains").getPathString();
+    String rulesCcWorkspace =
+        config.getPath("rules_cc").getPathString();
+
+    try {
+      config.overwrite("local_config_platform_workspace/WORKSPACE", "");
+      config.overwrite("local_config_platform_workspace/constraints.bzl",
+          "HOST_CONSTRAINTS = ["
+              + "  '@platforms//cpu:x86_64',"
+              + "  '@platforms//os:linux',"
+              + "]"
+      );
+      config.overwrite("local_config_platform_workspace/BUILD", "platform(",
+          "name = \"host\",",
+          "constraint_values = [\"@platforms//cpu:x86_64\", \"@platforms//os:linux\"],"
+      );
+    } catch (IOException e) {
+
+    }
 
     return new ArrayList<>(
         ImmutableList.of(
+            "local_repository(name = 'rules_cc', path = '" + rulesCcWorkspace + "')",
+            "local_repository(name = 'local_config_cc_toolchains', path = '" + localConfigCcToolchainsWorkspace + "')",
+            "local_repository(name = 'local_config_cc', path = '" + localConfigCcWorkspace + "')",
             "local_repository(name = 'bazel_tools', path = '" + bazelToolWorkspace + "')",
             "local_repository(name = 'platforms', path = '" + bazelPlatformsWorkspace + "')",
             "local_repository(name = 'local_config_xcode', path = '" + xcodeWorkspace + "')",
@@ -70,7 +96,7 @@ public final class BazelAnalysisMock extends AnalysisMock {
             "register_toolchains('@rules_java//java/toolchains/runtime:all')",
             "register_toolchains('@rules_java//java/toolchains/javac:all')",
             "bind(name = 'android/sdk', actual='@bazel_tools//tools/android:sdk')",
-            "register_toolchains('@bazel_tools//tools/cpp:all')",
+            "register_toolchains('@local_config_cc_toolchains//:all')",
             "register_toolchains('@bazel_tools//tools/jdk:all')",
             "register_toolchains('@bazel_tools//tools/android:all')",
             // Note this path is created inside the test infrastructure in
@@ -102,6 +128,7 @@ public final class BazelAnalysisMock extends AnalysisMock {
     /** The rest of platforms is initialized in {@link MockPlatformSupport}. */
     config.create("platforms_workspace/WORKSPACE", "workspace(name = 'platforms')");
     config.create("embedded_tools/WORKSPACE", "workspace(name = 'bazel_tools')");
+    config.create("rules_cc/WORKSPACE", "workspace(name = 'bazel_tools')");
     Runfiles runfiles = Runfiles.create();
     for (String filename : Arrays.asList("tools/jdk/java_toolchain_alias.bzl")) {
       java.nio.file.Path path = Paths.get(runfiles.rlocation("io_bazel/" + filename));

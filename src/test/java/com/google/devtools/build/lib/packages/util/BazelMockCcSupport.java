@@ -13,8 +13,11 @@
 // limitations under the License.
 package com.google.devtools.build.lib.packages.util;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableList;
+import com.google.common.io.Resources;
 import com.google.devtools.build.lib.cmdline.Label;
 import java.io.IOException;
 
@@ -34,16 +37,29 @@ public final class BazelMockCcSupport extends MockCcSupport {
   private static final ImmutableList<String> CROSSTOOL_ARCHS =
       ImmutableList.of("piii", "k8", "armeabi-v7a", "ppc");
 
+  private static final String CROSSTOOL_TOP_RESOURCE =
+      "com/google/devtools/build/lib/packages/crosstool_top_value.txt";
   @Override
   protected String getRealFilesystemCrosstoolTopPath() {
-    // TODO(b/195425240): Silently unsupported.
-    return "";
+    try {
+      return Resources.toString(Resources.getResource(CROSSTOOL_TOP_RESOURCE), UTF_8);
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    }
   }
 
   @Override
   protected String[] getRealFilesystemTools(String crosstoolTop) {
     // TODO(b/195425240): Silently unsupported.
-    return new String[0];
+    return new String[] {
+        crosstoolTop,
+        "external/bazel_tools/tools/cpp",
+        "external/bazel_tools/tools/osx",
+        "external/bazel_tools/tools/build_defs/cc",
+        "external/platforms",
+        "external/rules_cc/cc",
+        "external/local_config_cc_toolchains",
+    };
   }
 
   @Override

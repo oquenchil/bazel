@@ -27,6 +27,11 @@ cc_library(
 )
 
 filegroup(
+    name = "files_for_testing",
+    srcs = glob(["**/*"]),
+)
+
+filegroup(
     name = "empty",
     srcs = [],
 )

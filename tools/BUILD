@@ -1,6 +1,11 @@
 package(default_visibility = ["//visibility:public"])
 
 filegroup(
+    name = "srcs_for_test",
+    srcs = glob(["**/*"]),
+)
+
+filegroup(
     name = "srcs",
     srcs = glob(["**"]) + [
         "//tools/android:srcs",

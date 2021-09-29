@@ -149,7 +149,7 @@ public final class MockToolsConfig {
     }
     Path path = getPath(dest);
     FileSystemUtils.createDirectoryAndParents(path.getParentDirectory());
-    path.delete();
+    path.deleteTree();
     path.createSymbolicLink(target);
   }
 

@@ -132,10 +132,28 @@ java_library(
     ],
 )
 
+genrule(
+    name = "gen_crosstool_top_value",
+    testonly = 1,
+    outs = ["crosstool_top_value.txt"],
+    cmd = 'echo -n "$(CROSSTOOLTOP)" > $@',
+    toolchains = ["@bazel_tools//tools/cpp:current_cc_toolchain"],
+)
+
 java_library(
     name = "testutil",
     srcs = glob(["util/*.java"]),
+    data = [
+        "@bazel_tools//tools/build_defs/cc:srcs",
+        "@bazel_tools//tools/cpp:srcs",
+        "@bazel_tools//tools/osx:srcs",
+        "@local_config_cc//:files_for_testing",
+        "@local_config_cc_toolchains//:files_for_testing",
+        "@platforms//:srcs",
+        "@rules_cc//cc:all_files_for_testing",
+    ],
     resources = [
+        ":crosstool_top_value.txt",
         "//src/test/java/com/google/devtools/build/lib/packages/util/mock:android_cc_toolchain_config.bzl",
         "//src/test/java/com/google/devtools/build/lib/packages/util/mock:osx_cc_toolchain_config.bzl",
         "//tools/build_defs/cc:action_names.bzl",

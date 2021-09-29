@@ -1,5 +1,11 @@
 load("@local_config_platform//:constraints.bzl", "HOST_CONSTRAINTS")
 
+filegroup(
+    name = "files_for_testing",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)
+
 toolchain(
     name = "cc-toolchain-%{name}",
     exec_compatible_with = HOST_CONSTRAINTS,
