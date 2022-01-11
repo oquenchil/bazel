@@ -17,17 +17,17 @@ package com.google.devtools.build.lib.rules.apple;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
-import com.google.devtools.build.lib.packages.NativeProvider;
+import com.google.devtools.build.lib.packages.BuiltinProvider;
 import com.google.devtools.build.lib.packages.Provider;
 import com.google.devtools.build.lib.packages.StarlarkInfo;
 import com.google.devtools.build.lib.packages.StructImpl;
-import com.google.devtools.build.lib.skylarkbuildapi.apple.ApplePlatformApi;
-import com.google.devtools.build.lib.skylarkbuildapi.apple.ApplePlatformTypeApi;
-import com.google.devtools.build.lib.syntax.Location;
-import com.google.devtools.build.lib.syntax.Printer;
+import com.google.devtools.build.lib.starlarkbuildapi.apple.ApplePlatformApi;
+import com.google.devtools.build.lib.starlarkbuildapi.apple.ApplePlatformTypeApi;
 import java.util.HashMap;
 import java.util.Locale;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.Printer;
+import net.starlark.java.syntax.Location;
 
 /** An enum that can be used to distinguish between various apple platforms. */
 @Immutable
@@ -38,25 +38,29 @@ public enum ApplePlatform implements ApplePlatformApi {
   TVOS_DEVICE("tvos_device", "AppleTVOS", PlatformType.TVOS, true),
   TVOS_SIMULATOR("tvos_simulator", "AppleTVSimulator", PlatformType.TVOS, false),
   WATCHOS_DEVICE("watchos_device", "WatchOS", PlatformType.WATCHOS, true),
-  WATCHOS_SIMULATOR("watchos_simulator", "WatchSimulator", PlatformType.WATCHOS, false);
+  WATCHOS_SIMULATOR("watchos_simulator", "WatchSimulator", PlatformType.WATCHOS, false),
+  CATALYST("catalyst", "MacOSX", PlatformType.CATALYST, true);
 
+  // TODO(b/180572694): Remove ios_sim_arm64 after platforms based toolchain resolution supported.
   private static final ImmutableSet<String> IOS_SIMULATOR_TARGET_CPUS =
-      ImmutableSet.of("ios_x86_64", "ios_i386");
+      ImmutableSet.of("ios_x86_64", "ios_i386", "ios_sim_arm64");
   private static final ImmutableSet<String> IOS_DEVICE_TARGET_CPUS =
       ImmutableSet.of("ios_armv6", "ios_arm64", "ios_armv7", "ios_armv7s", "ios_arm64e");
   private static final ImmutableSet<String> WATCHOS_SIMULATOR_TARGET_CPUS =
-      ImmutableSet.of("watchos_i386", "watchos_x86_64");
+      ImmutableSet.of("watchos_i386", "watchos_x86_64", "watchos_arm64");
   private static final ImmutableSet<String> WATCHOS_DEVICE_TARGET_CPUS =
       ImmutableSet.of("watchos_armv7k", "watchos_arm64_32");
   private static final ImmutableSet<String> TVOS_SIMULATOR_TARGET_CPUS =
       ImmutableSet.of("tvos_x86_64");
   private static final ImmutableSet<String> TVOS_DEVICE_TARGET_CPUS =
       ImmutableSet.of("tvos_arm64");
+  private static final ImmutableSet<String> CATALYST_TARGET_CPUS =
+      ImmutableSet.of("catalyst_x86_64");
   // "darwin" is included because that's currently the default when on macOS, and
   // migrating it would be a breaking change more details:
   // https://github.com/bazelbuild/bazel/pull/7062
   private static final ImmutableSet<String> MACOS_TARGET_CPUS =
-      ImmutableSet.of("darwin_x86_64", "darwin_arm64", "darwin");
+      ImmutableSet.of("darwin_x86_64", "darwin_arm64", "darwin_arm64e", "darwin");
 
   private static final ImmutableSet<String> BIT_32_TARGET_CPUS =
       ImmutableSet.of("ios_i386", "ios_armv7", "ios_armv7s", "watchos_i386", "watchos_armv7k");
@@ -95,6 +99,33 @@ public enum ApplePlatform implements ApplePlatformApi {
   }
 
   /**
+   * Returns the target platform as it would be represented in a target triple.
+   *
+   * <p>Note that the target platform for Catalyst is "ios", despite it being represented here as
+   * its own value.
+   */
+  public String getTargetPlatform() {
+    if (platformType == PlatformType.CATALYST) {
+      return PlatformType.IOS.starlarkKey;
+    }
+    return platformType.starlarkKey;
+  }
+
+  /**
+   * Returns the platform's target environment as it would be represented in a target triple.
+   *
+   * <p>Note that the target environment corresponds to the target platform (as returned by {@link
+   * #getTargetPlatform()}, so "macabi" is an environment of iOS, not a separate platform as it is
+   * represented in this enumerated type.
+   */
+  public String getTargetEnvironment() {
+    if (platformType == PlatformType.CATALYST) {
+      return "macabi";
+    }
+    return isDevice ? "device" : "simulator";
+  }
+
+  /**
    * Returns the name of the "platform" as it appears in the plist when it appears in all-lowercase.
    */
   public String getLowerCaseNameInPlist() {
@@ -115,6 +146,8 @@ public enum ApplePlatform implements ApplePlatformApi {
       return TVOS_SIMULATOR;
     } else if (TVOS_DEVICE_TARGET_CPUS.contains(targetCpu)) {
       return TVOS_DEVICE;
+    } else if (CATALYST_TARGET_CPUS.contains(targetCpu)) {
+      return CATALYST;
     } else if (MACOS_TARGET_CPUS.contains(targetCpu)) {
       return MACOS;
     } else {
@@ -184,7 +217,7 @@ public enum ApplePlatform implements ApplePlatformApi {
 
   /** Returns a Starlark struct that contains the instances of this enum. */
   public static StructImpl getStarlarkStruct() {
-    Provider constructor = new NativeProvider<StructImpl>(StructImpl.class, "platforms") {};
+    Provider constructor = new BuiltinProvider<StructImpl>("platforms", StructImpl.class) {};
     HashMap<String, Object> fields = new HashMap<>();
     for (ApplePlatform type : values()) {
       fields.put(type.starlarkKey, type);
@@ -214,7 +247,8 @@ public enum ApplePlatform implements ApplePlatformApi {
     IOS("ios"),
     WATCHOS("watchos"),
     TVOS("tvos"),
-    MACOS("macos");
+    MACOS("macos"),
+    CATALYST("catalyst");
 
     /**
      * The key used to access the enum value as a field in the Starlark apple_common.platform_type
@@ -253,7 +287,7 @@ public enum ApplePlatform implements ApplePlatformApi {
 
     /** Returns a Starlark struct that contains the instances of this enum. */
     public static StructImpl getStarlarkStruct() {
-      Provider constructor = new NativeProvider<StructImpl>(StructImpl.class, "platform_types") {};
+      Provider constructor = new BuiltinProvider<StructImpl>("platform_types", StructImpl.class) {};
       HashMap<String, Object> fields = new HashMap<>();
       for (PlatformType type : values()) {
         fields.put(type.starlarkKey, type);

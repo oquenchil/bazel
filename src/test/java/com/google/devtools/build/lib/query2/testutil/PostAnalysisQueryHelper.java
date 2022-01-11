@@ -19,7 +19,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.analysis.AnalysisResult;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.util.AnalysisTestCase;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.packages.util.MockObjcSupport;
@@ -32,9 +32,11 @@ import com.google.devtools.build.lib.query2.engine.QueryEnvironment;
 import com.google.devtools.build.lib.query2.engine.QueryEvalResult;
 import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.engine.QueryParser;
+import com.google.devtools.build.lib.query2.engine.QuerySyntaxException;
 import com.google.devtools.build.lib.query2.engine.QueryUtil;
 import com.google.devtools.build.lib.query2.engine.QueryUtil.AggregateAllOutputFormatterCallback;
 import com.google.devtools.build.lib.query2.testutil.AbstractQueryTest.QueryHelper;
+import com.google.devtools.build.lib.server.FailureDetails.Query;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutorWrappingWalkableGraph;
 import com.google.devtools.build.lib.testutil.Scratch;
@@ -49,7 +51,6 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import org.junit.After;
@@ -63,15 +64,19 @@ import org.junit.Before;
  * now.
  */
 public abstract class PostAnalysisQueryHelper<T> extends AbstractQueryHelper<T> {
-  protected String parserPrefix;
+  protected PathFragment parserPrefix;
   protected AnalysisHelper analysisHelper;
   private boolean wholeTestUniverse;
 
   @Override
   public void setUp() throws Exception {
+    setUp(new AnalysisHelper());
+  }
+
+  public void setUp(AnalysisHelper analysisHelper) throws Exception {
     super.setUp();
-    parserPrefix = "";
-    analysisHelper = new AnalysisHelper();
+    parserPrefix = PathFragment.EMPTY_FRAGMENT;
+    this.analysisHelper = analysisHelper;
     wholeTestUniverse = false;
     // Reverse the @Before method list, so that superclass is called before subclass.
     for (Method method :
@@ -181,18 +186,16 @@ public abstract class PostAnalysisQueryHelper<T> extends AbstractQueryHelper<T> 
   }
 
   public PostAnalysisQueryEnvironment<T> getPostAnalysisQueryEnvironment(
-      Collection<String> universe) throws QueryException, InterruptedException {
-    if (universe.equals(Collections.singletonList(PostAnalysisQueryTest.DEFAULT_UNIVERSE))) {
+      Collection<String> universe) throws Exception {
+    if (ImmutableList.copyOf(universe)
+        .equals(ImmutableList.of(PostAnalysisQueryTest.DEFAULT_UNIVERSE))) {
       throw new QueryException(
           "Tests must set universe scope by either having parsable labels in each query expression "
-              + "or setting explicitly through query helper.");
+              + "or setting explicitly through query helper.",
+          Query.Code.QUERY_UNKNOWN);
     }
     AnalysisResult analysisResult;
-    try {
-      analysisResult = analysisHelper.update(universe.toArray(new String[0]));
-    } catch (Exception e) {
-      throw new QueryException(e.getMessage());
-    }
+    analysisResult = analysisHelper.update(universe.toArray(new String[0]));
     WalkableGraph walkableGraph =
         SkyframeExecutorWrappingWalkableGraph.of(analysisHelper.getSkyframeExecutor());
 
@@ -219,8 +222,7 @@ public abstract class PostAnalysisQueryHelper<T> extends AbstractQueryHelper<T> 
       throws InterruptedException;
 
   @Override
-  public ResultAndTargets<T> evaluateQuery(String query)
-      throws QueryException, InterruptedException {
+  public ResultAndTargets<T> evaluateQuery(String query) throws Exception {
     PostAnalysisQueryEnvironment<T> env =
         getPostAnalysisQueryEnvironment(getUniverseScopeAsStringList());
     AggregateAllOutputFormatterCallback<T, ?> callback =
@@ -232,6 +234,9 @@ public abstract class PostAnalysisQueryHelper<T> extends AbstractQueryHelper<T> 
     } catch (IOException e) {
       // Should be impossible since AggregateAllOutputFormatterCallback doesn't throw IOException.
       throw new IllegalStateException(e);
+    } catch (QuerySyntaxException e) {
+      // Expect the user to provide valid syntax.
+      throw new IllegalArgumentException(e);
     }
     Set<T> targets = env.createThreadSafeMutableSet();
     targets.addAll(callback.getResult());
@@ -298,12 +303,12 @@ public abstract class PostAnalysisQueryHelper<T> extends AbstractQueryHelper<T> 
     }
 
     @Override
-    protected BuildConfiguration getTargetConfiguration() throws InterruptedException {
+    protected BuildConfigurationValue getTargetConfiguration() throws InterruptedException {
       return super.getTargetConfiguration();
     }
 
     @Override
-    public BuildConfiguration getHostConfiguration() {
+    public BuildConfigurationValue getHostConfiguration() {
       return super.getHostConfiguration();
     }
 

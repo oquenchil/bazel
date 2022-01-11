@@ -26,20 +26,18 @@ import com.google.devtools.build.lib.actions.Actions.GeneratingActions;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.config.CoreOptions;
-import com.google.devtools.build.lib.analysis.config.CoreOptions.IncludeConfigFragmentsEnum;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkApiProvider;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.Info;
 import com.google.devtools.build.lib.packages.Provider;
-import com.google.devtools.build.lib.syntax.EvalException;
 import java.util.Arrays;
-import java.util.Collection;
-import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.TreeMap;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.EvalException;
+import net.starlark.java.eval.Starlark;
 
 /**
  * Extra information about a configured target computed on request of a dependent.
@@ -105,7 +103,7 @@ public final class ConfiguredAspect implements ProviderCollection {
   }
 
   public static ConfiguredAspect forAlias(ConfiguredAspect real) {
-    return new ConfiguredAspect(real.getActions(), real.getProviders());
+    return new ConfiguredAspect(real.actions, real.providers);
   }
 
   public static ConfiguredAspect forNonapplicableTarget() {
@@ -126,8 +124,6 @@ public final class ConfiguredAspect implements ProviderCollection {
         new TransitiveInfoProviderMapBuilder();
     private final Map<String, NestedSetBuilder<Artifact>> outputGroupBuilders = new TreeMap<>();
     private final RuleContext ruleContext;
-    private final LinkedHashSet<String> aspectImplSpecificRequiredConfigFragments =
-        new LinkedHashSet<>();
 
     public Builder(RuleContext ruleContext) {
       this.ruleContext = ruleContext;
@@ -148,7 +144,7 @@ public final class ConfiguredAspect implements ProviderCollection {
       return this;
     }
 
-    private void checkProviderClass(Class<? extends TransitiveInfoProvider> providerClass) {
+    private static void checkProviderClass(Class<? extends TransitiveInfoProvider> providerClass) {
       Preconditions.checkNotNull(providerClass);
     }
 
@@ -175,12 +171,9 @@ public final class ConfiguredAspect implements ProviderCollection {
      * Adds a set of files to an output group.
      */
     public Builder addOutputGroup(String name, NestedSet<Artifact> artifacts) {
-      NestedSetBuilder<Artifact> nestedSetBuilder = outputGroupBuilders.get(name);
-      if (nestedSetBuilder == null) {
-        nestedSetBuilder = NestedSetBuilder.<Artifact>stableOrder();
-        outputGroupBuilders.put(name, nestedSetBuilder);
-      }
-      nestedSetBuilder.addTransitive(artifacts);
+      outputGroupBuilders
+          .computeIfAbsent(name, k -> NestedSetBuilder.stableOrder())
+          .addTransitive(artifacts);
       return this;
     }
 
@@ -192,8 +185,10 @@ public final class ConfiguredAspect implements ProviderCollection {
     public Builder addStarlarkDeclaredProvider(Info declaredProvider) throws EvalException {
       Provider constructor = declaredProvider.getProvider();
       if (!constructor.isExported()) {
-        throw new EvalException(
-            constructor.getLocation(), "All providers must be top level values");
+        throw Starlark.errorf(
+            "aspect function returned an instance of a provider (defined at %s) that is not a"
+                + " global",
+            constructor.getLocation());
       }
       addDeclaredProvider(declaredProvider);
       return this;
@@ -210,16 +205,7 @@ public final class ConfiguredAspect implements ProviderCollection {
       return this;
     }
 
-    /**
-     * Supplements {@link #maybeAddRequiredConfigFragmentsProvider} with aspect
-     * implementation-specific requirements.
-     */
-    public Builder addRequiredConfigFragments(Collection<String> fragments) {
-      aspectImplSpecificRequiredConfigFragments.addAll(fragments);
-      return this;
-    }
-
-    public ConfiguredAspect build() throws ActionConflictException {
+    public ConfiguredAspect build() throws ActionConflictException, InterruptedException {
       if (!outputGroupBuilders.isEmpty()) {
         ImmutableMap.Builder<String, NestedSet<Artifact>> outputGroups = ImmutableMap.builder();
         for (Map.Entry<String, NestedSetBuilder<Artifact>> entry : outputGroupBuilders.entrySet()) {
@@ -234,9 +220,7 @@ public final class ConfiguredAspect implements ProviderCollection {
       }
 
       addProvider(
-          createExtraActionProvider(
-              /* actionsWithoutExtraAction= */ ImmutableSet.<ActionAnalysisMetadata>of(),
-              ruleContext));
+          createExtraActionProvider(/*actionsWithoutExtraAction=*/ ImmutableSet.of(), ruleContext));
 
       AnalysisEnvironment analysisEnvironment = ruleContext.getAnalysisEnvironment();
       GeneratingActions generatingActions =
@@ -256,24 +240,13 @@ public final class ConfiguredAspect implements ProviderCollection {
      * CoreOptions#includeRequiredConfigFragmentsProvider} isn't {@link
      * CoreOptions.IncludeConfigFragmentsEnum#OFF}.
      *
-     * <p>See {@link ConfiguredTargetFactory#getRequiredConfigFragments} for a description of the
-     * meaning of this provider's content. That method populates the results of {@link
-     * RuleContext#getRequiredConfigFragments} and {@link
-     * #aspectImplSpecificRequiredConfigFragments}.
+     * <p>See {@link com.google.devtools.build.lib.analysis.config.RequiredFragmentsUtil} for a
+     * description of the meaning of this provider's content. That class contains methods that
+     * populate the results of {@link RuleContext#getRequiredConfigFragments}.
      */
     private void maybeAddRequiredConfigFragmentsProvider() {
-      if (ruleContext
-              .getConfiguration()
-              .getOptions()
-              .get(CoreOptions.class)
-              .includeRequiredConfigFragmentsProvider
-          != IncludeConfigFragmentsEnum.OFF) {
-        addProvider(
-            new RequiredConfigFragmentsProvider(
-                ImmutableSet.<String>builder()
-                    .addAll(ruleContext.getRequiredConfigFragments())
-                    .addAll(aspectImplSpecificRequiredConfigFragments)
-                    .build()));
+      if (ruleContext.shouldIncludeRequiredConfigFragmentsProvider()) {
+        addProvider(ruleContext.getRequiredConfigFragments());
       }
     }
   }

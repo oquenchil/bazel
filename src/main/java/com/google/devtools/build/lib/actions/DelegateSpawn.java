@@ -79,7 +79,7 @@ public class DelegateSpawn implements Spawn {
   }
 
   @Override
-  public ResourceSet getLocalResources() {
+  public ResourceSet getLocalResources() throws ExecException {
     return spawn.getLocalResources();
   }
 
@@ -97,5 +97,10 @@ public class DelegateSpawn implements Spawn {
   @Nullable
   public PlatformInfo getExecutionPlatform() {
     return spawn.getExecutionPlatform();
+  }
+
+  @Override
+  public String toString() {
+    return "Delegate of " + spawn;
   }
 }

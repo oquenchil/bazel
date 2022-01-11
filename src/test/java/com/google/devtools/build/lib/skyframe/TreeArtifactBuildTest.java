@@ -21,7 +21,6 @@ import static org.junit.Assert.assertThrows;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.hash.Hashing;
 import com.google.devtools.build.lib.actions.Action;
@@ -30,7 +29,7 @@ import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionExecutionException;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionLookupData;
-import com.google.devtools.build.lib.actions.ActionLookupValue.ActionLookupKey;
+import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.ActionResult;
 import com.google.devtools.build.lib.actions.Actions;
 import com.google.devtools.build.lib.actions.Artifact;
@@ -38,6 +37,7 @@ import com.google.devtools.build.lib.actions.Artifact.SpecialArtifact;
 import com.google.devtools.build.lib.actions.Artifact.SpecialArtifactType;
 import com.google.devtools.build.lib.actions.Artifact.TreeFileArtifact;
 import com.google.devtools.build.lib.actions.ArtifactRoot;
+import com.google.devtools.build.lib.actions.ArtifactRoot.RootType;
 import com.google.devtools.build.lib.actions.BuildFailedException;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.actions.FileArtifactValue.RemoteFileArtifactValue;
@@ -62,6 +62,7 @@ import com.google.devtools.build.lib.skyframe.serialization.testutils.Serializat
 import com.google.devtools.build.lib.testutil.TestUtils;
 import com.google.devtools.build.lib.util.CrashFailureDetails;
 import com.google.devtools.build.lib.util.DetailedExitCode;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileStatus;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
@@ -581,12 +582,16 @@ public final class TreeArtifactBuildTest extends TimestampBuilderTestCase {
             FileStatus stat = child1.getPath().stat(Symlinks.NOFOLLOW);
             FileArtifactValue metadata1 =
                 md.constructMetadataForDigest(
-                    child1, stat, Hashing.sha256().hashString("one", UTF_8).asBytes());
+                    child1,
+                    stat,
+                    DigestHashFunction.SHA256.getHashFunction().hashString("one", UTF_8).asBytes());
 
             stat = child2.getPath().stat(Symlinks.NOFOLLOW);
             FileArtifactValue metadata2 =
                 md.constructMetadataForDigest(
-                    child2, stat, Hashing.sha256().hashString("two", UTF_8).asBytes());
+                    child2,
+                    stat,
+                    DigestHashFunction.SHA256.getHashFunction().hashString("two", UTF_8).asBytes());
 
             // The metadata will not be equal to reading from the filesystem since the filesystem
             // won't have the digest. However, we should be able to detect that nothing could have
@@ -627,7 +632,12 @@ public final class TreeArtifactBuildTest extends TimestampBuilderTestCase {
 
             actionExecutionContext
                 .getMetadataHandler()
-                .injectDirectory(out, ImmutableMap.of(child1, remoteFile1, child2, remoteFile2));
+                .injectTree(
+                    out,
+                    TreeArtifactValue.newBuilder(out)
+                        .putChild(child1, remoteFile1)
+                        .putChild(child2, remoteFile2)
+                        .build());
           }
         };
 
@@ -833,6 +843,28 @@ public final class TreeArtifactBuildTest extends TimestampBuilderTestCase {
     assertThat(artifact2.getPath().getDirectoryEntries()).isEmpty();
   }
 
+  // This happens in the wild. See https://github.com/bazelbuild/bazel/issues/11813.
+  @Test
+  public void treeArtifactContainsSymlinkToDirectory() throws Exception {
+    SpecialArtifact treeArtifact = createTreeArtifact("tree");
+    registerAction(
+        new SimpleTestAction(/*output=*/ treeArtifact) {
+          @Override
+          void run(ActionExecutionContext context) throws IOException {
+            PathFragment subdir = PathFragment.create("subdir");
+            touchFile(treeArtifact.getPath().getRelative(subdir).getRelative("file"));
+            treeArtifact.getPath().getRelative("link").createSymbolicLink(subdir);
+          }
+        });
+
+    TreeArtifactValue tree = buildArtifact(treeArtifact);
+
+    assertThat(tree.getChildren())
+        .containsExactly(
+            TreeFileArtifact.createTreeOutput(treeArtifact, "subdir/file"),
+            TreeFileArtifact.createTreeOutput(treeArtifact, "link"));
+  }
+
   private abstract static class SimpleTestAction extends TestAction {
     private final Button button;
 
@@ -934,8 +966,8 @@ public final class TreeArtifactBuildTest extends TimestampBuilderTestCase {
     Path execRoot =
         fs.getPath(TestUtils.tmpDir()).getRelative("execroot").getRelative("default-exec-root");
     PathFragment execPath = PathFragment.create("out").getRelative(name);
-    return new SpecialArtifact(
-        ArtifactRoot.asDerivedRoot(execRoot, "out"),
+    return SpecialArtifact.create(
+        ArtifactRoot.asDerivedRoot(execRoot, RootType.Output, "out"),
         execPath,
         ACTION_LOOKUP_KEY,
         SpecialArtifactType.TREE);
@@ -1009,7 +1041,7 @@ public final class TreeArtifactBuildTest extends TimestampBuilderTestCase {
     }
 
     @Override
-    public SkyValue compute(SkyKey skyKey, Environment env) {
+    public SkyValue compute(SkyKey skyKey, Environment env) throws InterruptedException {
       try {
         return new ActionTemplateExpansionValue(
             Actions.assignOwnersAndFilterSharedActionsAndThrowActionConflict(
@@ -1020,11 +1052,6 @@ public final class TreeArtifactBuildTest extends TimestampBuilderTestCase {
       } catch (ActionConflictException e) {
         throw new IllegalStateException(e);
       }
-    }
-
-    @Override
-    public String extractTag(SkyKey skyKey) {
-      return null;
     }
   }
 

@@ -45,14 +45,14 @@ import com.google.devtools.build.lib.server.FailureDetails.Crash;
 import com.google.devtools.build.lib.server.FailureDetails.Crash.Code;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.testutil.BlazeTestUtils;
-import com.google.devtools.build.lib.testutil.Suite;
-import com.google.devtools.build.lib.testutil.TestSpec;
 import com.google.devtools.build.lib.testutil.TestUtils;
 import com.google.devtools.build.lib.util.DetailedExitCode;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileStatus;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -75,7 +75,6 @@ import org.junit.runners.JUnit4;
  * Test suite for ParallelBuilder.
  *
  */
-@TestSpec(size = Suite.MEDIUM_TESTS)
 @RunWith(JUnit4.class)
 public class ParallelBuilderTest extends TimestampBuilderTestCase {
 
@@ -247,59 +246,61 @@ public class ParallelBuilderTest extends TimestampBuilderTestCase {
   }
 
   @Test
-  public void testUpdateCacheError() throws Exception {
-    FileSystem fs = new InMemoryFileSystem() {
-      @Override
-      public FileStatus statIfFound(Path path, boolean followSymlinks) throws IOException {
-        final FileStatus stat = super.statIfFound(path, followSymlinks);
-        if (path.toString().endsWith("/out/foo")) {
-          return new FileStatus() {
-            private final FileStatus original = stat;
+  public void testUpdateCacheError() {
+    FileSystem fs =
+        new InMemoryFileSystem(DigestHashFunction.SHA256) {
+          @Override
+          public FileStatus statIfFound(PathFragment path, boolean followSymlinks)
+              throws IOException {
+            final FileStatus stat = super.statIfFound(path, followSymlinks);
+            if (path.toString().endsWith("/out/foo")) {
+              return new FileStatus() {
+                private final FileStatus original = stat;
 
-            @Override
-            public boolean isSymbolicLink() {
-              return original.isSymbolicLink();
-            }
+                @Override
+                public boolean isSymbolicLink() {
+                  return original.isSymbolicLink();
+                }
 
-            @Override
-            public boolean isFile() {
-              return original.isFile();
-            }
+                @Override
+                public boolean isFile() {
+                  return original.isFile();
+                }
 
-            @Override
-            public boolean isDirectory() {
-              return original.isDirectory();
-            }
+                @Override
+                public boolean isDirectory() {
+                  return original.isDirectory();
+                }
 
-            @Override
-            public boolean isSpecialFile() {
-              return original.isSpecialFile();
-            }
+                @Override
+                public boolean isSpecialFile() {
+                  return original.isSpecialFile();
+                }
 
-            @Override
-            public long getSize() throws IOException {
-              return original.getSize();
-            }
+                @Override
+                public long getSize() throws IOException {
+                  return original.getSize();
+                }
 
-            @Override
-            public long getNodeId() throws IOException {
-              return original.getNodeId();
-            }
+                @Override
+                public long getNodeId() throws IOException {
+                  return original.getNodeId();
+                }
 
-            @Override
-            public long getLastModifiedTime() throws IOException {
-              throw new IOException();
-            }
+                @Override
+                public long getLastModifiedTime() throws IOException {
+                  throw new IOException();
+                }
 
-            @Override
-            public long getLastChangeTime() throws IOException {
-              throw new IOException();
+                @Override
+                public long getLastChangeTime() throws IOException {
+                  throw new IOException();
+                }
+              };
             }
-          };
-        }
-        return stat;
-      }
-    };
+            return stat;
+          }
+        };
     Artifact foo = createDerivedArtifact(fs, "foo");
     registerAction(new TestAction(TestAction.NO_EFFECT, emptyNestedSet, ImmutableSet.of(foo)));
     reporter.removeHandler(failFastHandler);
@@ -680,7 +681,7 @@ public class ParallelBuilderTest extends TimestampBuilderTestCase {
               ImmutableSet.of(out)) {
             @Override
             public ActionResult execute(ActionExecutionContext actionExecutionContext)
-                throws ActionExecutionException {
+                throws ActionExecutionException, InterruptedException {
               if (catastrophe && iCopy == 0) {
                 try {
                   Thread.sleep(300); // 300ms

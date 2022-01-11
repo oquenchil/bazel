@@ -14,8 +14,9 @@
 
 package com.google.devtools.build.lib.rules.config;
 
+import com.google.devtools.build.lib.analysis.config.transitions.StarlarkExposedRuleTransitionFactory;
 import com.google.devtools.build.lib.packages.Provider;
-import com.google.devtools.build.lib.skylarkbuildapi.config.ConfigStarlarkCommonApi;
+import com.google.devtools.build.lib.starlarkbuildapi.config.ConfigStarlarkCommonApi;
 
 /** Starlark namespace used to interact with Blaze's configurability APIs. */
 public class ConfigStarlarkCommon implements ConfigStarlarkCommonApi {
@@ -23,5 +24,11 @@ public class ConfigStarlarkCommon implements ConfigStarlarkCommonApi {
   @Override
   public Provider getConfigFeatureFlagProviderConstructor() {
     return ConfigFeatureFlagProvider.STARLARK_CONSTRUCTOR;
+  }
+
+  @Override
+  public StarlarkExposedRuleTransitionFactory createConfigFeatureFlagTransitionFactory(
+      String attribute) {
+    return new ConfigFeatureFlagTransitionFactory(attribute);
   }
 }

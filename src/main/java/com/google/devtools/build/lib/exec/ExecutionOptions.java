@@ -13,14 +13,13 @@
 // limitations under the License.
 package com.google.devtools.build.lib.exec;
 
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionExecutionContext.ShowSubcommands;
-import com.google.devtools.build.lib.actions.LocalHostCapacity;
-import com.google.devtools.build.lib.actions.ResourceSet;
 import com.google.devtools.build.lib.analysis.config.PerLabelOptions;
+import com.google.devtools.build.lib.util.CpuResourceConverter;
 import com.google.devtools.build.lib.util.OptionsUtils;
+import com.google.devtools.build.lib.util.RamResourceConverter;
 import com.google.devtools.build.lib.util.RegexFilter;
 import com.google.devtools.build.lib.util.ResourceConverter;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -31,7 +30,6 @@ import com.google.devtools.common.options.EnumConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDocumentationCategory;
 import com.google.devtools.common.options.OptionEffectTag;
-import com.google.devtools.common.options.OptionMetadataTag;
 import com.google.devtools.common.options.Options;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParsingException;
@@ -96,7 +94,8 @@ public class ExecutionOptions extends OptionsBase {
           "Specify how to distribute compilation of other spawn actions. Accepts a comma-separated"
               + " list of strategies from highest to lowest priority. For each action Bazel picks"
               + " the strategy with the highest priority that can execute the action. The default"
-              + " value is \"remote,worker,sandboxed,local\". See"
+              + " value is \"remote,worker,sandboxed,local\". This flag overrides the values set"
+              + " by --spawn_strategy (and --genrule_strategy if used with mnemonic Genrule). See"
               + " https://blog.bazel.build/2019/06/19/list-strategy.html for details.")
   public List<Map.Entry<String, List<String>>> strategy;
 
@@ -257,6 +256,22 @@ public class ExecutionOptions extends OptionsBase {
   public TestOutputFormat testOutput;
 
   @Option(
+      name = "max_test_output_bytes",
+      defaultValue = "-1",
+      documentationCategory = OptionDocumentationCategory.LOGGING,
+      effectTags = {
+        OptionEffectTag.TEST_RUNNER,
+        OptionEffectTag.TERMINAL_OUTPUT,
+        OptionEffectTag.EXECUTION
+      },
+      help =
+          "Specifies maximum per-test-log size that can be emitted when --test_summary is 'errors' "
+              + "or 'all'. Useful for avoiding overwhelming the output with excessively noisy test "
+              + "output. The test header is included in the log size. Negative values imply no "
+              + "limit. Output is all or nothing.")
+  public int maxTestOutputBytes;
+
+  @Option(
       name = "test_summary",
       defaultValue = "short",
       converter = TestSummaryFormat.Converter.class,
@@ -276,34 +291,6 @@ public class ExecutionOptions extends OptionsBase {
       effectTags = {OptionEffectTag.UNKNOWN},
       help = "This flag has no effect, and is deprecated")
   public boolean useResourceAutoSense;
-
-  @Option(
-      name = "local_resources",
-      defaultValue = "null",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help =
-          "Deprecated by '--incompatible_remove_local_resources'. Please use "
-              + "'--local_ram_resources' and '--local_cpu_resources'",
-      deprecationWarning =
-          "--local_resources is deprecated. Please use"
-              + " --local_ram_resources and --local_cpu_resources instead.",
-      converter = ResourceSet.ResourceSetConverter.class)
-  public ResourceSet availableResources;
-
-  @Option(
-      name = "incompatible_remove_local_resources",
-      defaultValue = "true",
-      documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
-      effectTags = {OptionEffectTag.EXECUTION},
-      metadataTags = {
-        OptionMetadataTag.INCOMPATIBLE_CHANGE,
-        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES
-      },
-      help =
-          "Deprecate local_resources in favor of --local_ram_resources and "
-              + "--local_cpu_resources.")
-  public boolean removeLocalResources;
 
   @Option(
       name = "local_cpu_resources",
@@ -371,12 +358,22 @@ public class ExecutionOptions extends OptionsBase {
   }
 
   @Option(
-    name = "debug_print_action_contexts",
-    defaultValue = "false",
-    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-    effectTags = {OptionEffectTag.UNKNOWN},
-    help = "Print the contents of the SpawnActionContext and ContextProviders maps."
-  )
+      name = "experimental_prioritize_local_actions",
+      defaultValue = "true",
+      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+      effectTags = {OptionEffectTag.EXECUTION},
+      help =
+          "If set, actions that can only run locally are given first chance at acquiring resources,"
+              + " dynamically run workers get second chance, and dynamically-run standalone actions"
+              + " come last.")
+  public boolean prioritizeLocalActions;
+
+  @Option(
+      name = "debug_print_action_contexts",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.UNKNOWN},
+      help = "Print the contents of the SpawnActionContext and ContextProviders maps.")
   public boolean debugPrintActionContexts;
 
   @Option(
@@ -455,6 +452,24 @@ public class ExecutionOptions extends OptionsBase {
               + "Bazel uses a separate action to generate a dummy test.xml file containing the "
               + "test log. Otherwise, Bazel generates a test.xml as part of the test action.")
   public boolean splitXmlGeneration;
+
+  @Option(
+      name = "experimental_path_agnostic_action",
+      allowMultiple = true,
+      defaultValue = "null",
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
+      effectTags = {OptionEffectTag.EXECUTION},
+      help =
+          "Setting this to an action's mnemonic declares that the action's output doesn't "
+              + "depend on its input or output paths. For example, "
+              + "\"mytool blaze-out/x86-fastbuild/input -o  bar/output\" produces the same output "
+              + "as \"mytool blaze-out/input -o baz/output\". The action executor may strip "
+              + "configuration prefixes from paths before running these actions to improve cache "
+              + "efficiency. For for example, \"blaze-out/k8-fastbuild/foo\" -> \"blaze-out/foo\". "
+              + "Be especially careful with actions that process debug symbol paths or manifest "
+              + "files.")
+  // TODO(bazel-team): merge this and --experimental_output_paths into a coherent final API.
+  public List<String> pathAgnosticActions;
 
   /** An enum for specifying different formats of test output. */
   public enum TestOutputFormat {
@@ -558,46 +573,6 @@ public class ExecutionOptions extends OptionsBase {
     public ShowSubcommandsConverter() {
       super(
           ShowSubcommands.class, "subcommand option", ShowSubcommands.TRUE, ShowSubcommands.FALSE);
-    }
-  }
-
-  /**
-   * Converter for --local_cpu_resources, which takes an integer greater than or equal to 1, or
-   * "HOST_CPUS", optionally followed by [-|*]<float>.
-   */
-  public static class CpuResourceConverter extends ResourceConverter {
-    public CpuResourceConverter() {
-      super(
-          ImmutableMap.of(
-              "HOST_CPUS",
-              () -> (int) Math.ceil(LocalHostCapacity.getLocalHostCapacity().getCpuUsage())),
-          1,
-          Integer.MAX_VALUE);
-    }
-
-    @Override
-    public String getTypeDescription() {
-      return "an integer, or \"HOST_CPUS\", optionally followed by [-|*]<float>.";
-    }
-  }
-
-  /**
-   * Converter for --local_cpu_resources, which takes an integer greater than or equal to 1, or
-   * "HOST_RAM", optionally followed by [-|*]<float>.
-   */
-  public static class RamResourceConverter extends ResourceConverter {
-    public RamResourceConverter() {
-      super(
-          ImmutableMap.of(
-              "HOST_RAM",
-              () -> (int) Math.ceil(LocalHostCapacity.getLocalHostCapacity().getMemoryMb())),
-          1,
-          Integer.MAX_VALUE);
-    }
-
-    @Override
-    public String getTypeDescription() {
-      return "an integer, or \"HOST_RAM\", optionally followed by [-|*]<float>.";
     }
   }
 }

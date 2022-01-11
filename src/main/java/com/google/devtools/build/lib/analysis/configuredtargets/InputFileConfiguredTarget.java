@@ -26,11 +26,8 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.InputFile;
 import com.google.devtools.build.lib.packages.License;
 import com.google.devtools.build.lib.packages.PackageSpecification.PackageGroupContents;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.Instantiator;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
-import com.google.devtools.build.lib.syntax.Printer;
 import java.util.Objects;
+import net.starlark.java.eval.Printer;
 
 /**
  * A ConfiguredTarget for an InputFile.
@@ -38,15 +35,12 @@ import java.util.Objects;
  * <p>All InputFiles for the same target are equivalent, so configuration does not play any role
  * here and is always set to <b>null</b>.
  */
-@AutoCodec
 @Immutable
 public final class InputFileConfiguredTarget extends FileConfiguredTarget {
   private final SourceArtifact artifact;
   private final NestedSet<TargetLicense> licenses;
 
-  @Instantiator
-  @VisibleForSerialization
-  InputFileConfiguredTarget(
+  private InputFileConfiguredTarget(
       Label label,
       NestedSet<PackageGroupContents> visibility,
       SourceArtifact artifact,
@@ -101,7 +95,6 @@ public final class InputFileConfiguredTarget extends FileConfiguredTarget {
     printer.append("<input file target " + getLabel() + ">");
   }
 
-  @Override
   public SourceArtifact getSourceArtifact() {
     return artifact;
   }

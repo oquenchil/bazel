@@ -26,7 +26,6 @@ import com.google.devtools.build.lib.actions.ActionResult;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.SpawnContinuation;
-import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import javax.annotation.Nullable;
 
@@ -90,20 +89,14 @@ public abstract class AbstractFileWriteAction extends AbstractAction {
               return this;
             }
           } catch (ExecException e) {
-            throw e.toActionExecutionException(
-                "Writing file for rule '" + Label.print(getOwner().getLabel()) + "'",
-                actionExecutionContext.getVerboseFailures(),
-                AbstractFileWriteAction.this);
+            throw ActionExecutionException.fromExecException(e, AbstractFileWriteAction.this);
           }
           afterWrite(actionExecutionContext);
           return ActionContinuationOrResult.of(ActionResult.create(nextContinuation.get()));
         }
       };
     } catch (ExecException e) {
-      throw e.toActionExecutionException(
-          "Writing file for rule '" + Label.print(getOwner().getLabel()) + "'",
-          actionExecutionContext.getVerboseFailures(),
-          this);
+      throw ActionExecutionException.fromExecException(e, this);
     }
   }
 

@@ -21,10 +21,8 @@ import com.google.common.collect.ImmutableSortedSet;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.EventHandler;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.Instantiator;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
-import com.google.devtools.build.lib.syntax.Location;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
@@ -32,6 +30,7 @@ import com.google.devtools.build.lib.vfs.RootedPath;
 import java.io.IOException;
 import java.util.Objects;
 import javax.annotation.Nullable;
+import net.starlark.java.syntax.Location;
 
 /**
  * Parameters of a filesystem traversal requested by a Fileset rule.
@@ -77,7 +76,6 @@ public interface FilesetTraversalParams {
    *
    * <p>For the meaning of "recursive" and "file" traversals see {@link DirectTraversal}.
    */
-  @AutoCodec
   @AutoValue
   abstract class DirectTraversalRoot {
 
@@ -172,7 +170,6 @@ public interface FilesetTraversalParams {
    * <p>See {@link DirectTraversal#getRoot()} for more details.
    */
   @AutoValue
-  @AutoCodec
   abstract class DirectTraversal {
 
     /** Returns the root of the traversal; see {@link DirectTraversalRoot}. */
@@ -243,7 +240,6 @@ public interface FilesetTraversalParams {
       return fp.digestAndReset();
     }
 
-    @AutoCodec.Instantiator
     static DirectTraversal getDirectTraversal(
         DirectTraversalRoot root,
         boolean isPackage,

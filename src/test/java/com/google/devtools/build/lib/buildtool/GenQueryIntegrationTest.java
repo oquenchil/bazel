@@ -35,6 +35,7 @@ import org.junit.runners.JUnit4;
  */
 @RunWith(JUnit4.class)
 public class GenQueryIntegrationTest extends BuildIntegrationTestCase {
+
   @Test
   public void testDoesNotFailHorribly() throws Exception {
     write(
@@ -162,16 +163,15 @@ public class GenQueryIntegrationTest extends BuildIntegrationTestCase {
     write("c/BUILD", "sh_library(name = 'c', deps = ['//z:a'])");
     assertQueryResult(
         "//fruits:q",
-        // Results are ordered in reverse dependency order (nodes, then their dependencies), and in
-        // reverse alphabetic order for ties.
+        // Results are ordered in lexicographical order (uses graphless genquery by default).
+        "//a:z",
+        "//c:c",
+        "//fruits:1",
+        "//fruits:a",
+        "//fruits:c",
         "//fruits:melon",
         "//fruits:z",
-        "//fruits:c",
-        "//fruits:a",
-        "//fruits:1",
-        "//c:c",
-        "//z:a",
-        "//a:z");
+        "//z:a");
   }
 
   @Test
@@ -186,7 +186,7 @@ public class GenQueryIntegrationTest extends BuildIntegrationTestCase {
         "sh_library(name='tropical', deps=[':papaya'])",
         "sh_library(name='papaya')");
 
-    assertQueryResult("//food:q", "//food:fruit_salad", "//fruits:tropical", "//fruits:papaya");
+    assertQueryResult("//food:q", "//food:fruit_salad", "//fruits:papaya", "//fruits:tropical");
 
     write("fruits/BUILD",
         "sh_library(name='tropical', deps=[':papaya', ':coconut'])",
@@ -196,9 +196,9 @@ public class GenQueryIntegrationTest extends BuildIntegrationTestCase {
     assertQueryResult(
         "//food:q",
         "//food:fruit_salad",
-        "//fruits:tropical",
+        "//fruits:coconut",
         "//fruits:papaya",
-        "//fruits:coconut");
+        "//fruits:tropical");
   }
 
   @Test
@@ -219,11 +219,11 @@ public class GenQueryIntegrationTest extends BuildIntegrationTestCase {
 
     assertQueryResult(
         "//fruits:q",
-        "//spices:q",
+        "//fruits:pear",
+        "//fruits:plum",
         "//spices:cinnamon",
         "//spices:nutmeg",
-        "//fruits:pear",
-        "//fruits:plum");
+        "//spices:q");
   }
 
   /**
@@ -261,13 +261,13 @@ public class GenQueryIntegrationTest extends BuildIntegrationTestCase {
     for (int i = 0; i < 20; i += 2) {
       expected.add(i / 2, "//spices:in" + i);
     }
-    Collections.sort(expected, Collections.reverseOrder());
     expected.add(0, "//spices:top");
+    Collections.sort(expected);
     assertQueryResult("//spices:q", expected.toArray(new String[0]));
   }
 
   @Test
-  public void testGraphOutput_Factored() throws Exception {
+  public void testGraphOutput_factored() throws Exception {
     write(
         "fruits/BUILD",
         "sh_library(name='melon', deps=[':papaya', ':coconut', ':mango'])",
@@ -286,7 +286,7 @@ public class GenQueryIntegrationTest extends BuildIntegrationTestCase {
   }
 
   @Test
-  public void testGraphOutput_Unfactored() throws Exception {
+  public void testGraphOutput_unfactored() throws Exception {
     write(
         "fruits/BUILD",
         "sh_library(name='melon', deps=[':papaya', ':coconut', ':mango'])",
@@ -358,10 +358,7 @@ public class GenQueryIntegrationTest extends BuildIntegrationTestCase {
         "  opts = ['--output=location'],",
         "  scope = ['//foo:foo'],",
         ")");
-    assertQueryResult(
-        "//foo:gen-buildfiles",
-        "//foo:bzl.bzl",
-        "//foo:BUILD");
+    assertQueryResult("//foo:gen-buildfiles", "//foo:BUILD", "//foo:bzl.bzl");
     assertThrows(
         ViewCreationFailedException.class, () -> buildTarget("//foo:gen-buildfiles-location"));
     events.assertContainsError(
@@ -431,17 +428,17 @@ public class GenQueryIntegrationTest extends BuildIntegrationTestCase {
   }
 
   @Test
-  public void testNodepDeps_DefaultIsFalse() throws Exception {
+  public void testNodepDeps_defaultIsFalse() throws Exception {
     runNodepDepsTest(/*optsStringValue=*/ "[]", /*expectVisibilityDep=*/ false);
   }
 
   @Test
-  public void testNodepDeps_False() throws Exception {
+  public void testNodepDeps_false() throws Exception {
     runNodepDepsTest(/*optsStringValue=*/ "['--nodep_deps=false']", /*expectVisibilityDep=*/ false);
   }
 
   @Test
-  public void testNodepDeps_True() throws Exception {
+  public void testNodepDeps_true() throws Exception {
     runNodepDepsTest(/*optsStringValue=*/ "['--nodep_deps=true']", /*expectVisibilityDep=*/ true);
   }
 

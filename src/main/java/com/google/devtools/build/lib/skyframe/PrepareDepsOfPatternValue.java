@@ -15,18 +15,20 @@ package com.google.devtools.build.lib.skyframe;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Interner;
+import com.google.devtools.build.lib.cmdline.SignedTargetPattern;
 import com.google.devtools.build.lib.cmdline.TargetParsingException;
 import com.google.devtools.build.lib.cmdline.TargetPattern;
 import com.google.devtools.build.lib.cmdline.TargetPattern.Type;
 import com.google.devtools.build.lib.concurrent.BlazeInterners;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.pkgcache.FilteringPolicies;
+import com.google.devtools.build.lib.server.FailureDetails.TargetPatterns;
 import com.google.devtools.build.lib.skyframe.TargetPatternValue.TargetPatternKey;
-import com.google.devtools.build.lib.skyframe.TargetPatternValue.TargetPatternSkyKeyOrException;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.AbstractSkyKey;
 import com.google.devtools.build.skyframe.SkyFunctionName;
-import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import java.util.List;
 
@@ -45,7 +47,7 @@ import java.util.List;
 public class PrepareDepsOfPatternValue implements SkyValue {
   // Note that this value does not guarantee singleton-like reference equality because we use Java
   // deserialization. Java deserialization can create other instances.
-  @AutoCodec
+  @SerializationConstant
   public static final PrepareDepsOfPatternValue INSTANCE = new PrepareDepsOfPatternValue();
 
   private PrepareDepsOfPatternValue() {
@@ -61,24 +63,23 @@ public class PrepareDepsOfPatternValue implements SkyValue {
     return 42;
   }
 
-
   /**
-   * Returns a {@link PrepareDepsOfPatternSkyKeysAndExceptions}, containing
-   * {@link PrepareDepsOfPatternSkyKeyValue} and {@link PrepareDepsOfPatternSkyKeyException}
-   * instances that have {@link TargetPatternKey} arguments. Negative target patterns of type other
-   * than {@link Type#TARGETS_BELOW_DIRECTORY} are not permitted. If a provided pattern fails to
-   * parse or is negative but not a {@link Type#TARGETS_BELOW_DIRECTORY}, there will be a
-   * corresponding {@link PrepareDepsOfPatternSkyKeyException} in the iterable returned by
-   * {@link PrepareDepsOfPatternSkyKeysAndExceptions#getExceptions} whose
-   * {@link PrepareDepsOfPatternSkyKeyException#getException} and
-   * {@link PrepareDepsOfPatternSkyKeyException#getOriginalPattern} methods return the
-   * {@link TargetParsingException} and original pattern, respectively.
+   * Returns a {@link PrepareDepsOfPatternSkyKeysAndExceptions}, containing {@link
+   * PrepareDepsOfPatternSkyKeyValue} and {@link PrepareDepsOfPatternSkyKeyException} instances that
+   * have {@link TargetPatternKey} arguments. Negative target patterns of type other than {@link
+   * Type#TARGETS_BELOW_DIRECTORY} are not permitted. If a provided pattern fails to parse or is
+   * negative but not a {@link Type#TARGETS_BELOW_DIRECTORY}, there will be a corresponding {@link
+   * PrepareDepsOfPatternSkyKeyException} in the iterable returned by {@link
+   * PrepareDepsOfPatternSkyKeysAndExceptions#getExceptions} whose {@link
+   * PrepareDepsOfPatternSkyKeyException#getException} and {@link
+   * PrepareDepsOfPatternSkyKeyException#getOriginalPattern} methods return the {@link
+   * TargetParsingException} and original pattern, respectively.
    *
-   * <p>There may be fewer returned elements in
-   * {@link PrepareDepsOfPatternSkyKeysAndExceptions#getValues} than patterns provided as input.
-   * This function will combine negative {@link Type#TARGETS_BELOW_DIRECTORY} patterns with
-   * preceding patterns to return an iterable of SkyKeys that avoids loading excluded directories
-   * during evaluation.
+   * <p>There may be fewer returned elements in {@link
+   * PrepareDepsOfPatternSkyKeysAndExceptions#getValues} than patterns provided as input. This
+   * function will combine negative {@link Type#TARGETS_BELOW_DIRECTORY} patterns with preceding
+   * patterns to return an iterable of SkyKeys that avoids loading excluded directories during
+   * evaluation.
    *
    * @param patterns The list of patterns, e.g. [//foo/..., -//foo/biz/...]. If a pattern's first
    *     character is "-", it is treated as a negative pattern.
@@ -86,21 +87,20 @@ public class PrepareDepsOfPatternValue implements SkyValue {
    */
   @ThreadSafe
   public static PrepareDepsOfPatternSkyKeysAndExceptions keys(
-      List<String> patterns, String offset) {
+      List<String> patterns, PathFragment offset) {
     ImmutableList.Builder<PrepareDepsOfPatternSkyKeyValue> resultValuesBuilder =
         ImmutableList.builder();
     ImmutableList.Builder<PrepareDepsOfPatternSkyKeyException> resultExceptionsBuilder =
         ImmutableList.builder();
-    Iterable<TargetPatternSkyKeyOrException> keysMaybe =
-        TargetPatternValue.keys(patterns, FilteringPolicies.NO_FILTER, offset);
+    TargetPattern.Parser parser = TargetPattern.mainRepoParser(offset);
     ImmutableList.Builder<TargetPatternKey> targetPatternKeysBuilder = ImmutableList.builder();
-    for (TargetPatternSkyKeyOrException keyMaybe : keysMaybe) {
+    for (String pattern : patterns) {
       try {
-        SkyKey key = keyMaybe.getSkyKey();
-        targetPatternKeysBuilder.add((TargetPatternKey) key.argument());
+        targetPatternKeysBuilder.add(
+            TargetPatternValue.key(
+                SignedTargetPattern.parse(pattern, parser), FilteringPolicies.NO_FILTER));
       } catch (TargetParsingException e) {
-        resultExceptionsBuilder.add(
-            new PrepareDepsOfPatternSkyKeyException(e, keyMaybe.getOriginalPattern()));
+        resultExceptionsBuilder.add(new PrepareDepsOfPatternSkyKeyException(e, pattern));
       }
     }
     // This code path is evaluated only for query universe preloading, and the quadratic cost of
@@ -120,7 +120,9 @@ public class PrepareDepsOfPatternValue implements SkyValue {
             new PrepareDepsOfPatternSkyKeyException(
                 new TargetParsingException(
                     "Negative target patterns of types other than \"targets below directory\""
-                        + " are not permitted."), targetPatternKey.toString()));
+                        + " are not permitted.",
+                    TargetPatterns.Code.NEGATIVE_TARGET_PATTERN_NOT_ALLOWED),
+                targetPatternKey.toString()));
       } else {
         resultValuesBuilder.add(new PrepareDepsOfPatternSkyKeyValue(targetPatternKey));
       }

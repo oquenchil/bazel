@@ -17,40 +17,44 @@ package com.google.devtools.build.lib.packages;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.syntax.Module;
+import com.google.devtools.build.lib.cmdline.RepositoryMapping;
+import net.starlark.java.eval.Module;
 
 /**
  * BazelModuleContext records Bazel-specific information associated with a .bzl {@link
- * com.google.devtools.build.lib.syntax.Module}.
+ * net.starlark.java.eval.Module}.
  */
 @AutoValue
 public abstract class BazelModuleContext {
-  /** Label associated with the Starlark {@link com.google.devtools.build.lib.syntax.Module}. */
+  /** Label associated with the Starlark {@link net.starlark.java.eval.Module}. */
   public abstract Label label();
+
+  /** The repository mapping applicable to the repo where the .bzl file is located in. */
+  public abstract RepositoryMapping repoMapping();
 
   /** Returns the name of the module's .bzl file, as provided to the parser. */
   public abstract String filename();
 
   /**
    * Maps the load string for each load statement in this .bzl file (in source order) to the module
-   * it loads. It thus records the complete load DAG.
+   * it loads. It thus records the complete load DAG (not including {@code @_builtins} .bzl files).
    */
   public abstract ImmutableMap<String, Module> loads();
 
   /**
-   * Transitive digest of the .bzl file of the {@link com.google.devtools.build.lib.syntax.Module}
-   * itself and all files it transitively loads.
+   * Transitive digest of the .bzl file of the {@link net.starlark.java.eval.Module} itself and all
+   * files it transitively loads.
    */
   @SuppressWarnings({"AutoValueImmutableFields", "mutable"})
   @AutoValue.CopyAnnotations
   public abstract byte[] bzlTransitiveDigest();
 
   /**
-   * Returns a label for a {@link com.google.devtools.build.lib.syntax.Module}.
+   * Returns a label for a {@link net.starlark.java.eval.Module}.
    *
    * <p>This is a user-facing value and we rely on this string to be a valid label for the {@link
-   * com.google.devtools.build.lib.syntax.Module} (and that only). Please see the documentation of
-   * {@link com.google.devtools.build.lib.syntax.Module#setClientData(Object)} for more details.
+   * net.starlark.java.eval.Module} (and that only). Please see the documentation of {@link
+   * net.starlark.java.eval.Module#setClientData(Object)} for more details.
    */
   @Override
   public final String toString() {
@@ -64,9 +68,11 @@ public abstract class BazelModuleContext {
 
   public static BazelModuleContext create(
       Label label,
+      RepositoryMapping repoMapping,
       String filename,
       ImmutableMap<String, Module> loads,
       byte[] bzlTransitiveDigest) {
-    return new AutoValue_BazelModuleContext(label, filename, loads, bzlTransitiveDigest);
+    return new AutoValue_BazelModuleContext(
+        label, repoMapping, filename, loads, bzlTransitiveDigest);
   }
 }

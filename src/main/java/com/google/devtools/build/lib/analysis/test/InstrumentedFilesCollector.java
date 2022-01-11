@@ -20,23 +20,21 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.AnalysisEnvironment;
 import com.google.devtools.build.lib.analysis.FileProvider;
 import com.google.devtools.build.lib.analysis.RuleContext;
-import com.google.devtools.build.lib.analysis.TransitionMode;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.Attribute;
-import com.google.devtools.build.lib.packages.BuildType;
+import com.google.devtools.build.lib.packages.Type.LabelClass;
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.FileTypeSet;
 import com.google.devtools.build.lib.util.Pair;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.Optional;
 import javax.annotation.Nullable;
 
 /**
@@ -76,8 +74,7 @@ public final class InstrumentedFilesCollector {
     return instrumentedFilesInfoBuilder.build();
   }
 
-  public static InstrumentedFilesInfo collectTransitive(
-      RuleContext ruleContext, InstrumentationSpec spec) {
+  public static InstrumentedFilesInfo collect(RuleContext ruleContext, InstrumentationSpec spec) {
     return collect(
         ruleContext,
         spec,
@@ -87,7 +84,7 @@ public final class InstrumentedFilesCollector {
             Order.STABLE_ORDER));
   }
 
-  public static InstrumentedFilesInfo collectTransitive(
+  public static InstrumentedFilesInfo collect(
       RuleContext ruleContext,
       InstrumentationSpec spec,
       NestedSet<Pair<String, String>> reportedToActualSources) {
@@ -169,6 +166,28 @@ public final class InstrumentedFilesCollector {
       NestedSet<Pair<String, String>> coverageEnvironment,
       boolean withBaselineCoverage,
       NestedSet<Pair<String, String>> reportedToActualSources) {
+    return collect(
+        ruleContext,
+        spec,
+        localMetadataCollector,
+        rootFiles,
+        coverageSupportFiles,
+        coverageEnvironment,
+        withBaselineCoverage,
+        reportedToActualSources,
+        /* additionalMetadata= */ null);
+  }
+
+  public static InstrumentedFilesInfo collect(
+      RuleContext ruleContext,
+      InstrumentationSpec spec,
+      @Nullable LocalMetadataCollector localMetadataCollector,
+      @Nullable Iterable<Artifact> rootFiles,
+      NestedSet<Artifact> coverageSupportFiles,
+      NestedSet<Pair<String, String>> coverageEnvironment,
+      boolean withBaselineCoverage,
+      NestedSet<Pair<String, String>> reportedToActualSources,
+      @Nullable Iterable<Artifact> additionalMetadata) {
     Preconditions.checkNotNull(ruleContext);
     Preconditions.checkNotNull(spec);
 
@@ -181,15 +200,8 @@ public final class InstrumentedFilesCollector {
             ruleContext, coverageSupportFiles, coverageEnvironment, reportedToActualSources);
 
     // Transitive instrumentation data.
-    boolean useDeprecatedSourceOrDependencyAttributes =
-        spec.deprecatedSourceOrDependencyAttributes.isPresent()
-            && !ruleContext.getConfiguration().experimentalIgnoreDeprecatedInstrumentationSpec();
     for (TransitiveInfoCollection dep :
-        getPrerequisitesForAttributes(
-            ruleContext,
-            useDeprecatedSourceOrDependencyAttributes
-                ? spec.deprecatedSourceOrDependencyAttributes.get()
-                : spec.dependencyAttributes)) {
+        getPrerequisitesForAttributes(ruleContext, spec.dependencyAttributes)) {
       instrumentedFilesInfoBuilder.addFromDependency(dep);
     }
 
@@ -199,15 +211,7 @@ public final class InstrumentedFilesCollector {
         ruleContext.getConfiguration(), ruleContext.getLabel(), ruleContext.isTestTarget())) {
       NestedSetBuilder<Artifact> localSourcesBuilder = NestedSetBuilder.stableOrder();
       for (TransitiveInfoCollection dep :
-          getPrerequisitesForAttributes(
-              ruleContext,
-              useDeprecatedSourceOrDependencyAttributes
-                  ? spec.deprecatedSourceOrDependencyAttributes.get()
-                  : spec.sourceAttributes)) {
-        if (useDeprecatedSourceOrDependencyAttributes
-            && dep.get(InstrumentedFilesInfo.STARLARK_CONSTRUCTOR) != null) {
-          continue;
-        }
+          getPrerequisitesForAttributes(ruleContext, spec.sourceAttributes)) {
         for (Artifact artifact : dep.getProvider(FileProvider.class).getFilesToBuild().toList()) {
           if (artifact.isSourceArtifact() &&
               spec.instrumentedFileTypes.matches(artifact.getFilename())) {
@@ -230,6 +234,10 @@ public final class InstrumentedFilesCollector {
       instrumentedFilesInfoBuilder.collectLocalMetadata(localMetadataCollector, rootFiles);
     }
 
+    if (additionalMetadata != null) {
+      instrumentedFilesInfoBuilder.addMetadataFiles(additionalMetadata);
+    }
+
     return instrumentedFilesInfoBuilder.build();
   }
 
@@ -238,8 +246,8 @@ public final class InstrumentedFilesCollector {
    * representing a rule) should be instrumented according the --instrumentation_filter and
    * --instrument_test_targets settings in {@code config}.
    */
-  public static boolean shouldIncludeLocalSources(BuildConfiguration config,
-      TransitiveInfoCollection target) {
+  public static boolean shouldIncludeLocalSources(
+      BuildConfigurationValue config, TransitiveInfoCollection target) {
     return shouldIncludeLocalSources(config, target.getLabel(),
         target.getProvider(TestProvider.class) != null);
   }
@@ -249,7 +257,7 @@ public final class InstrumentedFilesCollector {
    * the --instrumentation_filter and --instrument_test_targets config settings.
    */
   public static boolean shouldIncludeLocalSources(
-      BuildConfiguration config, Label label, boolean isTest) {
+      BuildConfigurationValue config, Label label, boolean isTest) {
     return ((config.shouldInstrumentTestTargets() || !isTest)
         && config.getInstrumentationFilter().isIncluded(label.toString()));
   }
@@ -264,9 +272,6 @@ public final class InstrumentedFilesCollector {
   public static final class InstrumentationSpec {
     private final FileTypeSet instrumentedFileTypes;
 
-    /** Deprecated list of attributes which should be checked for sources or dependencies. */
-    private final Optional<ImmutableList<String>> deprecatedSourceOrDependencyAttributes;
-
     /** The list of attributes which should be checked for sources. */
     private final ImmutableList<String> sourceAttributes;
 
@@ -276,17 +281,14 @@ public final class InstrumentedFilesCollector {
     private InstrumentationSpec(
         FileTypeSet instrumentedFileTypes,
         ImmutableList<String> instrumentedSourceAttributes,
-        ImmutableList<String> instrumentedDependencyAttributes,
-        Optional<ImmutableList<String>> deprecatedInstrumentedSourceOrDependencyAttributes) {
+        ImmutableList<String> instrumentedDependencyAttributes) {
       this.instrumentedFileTypes = instrumentedFileTypes;
       this.sourceAttributes = instrumentedSourceAttributes;
       this.dependencyAttributes = instrumentedDependencyAttributes;
-      this.deprecatedSourceOrDependencyAttributes =
-          deprecatedInstrumentedSourceOrDependencyAttributes;
     }
 
     public InstrumentationSpec(FileTypeSet instrumentedFileTypes) {
-      this(instrumentedFileTypes, ImmutableList.of(), ImmutableList.of(), Optional.empty());
+      this(instrumentedFileTypes, ImmutableList.of(), ImmutableList.of());
     }
 
     /**
@@ -295,10 +297,7 @@ public final class InstrumentedFilesCollector {
      */
     public InstrumentationSpec withSourceAttributes(Collection<String> attributes) {
       return new InstrumentationSpec(
-          instrumentedFileTypes,
-          ImmutableList.copyOf(attributes),
-          dependencyAttributes,
-          deprecatedSourceOrDependencyAttributes);
+          instrumentedFileTypes, ImmutableList.copyOf(attributes), dependencyAttributes);
     }
 
     /**
@@ -315,10 +314,7 @@ public final class InstrumentedFilesCollector {
      */
     public InstrumentationSpec withDependencyAttributes(Collection<String> attributes) {
       return new InstrumentationSpec(
-          instrumentedFileTypes,
-          sourceAttributes,
-          ImmutableList.copyOf(attributes),
-          deprecatedSourceOrDependencyAttributes);
+          instrumentedFileTypes, sourceAttributes, ImmutableList.copyOf(attributes));
     }
 
     /**
@@ -327,27 +323,6 @@ public final class InstrumentedFilesCollector {
      */
     public InstrumentationSpec withDependencyAttributes(String... attributes) {
       return withDependencyAttributes(ImmutableList.copyOf(attributes));
-    }
-
-    /**
-     * Returns a new instrumentation spec with the given attribute names to look for sources _or_
-     * dependencies in the legacy behavior replacing the ones stored in this object.
-     */
-    public InstrumentationSpec withDeprecatedSourceOrDependencyAttributes(
-        Collection<String> attributes) {
-      return new InstrumentationSpec(
-          instrumentedFileTypes,
-          sourceAttributes,
-          dependencyAttributes,
-          Optional.of(ImmutableList.copyOf(attributes)));
-    }
-
-    /**
-     * Returns a new instrumentation spec with the given attribute names to look for sources _or_
-     * dependencies in the legacy behavior replacing the ones stored in this object.
-     */
-    public InstrumentationSpec withDeprecatedSourceOrDependencyAttributes(String... attributes) {
-      return withDeprecatedSourceOrDependencyAttributes(ImmutableList.copyOf(attributes));
     }
   }
 
@@ -444,6 +419,10 @@ public final class InstrumentedFilesCollector {
           rootFiles, ruleContext.getAnalysisEnvironment(), metadataFilesBuilder);
     }
 
+    void addMetadataFiles(Iterable<Artifact> files) {
+      metadataFilesBuilder.addAll(files);
+    }
+
     InstrumentedFilesInfo build() {
       NestedSet<Artifact> baselineCoverageFiles = baselineCoverageInstrumentedFilesBuilder.build();
       return new InstrumentedFilesInfo(
@@ -466,10 +445,11 @@ public final class InstrumentedFilesCollector {
   private static Iterable<TransitiveInfoCollection> getPrerequisitesForAttributes(
       RuleContext ruleContext, Collection<String> attributeNames) {
     List<TransitiveInfoCollection> prerequisites = new ArrayList<>();
-    for (String attr : attributeNames) {
-      if (ruleContext.getRule().isAttrDefined(attr, BuildType.LABEL_LIST) ||
-          ruleContext.getRule().isAttrDefined(attr, BuildType.LABEL)) {
-        prerequisites.addAll(ruleContext.getPrerequisites(attr, TransitionMode.DONT_CHECK));
+    for (String attributeName : attributeNames) {
+      Attribute attribute =
+          ruleContext.getRule().getRuleClassObject().getAttributeByNameMaybe(attributeName);
+      if (attribute != null) {
+        prerequisites.addAll(attributeDependencyPrerequisites(attribute, ruleContext));
       }
     }
     return prerequisites;
@@ -478,13 +458,17 @@ public final class InstrumentedFilesCollector {
   private static Iterable<TransitiveInfoCollection> getAllNonToolPrerequisites(
       RuleContext ruleContext) {
     List<TransitiveInfoCollection> prerequisites = new ArrayList<>();
-    for (Attribute attr : ruleContext.getRule().getAttributes()) {
-      if ((attr.getType() == BuildType.LABEL_LIST || attr.getType() == BuildType.LABEL)
-          && !attr.getTransitionFactory().isTool()) {
-        prerequisites.addAll(
-            ruleContext.getPrerequisites(attr.getName(), TransitionMode.DONT_CHECK));
-      }
+    for (Attribute attribute : ruleContext.getRule().getAttributes()) {
+      prerequisites.addAll(attributeDependencyPrerequisites(attribute, ruleContext));
     }
     return prerequisites;
+  }
+
+  private static List<? extends TransitiveInfoCollection> attributeDependencyPrerequisites(
+      Attribute attribute, RuleContext ruleContext) {
+    if (attribute.getType().getLabelClass() == LabelClass.DEPENDENCY) {
+      return ruleContext.getPrerequisites(attribute.getName());
+    }
+    return ImmutableList.of();
   }
 }

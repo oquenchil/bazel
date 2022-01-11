@@ -27,12 +27,10 @@ import com.google.devtools.build.lib.packages.NoSuchTargetException;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.pkgcache.PackageManager;
 import com.google.devtools.build.lib.pkgcache.TestFilter;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
-import java.io.Serializable;
 import java.util.Collection;
 import java.util.Objects;
 import javax.annotation.Nullable;
@@ -44,7 +42,6 @@ import javax.annotation.Nullable;
 @Immutable
 @ThreadSafe
 @VisibleForTesting
-@AutoCodec
 public final class TargetPatternPhaseValue implements SkyValue {
 
   private final ImmutableSet<Label> targetLabels;
@@ -155,9 +152,9 @@ public final class TargetPatternPhaseValue implements SkyValue {
 
   /** Create a target pattern phase value key. */
   @ThreadSafe
-  public static SkyKey key(
+  public static TargetPatternPhaseKey key(
       ImmutableList<String> targetPatterns,
-      String offset,
+      PathFragment offset,
       boolean compileOneDependency,
       boolean buildTestsOnly,
       boolean determineTests,
@@ -185,18 +182,18 @@ public final class TargetPatternPhaseValue implements SkyValue {
    * @param offset relative path to the working directory
    */
   @ThreadSafe
-  public static SkyKey keyWithoutFilters(ImmutableList<String> targetPatterns, String offset) {
+  public static SkyKey keyWithoutFilters(
+      ImmutableList<String> targetPatterns, PathFragment offset) {
     return new TargetPatternPhaseKey(
         targetPatterns, offset, false, false, false, ImmutableList.of(), false, false, null);
   }
 
   /** The configuration needed to run the target pattern evaluation phase. */
   @ThreadSafe
-  @VisibleForSerialization
-  @AutoCodec
-  public static final class TargetPatternPhaseKey implements SkyKey, Serializable {
+  @Immutable
+  static final class TargetPatternPhaseKey implements SkyKey {
     private final ImmutableList<String> targetPatterns;
-    private final String offset;
+    private final PathFragment offset;
     private final boolean compileOneDependency;
     private final boolean buildTestsOnly;
     private final boolean determineTests;
@@ -205,9 +202,9 @@ public final class TargetPatternPhaseValue implements SkyValue {
     private final boolean expandTestSuites;
     @Nullable private final TestFilter testFilter;
 
-    TargetPatternPhaseKey(
+    private TargetPatternPhaseKey(
         ImmutableList<String> targetPatterns,
-        String offset,
+        PathFragment offset,
         boolean compileOneDependency,
         boolean buildTestsOnly,
         boolean determineTests,
@@ -238,7 +235,7 @@ public final class TargetPatternPhaseValue implements SkyValue {
       return targetPatterns;
     }
 
-    public String getOffset() {
+    public PathFragment getOffset() {
       return offset;
     }
 

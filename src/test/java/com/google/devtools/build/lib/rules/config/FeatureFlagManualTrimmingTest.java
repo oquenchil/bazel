@@ -28,15 +28,15 @@ import com.google.devtools.build.lib.analysis.BaseRuleClasses;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.RuleContext;
-import com.google.devtools.build.lib.analysis.TransitionMode;
 import com.google.devtools.build.lib.analysis.actions.FileWriteAction;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.analysis.config.BuildOptionsView;
 import com.google.devtools.build.lib.analysis.config.transitions.PatchTransition;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.Rule;
+import com.google.devtools.build.lib.packages.RuleTransitionData;
 import com.google.devtools.build.lib.testutil.TestRuleClassProvider;
 import java.util.Map;
 import org.junit.Before;
@@ -99,8 +99,8 @@ public final class FeatureFlagManualTrimmingTest extends BuildViewTestCase {
         ")");
   }
 
-  private ImmutableSortedMap<Label, String> getFlagMapFromConfiguration(BuildConfiguration config)
-      throws Exception {
+  private ImmutableSortedMap<Label, String> getFlagMapFromConfiguration(
+      BuildConfigurationValue config) throws Exception {
     return FeatureFlagValue.getFlagValues(config.getOptions());
   }
 
@@ -542,10 +542,8 @@ public final class FeatureFlagManualTrimmingTest extends BuildViewTestCase {
 
     ConfiguredTarget target = getConfiguredTarget("//test:target");
     RuleContext ruleContext = getRuleContext(target);
-    BuildConfiguration childConfiguration =
-        Iterables.getOnlyElement(
-                ruleContext.getPrerequisiteConfiguredTargetAndTargets(
-                    "exports_flag", TransitionMode.TARGET))
+    BuildConfigurationValue childConfiguration =
+        Iterables.getOnlyElement(ruleContext.getPrerequisiteConfiguredTargets("exports_flag"))
             .getConfiguration();
 
     Label childLabel = Label.parseAbsoluteUnchecked("//test:read_flag");
@@ -889,7 +887,7 @@ public final class FeatureFlagManualTrimmingTest extends BuildViewTestCase {
         getConfiguration(getConfiguredTarget("//test:toplevel_target")).getOptions();
     PatchTransition transition =
         new ConfigFeatureFlagTaggedTrimmingTransitionFactory(BaseRuleClasses.TAGGED_TRIMMING_ATTR)
-            .create((Rule) getTarget("//test:dep"));
+            .create(RuleTransitionData.create((Rule) getTarget("//test:dep")));
     BuildOptions depOptions =
         transition.patch(
             new BuildOptionsView(topLevelOptions, transition.requiresOptionFragments()),

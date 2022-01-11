@@ -16,8 +16,8 @@ package com.google.devtools.build.lib.rules.android;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.RuleContext;
+import com.google.devtools.build.lib.analysis.RuleErrorConsumer;
 import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
-import com.google.devtools.build.lib.packages.RuleErrorConsumer;
 import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.rules.android.databinding.DataBinding;
 import com.google.devtools.build.lib.rules.android.databinding.DataBindingContext;
@@ -251,9 +251,8 @@ public class ProcessedAndroidData {
         // Output
         .setProguardOut(
             ProguardHelper.getProguardConfigArtifact(
-                dataContext.getLabel(),
-                dataContext.getActionConstructionContext(),
-                proguardPrefix));
+                dataContext.getLabel(), dataContext.getActionConstructionContext(), proguardPrefix))
+        .setIncludeProguardLocationReferences(dataContext.includeProguardLocationReferences());
   }
 
   static ProcessedAndroidData of(

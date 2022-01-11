@@ -14,9 +14,9 @@
 package com.google.devtools.build.lib.runtime;
 
 import com.google.devtools.build.lib.events.EventKind;
-import com.google.devtools.build.lib.runtime.UiStateTracker.ProgressMode;
 import com.google.devtools.common.options.Converter;
 import com.google.devtools.common.options.Converters.CommaSeparatedOptionListConverter;
+import com.google.devtools.common.options.Converters.RangeConverter;
 import com.google.devtools.common.options.EnumConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDocumentationCategory;
@@ -112,13 +112,6 @@ public class UiOptions extends OptionsBase {
     }
   }
 
-  /** Progress mode converter. */
-  public static class ProgressModeConverter extends EnumConverter<ProgressMode> {
-    public ProgressModeConverter() {
-      super(ProgressMode.class, "--experimental_ui_mode setting");
-    }
-  }
-
   @Option(
       name = "show_progress",
       defaultValue = "true",
@@ -126,14 +119,6 @@ public class UiOptions extends OptionsBase {
       effectTags = {OptionEffectTag.UNKNOWN},
       help = "Display progress messages during a build.")
   public boolean showProgress;
-
-  @Option(
-      name = "show_task_finish",
-      defaultValue = "false",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
-      help = "Display progress messages when tasks complete, not just when they start.")
-  public boolean showTaskFinish;
 
   @Option(
       name = "show_progress_rate_limit",
@@ -172,9 +157,6 @@ public class UiOptions extends OptionsBase {
 
   @Option(
       name = "isatty",
-      // TODO(b/137881511): Old name should be removed after 2020-01-01, or whenever is
-      // reasonable.
-      oldName = "is_stderr_atty",
       defaultValue = "false",
       metadataTags = {OptionMetadataTag.HIDDEN},
       documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
@@ -253,19 +235,6 @@ public class UiOptions extends OptionsBase {
   public List<EventKind> eventFilters;
 
   @Option(
-      name = "experimental_ui_mode",
-      defaultValue = "oldest_actions",
-      converter = ProgressModeConverter.class,
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.TERMINAL_OUTPUT},
-      help =
-          "Determines what kind of data is shown in the detailed progress bar. By default, it is "
-              + "set to show the oldest actions and their running time. The underlying data "
-              + "source is usually sampled in a mode-dependend way to fit within the number of "
-              + "lines given by --ui_actions_shown.")
-  public ProgressMode uiProgressMode;
-
-  @Option(
       name = "ui_actions_shown",
       oldName = "experimental_ui_actions_shown",
       defaultValue = "8",
@@ -274,29 +243,19 @@ public class UiOptions extends OptionsBase {
       help =
           "Number of concurrent actions shown in the detailed progress bar; each "
               + "action is shown on a separate line. The progress bar always shows "
-              + "at least one one, all numbers less than 1 are mapped to 1. "
-              + "This option has no effect if --noui is set.")
-  public int uiSamplesShown;
+              + "at least one one, all numbers less than 1 are mapped to 1.")
+  public int uiActionsShown;
 
   @Option(
-      name = "experimental_ui_limit_console_output",
-      defaultValue = "0",
-      documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
-      effectTags = {OptionEffectTag.UNKNOWN},
+      name = "experimental_ui_max_stdouterr_bytes",
+      documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
+      effectTags = {OptionEffectTag.EXECUTION},
+      defaultValue = "1048576",
+      converter = MaxStdoutErrBytesConverter.class,
       help =
-          "Number of bytes to which the UI will limit its output (non-positive "
-              + "values indicate unlimited). Once the limit is approaching, the UI "
-              + "will try hard to limit in a meaningful way, but will ultimately just drop all "
-              + "output.")
-  public int experimentalUiLimitConsoleOutput;
-
-  @Option(
-      name = "experimental_ui_deduplicate",
-      defaultValue = "false",
-      documentationCategory = OptionDocumentationCategory.LOGGING,
-      effectTags = {OptionEffectTag.TERMINAL_OUTPUT},
-      help = "Make the UI deduplicate messages to have a cleaner scroll-back log.")
-  public boolean experimentalUiDeduplicate;
+          "The maximum size of the stdout / stderr files that will be printed to the console. "
+              + "-1 implies no limit.")
+  public int maxStdoutErrBytes;
 
   public boolean useColor() {
     return useColorEnum == UseColor.YES || (useColorEnum == UseColor.AUTO && isATty);
@@ -304,5 +263,27 @@ public class UiOptions extends OptionsBase {
 
   public boolean useCursorControl() {
     return useCursesEnum == UseCurses.YES || (useCursesEnum == UseCurses.AUTO && isATty);
+  }
+
+  /** A converter for --experimental_ui_max_stdouterr_bytes. */
+  public static class MaxStdoutErrBytesConverter extends RangeConverter {
+
+    /**
+     * The maximum value of the flag must be limited to ensure conversions to UTF-8 do not trigger
+     * integer overflows. In JDK9+, if the message buffer contains a byte whose high bit is set, a
+     * UTF-8 decoding path is taken that allocates a new byte[] buffer twice as large as the message
+     * byte[] buffer.
+     */
+    private static final int MAX_VALUE = (Integer.MAX_VALUE - 8) >> 1;
+
+    public MaxStdoutErrBytesConverter() {
+      super(-1, (Integer.MAX_VALUE - 8) >> 1);
+    }
+
+    @Override
+    public Integer convert(String input) throws OptionsParsingException {
+      Integer value = super.convert(input);
+      return value >= 0 ? value : MAX_VALUE;
+    }
   }
 }

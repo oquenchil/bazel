@@ -15,9 +15,8 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-#include <windows.h>
-
 #include <string.h>
+#include <windows.h>
 
 #include <fstream>
 #include <iostream>
@@ -55,8 +54,8 @@ string GetLastErrorString() {
   size_t size = FormatMessageA(
       FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
           FORMAT_MESSAGE_IGNORE_INSERTS,
-      NULL, last_error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-      (LPSTR)&message_buffer, 0, NULL);
+      nullptr, last_error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+      (LPSTR)&message_buffer, 0, nullptr);
 
   stringstream result;
   result << "(error: " << last_error << "): " << message_buffer;
@@ -199,10 +198,8 @@ class RunfilesCreator {
   }
 
   void CreateRunfiles() {
-    bool symlink_needs_privilege =
-        DoesCreatingSymlinkNeedAdminPrivilege(runfiles_output_base_);
     ScanTreeAndPrune(runfiles_output_base_);
-    CreateFiles(symlink_needs_privilege);
+    CreateFiles();
     CopyManifestFile();
   }
 
@@ -233,40 +230,6 @@ class RunfilesCreator {
       die(L"DeleteFileW failed (%s): %hs", path.c_str(),
           GetLastErrorString().c_str());
     }
-  }
-
-  bool DoesCreatingSymlinkNeedAdminPrivilege(const wstring& runfiles_base_dir) {
-    wstring dummy_link = runfiles_base_dir + L"\\dummy_link";
-    wstring dummy_target = runfiles_base_dir + L"\\dummy_target";
-
-    // Try creating symlink without admin privilege.
-    if (CreateSymbolicLinkW(dummy_link.c_str(), dummy_target.c_str(),
-                            SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
-      DeleteFileOrDie(dummy_link);
-      return false;
-    }
-
-    // Try creating symlink with admin privilege
-    if (CreateSymbolicLinkW(dummy_link.c_str(), dummy_target.c_str(), 0)) {
-      DeleteFileOrDie(dummy_link);
-      return true;
-    }
-
-    // If we couldn't create symlink, print out an error message and exit.
-    if (GetLastError() == ERROR_PRIVILEGE_NOT_HELD) {
-      die(L"CreateSymbolicLinkW failed:\n%hs\n",
-          "Bazel needs to create symlink for building runfiles tree.\n"
-          "Creating symlink on Windows requires either of the following:\n"
-          "    1. Program is running with elevated privileges (Admin rights).\n"
-          "    2. The system version is Windows 10 Creators Update (1703) or "
-          "later and "
-          "developer mode is enabled.",
-          GetLastErrorString().c_str());
-    } else {
-      die(L"CreateSymbolicLinkW failed: %hs", GetLastErrorString().c_str());
-    }
-
-    return true;
   }
 
   // This function scan the current directory, remove all
@@ -340,11 +303,7 @@ class RunfilesCreator {
     ::FindClose(handle);
   }
 
-  void CreateFiles(bool creating_symlink_needs_admin_privilege) {
-    DWORD privilege_flag = creating_symlink_needs_admin_privilege
-                               ? 0
-                               : SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
-
+  void CreateFiles() {
     for (const auto& it : manifest_file_map) {
       // Ensure the parent directory exists
       wstring parent_dir = GetParentDirFromPath(it.first);
@@ -374,10 +333,30 @@ class RunfilesCreator {
         if (blaze_util::IsDirectoryW(it.second.c_str())) {
           create_dir = SYMBOLIC_LINK_FLAG_DIRECTORY;
         }
-        if (!CreateSymbolicLinkW(it.first.c_str(), it.second.c_str(),
-                                 privilege_flag | create_dir)) {
-          die(L"CreateSymbolicLinkW failed (%s -> %s): %hs", it.first.c_str(),
-              it.second.c_str(), GetLastErrorString().c_str());
+        if (!CreateSymbolicLinkW(
+                it.first.c_str(), it.second.c_str(),
+                bazel::windows::symlinkPrivilegeFlag | create_dir)) {
+          if (GetLastError() == ERROR_INVALID_PARAMETER) {
+            // We are on a version of Windows that does not support this flag.
+            // Retry without the flag and return to error handling if necessary.
+            if (CreateSymbolicLinkW(it.first.c_str(), it.second.c_str(),
+                                    create_dir)) {
+              return;
+            }
+          }
+          if (GetLastError() == ERROR_PRIVILEGE_NOT_HELD) {
+            die(L"CreateSymbolicLinkW failed:\n%hs\n",
+                "Bazel needs to create symlinks to build the runfiles tree.\n"
+                "Creating symlinks on Windows requires one of the following:\n"
+                "    1. Bazel is run with administrator privileges.\n"
+                "    2. The system version is Windows 10 Creators Update "
+                "(1703) or "
+                "later and developer mode is enabled.",
+                GetLastErrorString().c_str());
+          } else {
+            die(L"CreateSymbolicLinkW failed (%s -> %s): %hs", it.first.c_str(),
+                it.second.c_str(), GetLastErrorString().c_str());
+          }
         }
       }
     }

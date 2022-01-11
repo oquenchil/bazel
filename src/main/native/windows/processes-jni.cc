@@ -41,7 +41,7 @@ static std::wstring ToString(const T& e) {
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeGetpid(
+Java_com_google_devtools_build_lib_windows_WindowsProcesses_getpid(
     JNIEnv* env, jclass clazz) {
   return GetCurrentProcessId();
 }
@@ -52,8 +52,9 @@ class JavaByteArray {
       : env_(env),
         array_(java_array),
         size_(java_array != nullptr ? env->GetArrayLength(java_array) : 0),
-        ptr_(java_array != nullptr ? env->GetByteArrayElements(java_array, NULL)
-                                   : nullptr) {}
+        ptr_(java_array != nullptr
+                 ? env->GetByteArrayElements(java_array, nullptr)
+                 : nullptr) {}
 
   ~JavaByteArray() {
     if (array_ != nullptr) {
@@ -90,12 +91,39 @@ class NativeOutputStream {
     //
     // Therefore if this process bequested `handle_` to a child process, we
     // cannot cancel I/O in the child process.
-    CancelIoEx(handle_, NULL);
+    CancelIoEx(handle_, nullptr);
     CloseHandle(handle_);
     handle_ = INVALID_HANDLE_VALUE;
   }
 
   void SetHandle(HANDLE handle) { handle_ = handle; }
+
+  jint StreamBytesAvailable(JNIEnv* env) {
+    if (closed_.load() || handle_ == INVALID_HANDLE_VALUE) {
+      error_ = L"";
+      return 0;
+    }
+
+    DWORD avail = 0;
+    if (!::PeekNamedPipe(handle_, nullptr, 0, nullptr, &avail, nullptr)) {
+      // Check if either the other end closed the pipe or we did it with
+      // NativeOutputStream.Close() . In the latter case, we'll get a "system
+      // call interrupted" error.
+      if (GetLastError() == ERROR_BROKEN_PIPE || closed_.load()) {
+        error_ = L"";
+        return 0;
+      } else {
+        DWORD err_code = GetLastError();
+        error_ = bazel::windows::MakeErrorMessage(WSTR(__FILE__), __LINE__,
+                                                  L"nativeStreamBytesAvailable",
+                                                  L"", err_code);
+        return -1;
+      }
+    } else {
+      error_ = L"";
+    }
+    return avail;
+  }
 
   jint ReadStream(JNIEnv* env, jbyteArray java_bytes, jint offset,
                   jint length) {
@@ -113,7 +141,8 @@ class NativeOutputStream {
     }
 
     DWORD bytes_read;
-    if (!::ReadFile(handle_, bytes.ptr() + offset, length, &bytes_read, NULL)) {
+    if (!::ReadFile(handle_, bytes.ptr() + offset, length, &bytes_read,
+                    nullptr)) {
       // Check if either the other end closed the pipe or we did it with
       // NativeOutputStream.Close() . In the latter case, we'll get a "system
       // call interrupted" error.
@@ -210,6 +239,7 @@ class NativeProcess {
       }
     }
 
+    // Set up childs stdin pipe.
     {
       HANDLE pipe_read_h, pipe_write_h;
       if (!CreatePipe(&pipe_read_h, &pipe_write_h, &sa, 0)) {
@@ -220,6 +250,14 @@ class NativeProcess {
       }
       stdin_process = pipe_read_h;
       stdin_ = pipe_write_h;
+
+      // "Our" end of the pipe must not be inherited by the child process
+      if (!SetHandleInformation(pipe_write_h, HANDLE_FLAG_INHERIT, 0)) {
+        DWORD err_code = GetLastError();
+        error_ = bazel::windows::MakeErrorMessage(
+            WSTR(__FILE__), __LINE__, L"nativeCreateProcess", wpath, err_code);
+        return false;
+      }
     }
 
     if (!stdout_is_stream) {
@@ -234,7 +272,7 @@ class NativeProcess {
           /* lpSecurityAttributes */ &sa,
           /* dwCreationDisposition */ OPEN_ALWAYS,
           /* dwFlagsAndAttributes */ FILE_ATTRIBUTE_NORMAL,
-          /* hTemplateFile */ NULL);
+          /* hTemplateFile */ nullptr);
 
       if (!stdout_process.IsValid()) {
         DWORD err_code = GetLastError();
@@ -243,7 +281,7 @@ class NativeProcess {
                                                   stdout_redirect, err_code);
         return false;
       }
-      if (!SetFilePointerEx(stdout_process, {0}, NULL, FILE_END)) {
+      if (!SetFilePointerEx(stdout_process, {0}, nullptr, FILE_END)) {
         DWORD err_code = GetLastError();
         error_ = bazel::windows::MakeErrorMessage(WSTR(__FILE__), __LINE__,
                                                   L"nativeCreateProcess",
@@ -260,6 +298,13 @@ class NativeProcess {
       }
       stdout_.SetHandle(pipe_read_h);
       stdout_process = pipe_write_h;
+      // "Our" end of the pipe must not be inherited by the child process
+      if (!SetHandleInformation(pipe_read_h, HANDLE_FLAG_INHERIT, 0)) {
+        DWORD err_code = GetLastError();
+        error_ = bazel::windows::MakeErrorMessage(
+            WSTR(__FILE__), __LINE__, L"nativeCreateProcess", wpath, err_code);
+        return false;
+      }
     }
 
     if (stderr_same_handle_as_stdout) {
@@ -288,7 +333,7 @@ class NativeProcess {
           /* lpSecurityAttributes */ &sa,
           /* dwCreationDisposition */ OPEN_ALWAYS,
           /* dwFlagsAndAttributes */ FILE_ATTRIBUTE_NORMAL,
-          /* hTemplateFile */ NULL);
+          /* hTemplateFile */ nullptr);
 
       if (!stderr_process.IsValid()) {
         DWORD err_code = GetLastError();
@@ -297,7 +342,7 @@ class NativeProcess {
                                                   stderr_redirect, err_code);
         return false;
       }
-      if (!SetFilePointerEx(stderr_process, {0}, NULL, FILE_END)) {
+      if (!SetFilePointerEx(stderr_process, {0}, nullptr, FILE_END)) {
         DWORD err_code = GetLastError();
         error_ = bazel::windows::MakeErrorMessage(WSTR(__FILE__), __LINE__,
                                                   L"nativeCreateProcess",
@@ -314,6 +359,13 @@ class NativeProcess {
       }
       stderr_.SetHandle(pipe_read_h);
       stderr_process = pipe_write_h;
+      // "Our" end of the pipe must not be inherited by the child process
+      if (!SetHandleInformation(pipe_read_h, HANDLE_FLAG_INHERIT, 0)) {
+        DWORD err_code = GetLastError();
+        error_ = bazel::windows::MakeErrorMessage(
+            WSTR(__FILE__), __LINE__, L"nativeCreateProcess", wpath, err_code);
+        return false;
+      }
     }
     return proc_.Create(
         wpath, bazel::windows::GetJavaWstring(env, java_argv_rest),
@@ -351,7 +403,7 @@ class NativeProcess {
     DWORD bytes_written;
 
     if (!::WriteFile(stdin_, bytes.ptr() + offset, length, &bytes_written,
-                     NULL)) {
+                     nullptr)) {
       DWORD err_code = GetLastError();
       error_ = bazel::windows::MakeErrorMessage(WSTR(__FILE__), __LINE__,
                                                 L"NativeProcess:WriteStdin",
@@ -396,7 +448,7 @@ static_assert(sizeof(jchar) == sizeof(WCHAR),
 static jlong PtrAsJlong(void* p) { return reinterpret_cast<jlong>(p); }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeCreateProcess(
+Java_com_google_devtools_build_lib_windows_WindowsProcesses_createProcess(
     JNIEnv* env, jclass clazz, jstring java_argv0, jstring java_argv_rest,
     jbyteArray java_env, jstring java_cwd, jstring java_stdout_redirect,
     jstring java_stderr_redirect, jboolean redirectErrorStream) {
@@ -413,7 +465,7 @@ Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeCreateProc
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeWriteStdin(
+Java_com_google_devtools_build_lib_windows_WindowsProcesses_writeStdin(
     JNIEnv* env, jclass clazz, jlong process_long, jbyteArray java_bytes,
     jint offset, jint length) {
   NativeProcess* process = reinterpret_cast<NativeProcess*>(process_long);
@@ -421,21 +473,21 @@ Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeWriteStdin
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeGetStdout(
+Java_com_google_devtools_build_lib_windows_WindowsProcesses_getStdout(
     JNIEnv* env, jclass clazz, jlong process_long) {
   NativeProcess* process = reinterpret_cast<NativeProcess*>(process_long);
   return PtrAsJlong(process->GetStdoutStream());
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeGetStderr(
+Java_com_google_devtools_build_lib_windows_WindowsProcesses_getStderr(
     JNIEnv* env, jclass clazz, jlong process_long) {
   NativeProcess* process = reinterpret_cast<NativeProcess*>(process_long);
   return PtrAsJlong(process->GetStderrStream());
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeReadStream(
+Java_com_google_devtools_build_lib_windows_WindowsProcesses_readStream(
     JNIEnv* env, jclass clazz, jlong stream_long, jbyteArray java_bytes,
     jint offset, jint length) {
   NativeOutputStream* stream =
@@ -444,7 +496,15 @@ Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeReadStream
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeGetExitCode(
+Java_com_google_devtools_build_lib_windows_WindowsProcesses_streamBytesAvailable(
+    JNIEnv* env, jclass clazz, jlong stream_long) {
+  NativeOutputStream* stream =
+      reinterpret_cast<NativeOutputStream*>(stream_long);
+  return stream->StreamBytesAvailable(env);
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_google_devtools_build_lib_windows_WindowsProcesses_getExitCode(
     JNIEnv* env, jclass clazz, jlong process_long) {
   NativeProcess* process = reinterpret_cast<NativeProcess*>(process_long);
   return static_cast<jint>(process->GetExitCode());
@@ -455,7 +515,7 @@ Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeGetExitCod
 // 1: Timeout
 // 2: Wait returned with an error
 extern "C" JNIEXPORT jint JNICALL
-Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeWaitFor(
+Java_com_google_devtools_build_lib_windows_WindowsProcesses_waitFor(
     JNIEnv* env, jclass clazz, jlong process_long, jlong java_timeout) {
   NativeProcess* process = reinterpret_cast<NativeProcess*>(process_long);
   int res = process->WaitFor(static_cast<int64_t>(java_timeout));
@@ -464,27 +524,27 @@ Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeWaitFor(
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeGetProcessPid(
+Java_com_google_devtools_build_lib_windows_WindowsProcesses_getProcessPid(
     JNIEnv* env, jclass clazz, jlong process_long) {
   NativeProcess* process = reinterpret_cast<NativeProcess*>(process_long);
   return static_cast<jint>(process->GetPid());
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeTerminate(
+Java_com_google_devtools_build_lib_windows_WindowsProcesses_terminate(
     JNIEnv* env, jclass clazz, jlong process_long) {
   NativeProcess* process = reinterpret_cast<NativeProcess*>(process_long);
   return process->Terminate() ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeDeleteProcess(
+Java_com_google_devtools_build_lib_windows_WindowsProcesses_deleteProcess(
     JNIEnv* env, jclass clazz, jlong process_long) {
   delete reinterpret_cast<NativeProcess*>(process_long);
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeCloseStream(
+Java_com_google_devtools_build_lib_windows_WindowsProcesses_closeStream(
     JNIEnv* env, jclass clazz, jlong stream_long) {
   NativeOutputStream* stream =
       reinterpret_cast<NativeOutputStream*>(stream_long);
@@ -492,14 +552,14 @@ Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeCloseStrea
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeProcessGetLastError(
+Java_com_google_devtools_build_lib_windows_WindowsProcesses_processGetLastError(
     JNIEnv* env, jclass clazz, jlong process_long) {
   NativeProcess* process = reinterpret_cast<NativeProcess*>(process_long);
   return process->GetLastErrorAsString(env);
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_google_devtools_build_lib_windows_jni_WindowsProcesses_nativeStreamGetLastError(
+Java_com_google_devtools_build_lib_windows_WindowsProcesses_streamGetLastError(
     JNIEnv* env, jclass clazz, jlong stream_long) {
   NativeOutputStream* stream =
       reinterpret_cast<NativeOutputStream*>(stream_long);

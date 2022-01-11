@@ -13,7 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.vfs;
 
-import com.google.devtools.build.lib.vfs.DigestHashFunction.DefaultHashFunctionNotSetException;
 import java.io.IOException;
 
 /**
@@ -22,38 +21,35 @@ import java.io.IOException;
  * {@link FileSystem} does).
  */
 public abstract class AbstractFileSystemWithCustomStat extends AbstractFileSystem {
-
-  public AbstractFileSystemWithCustomStat() throws DefaultHashFunctionNotSetException {}
-
   public AbstractFileSystemWithCustomStat(DigestHashFunction hashFunction) {
     super(hashFunction);
   }
 
   @Override
-  protected boolean isFile(Path path, boolean followSymlinks) {
+  protected boolean isFile(PathFragment path, boolean followSymlinks) {
     FileStatus stat = statNullable(path, followSymlinks);
     return stat != null ? stat.isFile() : false;
   }
 
   @Override
-  protected boolean isSpecialFile(Path path, boolean followSymlinks) {
+  protected boolean isSpecialFile(PathFragment path, boolean followSymlinks) {
     FileStatus stat = statNullable(path, followSymlinks);
     return stat != null ? stat.isSpecialFile() : false;
   }
 
   @Override
-  protected boolean isSymbolicLink(Path path) {
+  protected boolean isSymbolicLink(PathFragment path) {
     FileStatus stat = statNullable(path, false);
     return stat != null ? stat.isSymbolicLink() : false;
   }
 
   @Override
-  protected boolean isDirectory(Path path, boolean followSymlinks) {
+  protected boolean isDirectory(PathFragment path, boolean followSymlinks) {
     FileStatus stat = statNullable(path, followSymlinks);
     return stat != null ? stat.isDirectory() : false;
   }
 
   @Override
-  protected abstract FileStatus stat(Path path, boolean followSymlinks) throws IOException;
+  protected abstract FileStatus stat(PathFragment path, boolean followSymlinks) throws IOException;
 }
 

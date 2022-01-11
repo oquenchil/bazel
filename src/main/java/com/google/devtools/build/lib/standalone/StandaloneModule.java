@@ -13,6 +13,8 @@
 // limitations under the License.
 package com.google.devtools.build.lib.standalone;
 
+import static com.google.common.base.Preconditions.checkNotNull;
+
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.analysis.actions.FileWriteActionContext;
 import com.google.devtools.build.lib.analysis.actions.LocalTemplateExpansionStrategy;
@@ -20,7 +22,6 @@ import com.google.devtools.build.lib.analysis.actions.TemplateExpansionContext;
 import com.google.devtools.build.lib.analysis.test.TestActionContext;
 import com.google.devtools.build.lib.analysis.test.TestStrategy;
 import com.google.devtools.build.lib.buildtool.BuildRequest;
-import com.google.devtools.build.lib.dynamic.DynamicExecutionOptions;
 import com.google.devtools.build.lib.exec.ExecutionOptions;
 import com.google.devtools.build.lib.exec.FileWriteStrategy;
 import com.google.devtools.build.lib.exec.ModuleActionContextRegistry;
@@ -37,41 +38,12 @@ import com.google.devtools.build.lib.rules.test.ExclusiveTestStrategy;
 import com.google.devtools.build.lib.runtime.BlazeModule;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.runtime.ProcessWrapper;
-import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
-import com.google.devtools.build.lib.server.FailureDetails.LocalExecution;
-import com.google.devtools.build.lib.server.FailureDetails.LocalExecution.Code;
-import com.google.devtools.build.lib.util.AbruptExitException;
-import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.vfs.Path;
 
 /**
  * StandaloneModule provides pluggable functionality for blaze.
  */
 public class StandaloneModule extends BlazeModule {
-
-  @Override
-  public void beforeCommand(CommandEnvironment env) throws AbruptExitException {
-    LocalExecutionOptions localOptions = env.getOptions().getOptions(LocalExecutionOptions.class);
-    if (localOptions == null) {
-      // This module doesn't make sense in non-build commands (which don't register these options).
-      return;
-    }
-
-    DynamicExecutionOptions dynamicOptions =
-        env.getOptions().getOptions(DynamicExecutionOptions.class);
-    if (dynamicOptions != null) { // Guard against tests that don't pull this module in.
-      if (localOptions.localLockfreeOutput && dynamicOptions.legacySpawnScheduler) {
-        throw new AbruptExitException(
-            DetailedExitCode.of(
-                FailureDetail.newBuilder()
-                    .setMessage(
-                        "--experimental_local_lockfree_output requires --nolegacy_spawn_scheduler")
-                    .setLocalExecution(
-                        LocalExecution.newBuilder().setCode(Code.LOCKFREE_OUTPUT_PREREQ_UNMET))
-                    .build()));
-      }
-    }
-  }
 
   @Override
   public void registerActionContexts(
@@ -113,11 +85,15 @@ public class StandaloneModule extends BlazeModule {
             // TODO(buchgr): Replace singleton by a command-scoped RunfilesTreeUpdater
             RunfilesTreeUpdater.INSTANCE);
 
+    boolean verboseFailures =
+        checkNotNull(env.getOptions().getOptions(ExecutionOptions.class)).verboseFailures;
     // Order of strategies passed to builder is significant - when there are many strategies that
     // could potentially be used and a spawnActionContext doesn't specify which one it wants, the
     // last one from strategies list will be used
     registryBuilder.registerStrategy(
-        new StandaloneSpawnStrategy(env.getExecRoot(), localSpawnRunner), "standalone", "local");
+        new StandaloneSpawnStrategy(env.getExecRoot(), localSpawnRunner, verboseFailures),
+        "standalone",
+        "local");
 
     // This makes the "standalone" strategy the default Spawn strategy, unless it is overridden by a
     // later BlazeModule.

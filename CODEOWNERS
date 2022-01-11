@@ -17,25 +17,23 @@
 # Android
 
 # android/ directory anywhere in the repository
-android/ @ahumesky @jin
+android/ @ahumesky
 
-/src/tools/android/java/com/google/devtools/build/android/desugar/ @ahumesky @jin @kevin1e100
+/src/tools/android/java/com/google/devtools/build/android/desugar/ @ahumesky @kevin1e100
 
-/src/test/java/com/google/devtools/build/android/desugar/ @ahumesky @jin @kevin1e100
+/src/test/java/com/google/devtools/build/android/desugar/ @ahumesky @kevin1e100
 
-/src/tools/android/java/com/google/devtools/build/android/dexer/ @ahumesky @jin @kevin1e100
+/src/tools/android/java/com/google/devtools/build/android/dexer/ @ahumesky @kevin1e100
 
-/src/test/java/com/google/devtools/build/android/dexer/ @ahumesky @jin @kevin1e100
+/src/test/java/com/google/devtools/build/android/dexer/ @ahumesky @kevin1e100
 
 # Apple
-
-/src/objc_tools/ @allevato @davidgoldman @dmaclach @kelvinchan-google @reinhillman @thomasvl
 
 /src/test/shell/bazel/apple/ @allevato @davidgoldman @dmaclach @kelvinchan-google @reinhillman @thomasvl
 
 # Documentation
 
-/site @aiuto @gregestren @jin
+/site @aiuto @gregestren @jin @floriographygoth
 
 # C++
 
@@ -59,11 +57,20 @@ android/ @ahumesky @jin
 
 /src/main/java/com/google/devtools/build/lib/rules/ @lberki
 
-# Skylark
+# Starlark
 
-/src/main/java/com/google/devtools/build/lib/syntax/ @brandjon @c-parsons @laurentlb @vladmos
+/src/main/java/net/starlark/java/ @brandjon @tetromino
 
 /tools/coverage/ @lberki
 /tools/test/collect_coverage.sh @lberki
 /tools/test/collect_cc_coverage.sh @lberki
 /tools/test/CoverageOutputGenerator/ @lberki
+
+# Remote Execution
+
+/src/main/java/com/google/devtools/build/lib/remote @bazelbuild/remote-execution
+/src/test/java/com/google/devtools/build/lib/remote @bazelbuild/remote-execution
+/src/test/py/bazel/remote @bazelbuild/remote-execution
+/src/test/shell/bazel/remote @bazelbuild/remote-execution
+/src/tools/remote @bazelbuild/remote-execution
+/third_party/remoteapis/build/bazel/remote @bazelbuild/remote-execution

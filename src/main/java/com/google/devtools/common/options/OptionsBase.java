@@ -51,11 +51,9 @@ public abstract class OptionsBase {
   private static final Escaper ESCAPER = new CharEscaperBuilder()
       .addEscape('\\', "\\\\").addEscape('"', "\\\"").toEscaper();
 
-  /**
-   * Subclasses must provide a default (no argument) constructor.
-   */
+  /** Subclasses must provide a default (no argument) constructor. */
   protected OptionsBase() {
-    // There used to be a sanity check here that checks the stack trace of this constructor
+    // There used to be a validation here that checks the stack trace of this constructor
     // invocation; unfortunately, that makes the options construction about 10x slower. So be
     // careful with how you construct options classes.
   }
@@ -98,9 +96,9 @@ public abstract class OptionsBase {
     return result.append("}").toString();
   }
 
-  public static String mapToCacheKey(Map<String, Object> optionsMap) {
+  public static String mapToCacheKey(Map<?, ?> optionsMap) {
     StringBuilder result = new StringBuilder();
-    for (Map.Entry<String, Object> entry : optionsMap.entrySet()) {
+    for (Map.Entry<?, ?> entry : optionsMap.entrySet()) {
       result.append(entry.getKey()).append("=");
 
       Object value = entry.getValue();

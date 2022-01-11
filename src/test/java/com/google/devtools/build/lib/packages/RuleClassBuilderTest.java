@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.packages;
 
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.devtools.build.lib.analysis.testing.ExecGroupSubject.assertThat;
 import static com.google.devtools.build.lib.packages.Attribute.attr;
 import static com.google.devtools.build.lib.packages.Type.BOOLEAN;
 import static com.google.devtools.build.lib.packages.Type.INTEGER;
@@ -30,6 +31,7 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassNamePredicate;
 import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
 import com.google.devtools.build.lib.packages.util.PackageLoadingTestCase;
+import net.starlark.java.eval.StarlarkInt;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -60,17 +62,17 @@ public class RuleClassBuilderTest extends PackageLoadingTestCase {
             .build();
 
     assertThat(ruleClassA.getName()).isEqualTo("ruleA");
-    assertThat(ruleClassA.getAttributeCount()).isEqualTo(3);
-    assertThat(ruleClassA.hasBinaryOutput()).isTrue();
+    assertThat(ruleClassA.getAttributeCount()).isEqualTo(4);
+    assertThat(ruleClassA.outputsToBindir()).isTrue();
 
-    assertThat((int) ruleClassA.getAttributeIndex("srcs")).isEqualTo(0);
-    assertThat(ruleClassA.getAttributeByName("srcs")).isEqualTo(ruleClassA.getAttribute(0));
+    assertThat((int) ruleClassA.getAttributeIndex("srcs")).isEqualTo(1);
+    assertThat(ruleClassA.getAttributeByName("srcs")).isEqualTo(ruleClassA.getAttribute(1));
 
-    assertThat((int) ruleClassA.getAttributeIndex("tags")).isEqualTo(1);
-    assertThat(ruleClassA.getAttributeByName("tags")).isEqualTo(ruleClassA.getAttribute(1));
+    assertThat((int) ruleClassA.getAttributeIndex("tags")).isEqualTo(2);
+    assertThat(ruleClassA.getAttributeByName("tags")).isEqualTo(ruleClassA.getAttribute(2));
 
-    assertThat((int) ruleClassA.getAttributeIndex("X")).isEqualTo(2);
-    assertThat(ruleClassA.getAttributeByName("X")).isEqualTo(ruleClassA.getAttribute(2));
+    assertThat((int) ruleClassA.getAttributeIndex("X")).isEqualTo(3);
+    assertThat(ruleClassA.getAttributeByName("X")).isEqualTo(ruleClassA.getAttribute(3));
   }
 
   @Test
@@ -82,10 +84,10 @@ public class RuleClassBuilderTest extends PackageLoadingTestCase {
             .add(attr("size", STRING).value("medium"))
             .add(attr("timeout", STRING))
             .add(attr("flaky", BOOLEAN).value(false))
-            .add(attr("shard_count", INTEGER).value(-1))
+            .add(attr("shard_count", INTEGER).value(StarlarkInt.of(-1)))
             .add(attr("local", BOOLEAN))
             .build();
-    assertThat(ruleClassA.hasBinaryOutput()).isTrue();
+    assertThat(ruleClassA.outputsToBindir()).isTrue();
   }
 
   @Test
@@ -96,7 +98,7 @@ public class RuleClassBuilderTest extends PackageLoadingTestCase {
             .setOutputToGenfiles()
             .add(attr("tags", STRING_LIST))
             .build();
-    assertThat(ruleClassA.hasBinaryOutput()).isFalse();
+    assertThat(ruleClassA.outputsToBindir()).isFalse();
   }
 
   @Test
@@ -215,25 +217,28 @@ public class RuleClassBuilderTest extends PackageLoadingTestCase {
   }
 
   @Test
-  public void testDuplicateExecGroupsThatAreEqualIsOk() throws Exception {
-    ExecGroup execGroup =
-        ExecGroup.create(
-            ImmutableSet.of(Label.parseAbsoluteUnchecked("//some/toolchain")),
-            ImmutableSet.of(Label.parseAbsoluteUnchecked("//some/constraint")));
+  public void testDuplicateExecGroupsThatInheritFromRuleIsOk() throws Exception {
     RuleClass a =
         new RuleClass.Builder("ruleA", RuleClassType.NORMAL, false)
             .factory(DUMMY_CONFIGURED_TARGET_FACTORY)
-            .addExecGroups(ImmutableMap.of("blueberry", execGroup))
+            .addExecGroups(ImmutableMap.of("blueberry", ExecGroup.copyFromDefault()))
             .add(attr("tags", STRING_LIST))
+            .addRequiredToolchains(Label.parseAbsoluteUnchecked("//some/toolchain"))
             .build();
     RuleClass b =
         new RuleClass.Builder("ruleB", RuleClassType.NORMAL, false)
             .factory(DUMMY_CONFIGURED_TARGET_FACTORY)
-            .addExecGroups(ImmutableMap.of("blueberry", execGroup))
+            .addExecGroups(ImmutableMap.of("blueberry", ExecGroup.copyFromDefault()))
             .add(attr("tags", STRING_LIST))
+            .addRequiredToolchains(Label.parseAbsoluteUnchecked("//some/other/toolchain"))
             .build();
-    RuleClass c = new RuleClass.Builder("$ruleC", RuleClassType.ABSTRACT, false, a, b).build();
-    assertThat(c.getExecGroups()).containsExactly("blueberry", execGroup);
+    RuleClass c =
+        new RuleClass.Builder("$ruleC", RuleClassType.ABSTRACT, false, a, b)
+            .addRequiredToolchains(Label.parseAbsoluteUnchecked("//actual/toolchain/we/care/about"))
+            .build();
+    assertThat(c.getExecGroups()).containsKey("blueberry");
+    ExecGroup blueberry = c.getExecGroups().get("blueberry");
+    assertThat(blueberry).copiesFromDefault();
   }
 
   @Test

@@ -17,7 +17,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.analysis.ConfiguredRuleClassProvider;
-import com.google.devtools.build.lib.packages.StarlarkSemanticsOptions;
+import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.util.ResourceFileLoader;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParser;
@@ -47,14 +47,13 @@ public class BlazeCommandUtils {
           ClientOptions.class,
           // Starlark options aren't applicable to all commands, but making them a common option
           // allows users to put them in the common section of the bazelrc. See issue #3538.
-          StarlarkSemanticsOptions.class);
+          BuildLanguageOptions.class);
 
   private BlazeCommandUtils() {}
 
   public static ImmutableList<Class<? extends OptionsBase>> getStartupOptions(
       Iterable<BlazeModule> modules) {
-    Set<Class<? extends OptionsBase>> options = new HashSet<>();
-       options.addAll(DEFAULT_STARTUP_OPTIONS);
+    Set<Class<? extends OptionsBase>> options = new HashSet<>(DEFAULT_STARTUP_OPTIONS);
     for (BlazeModule blazeModule : modules) {
       Iterables.addAll(options, blazeModule.getStartupOptions());
     }
@@ -73,11 +72,10 @@ public class BlazeCommandUtils {
   }
 
   /**
-   * Returns the set of all options (including those inherited directly and
-   * transitively) for this AbstractCommand's @Command annotation.
+   * Returns the set of all options (including those inherited directly and transitively) for this
+   * AbstractCommand's @Command annotation.
    *
-   * <p>Why does metaprogramming always seem like such a bright idea in the
-   * beginning?
+   * <p>Why does metaprogramming always seem like such a bright idea in the beginning?
    */
   public static ImmutableList<Class<? extends OptionsBase>> getOptions(
       Class<? extends BlazeCommand> clazz,
@@ -88,12 +86,11 @@ public class BlazeCommandUtils {
       throw new IllegalStateException("@Command missing for " + clazz.getName());
     }
 
-    Set<Class<? extends OptionsBase>> options = new HashSet<>();
-    options.addAll(getCommonOptions(modules));
+    Set<Class<? extends OptionsBase>> options = new HashSet<>(getCommonOptions(modules));
     Collections.addAll(options, commandAnnotation.options());
 
     if (commandAnnotation.usesConfigurationOptions()) {
-      options.addAll(ruleClassProvider.getConfigurationOptions());
+      options.addAll(ruleClassProvider.getFragmentRegistry().getOptionsClasses());
     }
 
     for (BlazeModule blazeModule : modules) {
@@ -116,7 +113,7 @@ public class BlazeCommandUtils {
    *     syntax, and full description.
    * @param productName the product name
    */
-  public static final String expandHelpTopic(
+  public static String expandHelpTopic(
       String topic,
       String help,
       Class<? extends BlazeCommand> commandClass,
@@ -178,7 +175,7 @@ public class BlazeCommandUtils {
         commandAnnotation.name(),
         commandAnnotation.help(),
         commandClass,
-        BlazeCommandUtils.getOptions(commandClass, blazeModules, ruleClassProvider),
+        getOptions(commandClass, blazeModules, ruleClassProvider),
         verbosity,
         productName);
   }

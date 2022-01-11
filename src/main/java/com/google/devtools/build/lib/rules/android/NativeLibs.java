@@ -17,28 +17,23 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.Collections2;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.MultimapBuilder;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.analysis.PlatformConfiguration;
 import com.google.devtools.build.lib.analysis.RuleContext;
-import com.google.devtools.build.lib.analysis.Runfiles;
-import com.google.devtools.build.lib.analysis.SourceManifestAction;
-import com.google.devtools.build.lib.analysis.SourceManifestAction.ManifestType;
 import com.google.devtools.build.lib.analysis.actions.FileWriteAction;
-import com.google.devtools.build.lib.analysis.actions.SymlinkTreeAction;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
 import com.google.devtools.build.lib.rules.cpp.CcInfo;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainProvider;
-import com.google.devtools.build.lib.rules.cpp.CppHelper;
 import com.google.devtools.build.lib.rules.cpp.CppSemantics;
 import com.google.devtools.build.lib.rules.cpp.LibraryToLink;
 import com.google.devtools.build.lib.rules.nativedeps.NativeDepsHelper;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
-import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -52,6 +47,24 @@ import javax.annotation.Nullable;
 public final class NativeLibs {
   public static final NativeLibs EMPTY = new NativeLibs(ImmutableMap.of(), null);
 
+  private static String getLibDirName(ConfiguredTargetAndData dep) {
+    BuildConfigurationValue configuration = dep.getConfiguration();
+    AndroidConfiguration androidConfiguration =
+        configuration.getFragment(AndroidConfiguration.class);
+    String name;
+    if (androidConfiguration.incompatibleUseToolchainResolution()) {
+      name = configuration.getFragment(PlatformConfiguration.class).getTargetPlatform().getName();
+    } else {
+      // Legacy builds use the CPU as the name.
+      name = androidConfiguration.getCpu();
+    }
+
+    if (androidConfiguration.isHwasan()) {
+      name += "-hwasan";
+    }
+    return name;
+  }
+
   public static NativeLibs fromLinkedNativeDeps(
       RuleContext ruleContext,
       ImmutableList<String> depsAttributes,
@@ -61,9 +74,7 @@ public final class NativeLibs {
     Map<String, ConfiguredTargetAndData> toolchainsByLibDir = new LinkedHashMap<>();
     for (ConfiguredTargetAndData toolchainDep :
         ruleContext.getConfiguredTargetAndDataMap().get("$cc_toolchain_split")) {
-      toolchainsByLibDir.put(
-          toolchainDep.getConfiguration().getFragment(AndroidConfiguration.class).getCpu(),
-          toolchainDep);
+      toolchainsByLibDir.put(getLibDirName(toolchainDep), toolchainDep);
     }
 
     // treeKeys() means that the resulting map sorts the entries by key, which is necessary to
@@ -73,8 +84,7 @@ public final class NativeLibs {
     for (String depsAttr : depsAttributes) {
       for (ConfiguredTargetAndData dep :
           ruleContext.getConfiguredTargetAndDataMap().get(depsAttr)) {
-        depsByLibDir.put(
-            dep.getConfiguration().getFragment(AndroidConfiguration.class).getCpu(), dep);
+        depsByLibDir.put(getLibDirName(dep), dep);
       }
     }
 
@@ -83,8 +93,9 @@ public final class NativeLibs {
     for (Map.Entry<String, Collection<ConfiguredTargetAndData>> entry :
         depsByLibDir.asMap().entrySet()) {
       ConfiguredTargetAndData toolchainDep = toolchainsByLibDir.get(entry.getKey());
+      // Get the actual cc toolchain from the dependency.
       CcToolchainProvider toolchain =
-          CppHelper.getToolchain(ruleContext, toolchainDep.getConfiguredTarget());
+          toolchainDep.getConfiguredTarget().get(CcToolchainProvider.PROVIDER);
 
       CcInfo ccInfo =
           AndroidCommon.getCcInfo(
@@ -146,70 +157,6 @@ public final class NativeLibs {
    */
   public Map<String, NestedSet<Artifact>> getMap() {
     return nativeLibs;
-  }
-
-  public ImmutableSet<Artifact> getAllNativeLibs() {
-    ImmutableSet.Builder<Artifact> result = ImmutableSet.builder();
-
-    for (NestedSet<Artifact> libs : nativeLibs.values()) {
-      result.addAll(libs.toList());
-    }
-
-    return result.build();
-  }
-
-  static class ManifestAndRunfiles {
-    @Nullable public final Artifact manifest;
-    public final Runfiles runfiles;
-
-    private ManifestAndRunfiles(@Nullable Artifact manifest, Runfiles runfiles) {
-      this.manifest = manifest;
-      this.runfiles = runfiles;
-    }
-  }
-
-  ManifestAndRunfiles createApkBuilderSymlinks(RuleContext ruleContext) {
-    Map<PathFragment, Artifact> symlinks = new LinkedHashMap<>();
-    for (Map.Entry<String, NestedSet<Artifact>> entry : nativeLibs.entrySet()) {
-      String arch = entry.getKey();
-      for (Artifact lib : entry.getValue().toList()) {
-        symlinks.put(PathFragment.create(arch + "/" + lib.getExecPath().getBaseName()), lib);
-      }
-    }
-
-    if (symlinks.isEmpty()) {
-      return null;
-    }
-
-    Runfiles runfiles =
-        new Runfiles.Builder(
-                ruleContext.getWorkspaceName(),
-                ruleContext.getConfiguration().legacyExternalRunfiles())
-            .addRootSymlinks(symlinks)
-            .build();
-    if (!ruleContext.getConfiguration().buildRunfilesManifests()) {
-      return new ManifestAndRunfiles(/*manifest=*/ null, runfiles);
-    }
-
-    Artifact inputManifest = AndroidBinary.getDxArtifact(ruleContext, "native_symlinks.manifest");
-    ruleContext.registerAction(
-        new SourceManifestAction(
-            ManifestType.SOURCE_SYMLINKS,
-            ruleContext.getActionOwner(),
-            inputManifest,
-            runfiles,
-            ruleContext.getConfiguration().remotableSourceManifestActions()));
-
-    Artifact outputManifest = AndroidBinary.getDxArtifact(ruleContext, "native_symlinks/MANIFEST");
-    ruleContext.registerAction(
-        new SymlinkTreeAction(
-            ruleContext.getActionOwner(),
-            ruleContext.getConfiguration(),
-            inputManifest,
-            runfiles,
-            outputManifest,
-            /* filesetRoot = */ null));
-    return new ManifestAndRunfiles(outputManifest, runfiles);
   }
 
   /**

@@ -14,6 +14,11 @@
 package com.google.devtools.build.lib.actions;
 
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.server.FailureDetails.Analysis;
+import com.google.devtools.build.lib.server.FailureDetails.Analysis.Code;
+import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
+import com.google.devtools.build.lib.skyframe.DetailedException;
+import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.vfs.PathFragment;
 
 /**
@@ -21,14 +26,30 @@ import com.google.devtools.build.lib.vfs.PathFragment;
  * output of another action. Since the first path cannot be both a directory and a file, this would
  * lead to an error if both actions were executed in the same build.
  */
-public class ArtifactPrefixConflictException extends Exception {
+public class ArtifactPrefixConflictException extends Exception implements DetailedException {
+  private final Label firstOwner;
+
   public ArtifactPrefixConflictException(
       PathFragment firstPath, PathFragment secondPath, Label firstOwner, Label secondOwner) {
     super(
         String.format(
-            "output path '%s' (belonging to %s) is a prefix of output path '%s' (belonging to %s). "
-                + "These actions cannot be simultaneously present; please rename one of the output "
-                + "files or build just one of them",
+            "One of the output paths '%s' (belonging to %s) and '%s' (belonging to %s) is a"
+                + " prefix of the other. These actions cannot be simultaneously present; please"
+                + " rename one of the output files or build just one of them",
             firstPath, firstOwner, secondPath, secondOwner));
+    this.firstOwner = firstOwner;
+  }
+
+  public Label getFirstOwner() {
+    return firstOwner;
+  }
+
+  @Override
+  public DetailedExitCode getDetailedExitCode() {
+    return DetailedExitCode.of(
+        FailureDetail.newBuilder()
+            .setMessage(getMessage())
+            .setAnalysis(Analysis.newBuilder().setCode(Code.ARTIFACT_PREFIX_CONFLICT))
+            .build());
   }
 }

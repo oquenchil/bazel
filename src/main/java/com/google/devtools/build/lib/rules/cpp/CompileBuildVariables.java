@@ -19,19 +19,17 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.analysis.RuleErrorConsumer;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
-import com.google.devtools.build.lib.packages.RuleErrorConsumer;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.FeatureConfiguration;
-import com.google.devtools.build.lib.rules.cpp.CcToolchainVariables.StringSequenceBuilder;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainVariables.VariablesExtension;
-import com.google.devtools.build.lib.syntax.EvalException;
-import com.google.devtools.build.lib.syntax.Location;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.List;
 import java.util.Map;
+import net.starlark.java.eval.EvalException;
 
 /** Enum covering all build variables we create for all various {@link CppCompileAction}. */
 public enum CompileBuildVariables {
@@ -66,6 +64,13 @@ public enum CompileBuildVariables {
    * @see CcCompilationContext#getSystemIncludeDirs().
    */
   SYSTEM_INCLUDE_PATHS("system_include_paths"),
+  /**
+   * Variable for the collection of external include paths.
+   *
+   * @see CcCompilationContext#getExternalIncludeDirs().
+   */
+  EXTERNAL_INCLUDE_PATHS("external_include_paths"),
+
   /**
    * Variable for the collection of framework include paths.
    *
@@ -115,6 +120,10 @@ public enum CompileBuildVariables {
   CS_FDO_INSTRUMENT_PATH("cs_fdo_instrument_path"),
   /** Path to the cache prefetch profile artifact */
   FDO_PREFETCH_HINTS_PATH("fdo_prefetch_hints_path"),
+  /** Path to the Propeller Optimize compiler profile artifact */
+  PROPELLER_OPTIMIZE_CC_PATH("propeller_optimize_cc_path"),
+  /** Path to the Propeller Optimize linker profile artifact */
+  PROPELLER_OPTIMIZE_LD_PATH("propeller_optimize_ld_path"),
   /** Variable for includes that compiler needs to include into sources. */
   INCLUDES("includes");
 
@@ -149,13 +158,13 @@ public enum CompileBuildVariables {
       NestedSet<PathFragment> quoteIncludeDirs,
       NestedSet<PathFragment> systemIncludeDirs,
       NestedSet<PathFragment> frameworkIncludeDirs,
-      NestedSet<String> defines,
+      Iterable<String> defines,
       Iterable<String> localDefines) {
     try {
       if (usePic
           && !featureConfiguration.isEnabled(CppRuleClasses.PIC)
           && !featureConfiguration.isEnabled(CppRuleClasses.SUPPORTS_PIC)) {
-        throw new EvalException(Location.BUILTIN, CcCommon.PIC_CONFIGURATION_ERROR);
+        throw new EvalException(CcCommon.PIC_CONFIGURATION_ERROR);
       }
       return setupVariables(
           featureConfiguration,
@@ -217,13 +226,13 @@ public enum CompileBuildVariables {
       NestedSet<String> quoteIncludeDirs,
       NestedSet<String> systemIncludeDirs,
       NestedSet<String> frameworkIncludeDirs,
-      NestedSet<String> defines,
+      Iterable<String> defines,
       Iterable<String> localDefines)
       throws EvalException {
     if (usePic
         && !featureConfiguration.isEnabled(CppRuleClasses.PIC)
         && !featureConfiguration.isEnabled(CppRuleClasses.SUPPORTS_PIC)) {
-      throw new EvalException(Location.BUILTIN, CcCommon.PIC_CONFIGURATION_ERROR);
+      throw new EvalException(CcCommon.PIC_CONFIGURATION_ERROR);
     }
     return setupVariables(
         featureConfiguration,
@@ -279,7 +288,7 @@ public enum CompileBuildVariables {
       NestedSet<String> quoteIncludeDirs,
       NestedSet<String> systemIncludeDirs,
       NestedSet<String> frameworkIncludeDirs,
-      NestedSet<String> defines,
+      Iterable<String> defines,
       Iterable<String> localDefines) {
     CcToolchainVariables.Builder buildVariables = CcToolchainVariables.builder(parent);
     setupCommonVariablesInternal(
@@ -311,6 +320,7 @@ public enum CompileBuildVariables {
         userCompileFlags,
         dotdFileExecPath,
         usePic,
+        ImmutableList.of(),
         ImmutableMap.of());
     return buildVariables.build();
   }
@@ -329,6 +339,7 @@ public enum CompileBuildVariables {
       Iterable<String> userCompileFlags,
       String dotdFileExecPath,
       boolean usePic,
+      ImmutableList<PathFragment> externalIncludeDirs,
       Map<String, String> additionalBuildVariables) {
     buildVariables.addStringSequenceVariable(
         USER_COMPILE_FLAGS.getVariableName(), userCompileFlags);
@@ -378,6 +389,12 @@ public enum CompileBuildVariables {
       buildVariables.addStringVariable(PIC.getVariableName(), "");
     }
 
+    if (!externalIncludeDirs.isEmpty()) {
+      buildVariables.addStringSequenceVariable(
+          EXTERNAL_INCLUDE_PATHS.getVariableName(),
+          Iterables.transform(externalIncludeDirs, PathFragment::getSafePathString));
+    }
+
     buildVariables.addAllStringVariables(additionalBuildVariables);
   }
 
@@ -394,7 +411,7 @@ public enum CompileBuildVariables {
       List<PathFragment> quoteIncludeDirs,
       List<PathFragment> systemIncludeDirs,
       List<PathFragment> frameworkIncludeDirs,
-      NestedSet<String> defines,
+      Iterable<String> defines,
       Iterable<String> localDefines) {
     setupCommonVariablesInternal(
         buildVariables,
@@ -426,7 +443,7 @@ public enum CompileBuildVariables {
       NestedSet<String> quoteIncludeDirs,
       NestedSet<String> systemIncludeDirs,
       NestedSet<String> frameworkIncludeDirs,
-      NestedSet<String> defines,
+      Iterable<String> defines,
       Iterable<String> localDefines) {
     Preconditions.checkNotNull(directModuleMaps);
     Preconditions.checkNotNull(includeDirs);
@@ -437,16 +454,12 @@ public enum CompileBuildVariables {
     Preconditions.checkNotNull(localDefines);
 
     if (featureConfiguration.isEnabled(CppRuleClasses.MODULE_MAPS) && cppModuleMap != null) {
-      // If the feature is enabled and cppModuleMap is null, we are about to fail during analysis
-      // in any case, but don't crash.
       buildVariables.addStringVariable(MODULE_NAME.getVariableName(), cppModuleMap.getName());
       buildVariables.addStringVariable(
           MODULE_MAP_FILE.getVariableName(), cppModuleMap.getArtifact().getExecPathString());
-      StringSequenceBuilder sequence = new StringSequenceBuilder();
-      for (Artifact artifact : directModuleMaps) {
-        sequence.addValue(artifact.getExecPathString());
-      }
-      buildVariables.addCustomBuiltVariable(DEPENDENT_MODULE_MAP_FILES.getVariableName(), sequence);
+      buildVariables.addStringSequenceVariable(
+          DEPENDENT_MODULE_MAP_FILES.getVariableName(),
+          Iterables.transform(directModuleMaps, Artifact::getExecPathString));
     }
     if (featureConfiguration.isEnabled(CppRuleClasses.USE_HEADER_MODULES)) {
       // Module inputs will be set later when the action is executed.
@@ -465,21 +478,16 @@ public enum CompileBuildVariables {
     buildVariables.addStringSequenceVariable(
         FRAMEWORK_PATHS.getVariableName(), frameworkIncludeDirs);
 
-    NestedSet<String> allDefines;
+    Iterable<String> allDefines;
     if (fdoStamp != null) {
       // Stamp FDO builds with FDO subtype string
       allDefines =
-          NestedSetBuilder.<String>linkOrder()
-              .addTransitive(defines)
-              .addTransitive(NestedSetBuilder.wrap(Order.STABLE_ORDER, localDefines))
-              .add(CppConfiguration.FDO_STAMP_MACRO + "=\"" + fdoStamp + "\"")
-              .build();
+          Iterables.concat(
+              defines,
+              localDefines,
+              ImmutableList.of(CppConfiguration.FDO_STAMP_MACRO + "=\"" + fdoStamp + "\""));
     } else {
-      allDefines =
-          NestedSetBuilder.<String>linkOrder()
-              .addTransitive(defines)
-              .addTransitive(NestedSetBuilder.wrap(Order.STABLE_ORDER, localDefines))
-              .build();
+      allDefines = Iterables.concat(defines, localDefines);
     }
 
     buildVariables.addStringSequenceVariable(PREPROCESSOR_DEFINES.getVariableName(), allDefines);

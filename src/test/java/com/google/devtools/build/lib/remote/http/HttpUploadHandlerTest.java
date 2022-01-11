@@ -40,7 +40,8 @@ import org.junit.runners.JUnit4;
 
 /** Tests for {@link HttpUploadHandler}. */
 @RunWith(JUnit4.class)
-public class HttpUploadHandlerTest extends AbstractHttpHandlerTest {
+@SuppressWarnings("FutureReturnValueIgnored")
+public class HttpUploadHandlerTest {
 
   private static final URI CACHE_URI = URI.create("http://storage.googleapis.com:80/cache-bucket");
 

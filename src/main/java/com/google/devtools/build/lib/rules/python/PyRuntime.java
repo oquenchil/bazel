@@ -23,7 +23,6 @@ import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetFactory;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
-import com.google.devtools.build.lib.analysis.TransitionMode;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -32,18 +31,18 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 public final class PyRuntime implements RuleConfiguredTargetFactory {
 
   @Override
-  public ConfiguredTarget create(RuleContext ruleContext) throws ActionConflictException {
+  public ConfiguredTarget create(RuleContext ruleContext)
+      throws ActionConflictException, InterruptedException {
     PythonConfiguration pyConfig = ruleContext.getFragment(PythonConfiguration.class);
 
-    NestedSet<Artifact> files =
-        PrerequisiteArtifacts.nestedSet(ruleContext, "files", TransitionMode.TARGET);
-    Artifact interpreter =
-        ruleContext.getPrerequisiteArtifact("interpreter", TransitionMode.TARGET);
+    NestedSet<Artifact> files = PrerequisiteArtifacts.nestedSet(ruleContext, "files");
+    Artifact interpreter = ruleContext.getPrerequisiteArtifact("interpreter");
     PathFragment interpreterPath =
         PathFragment.create(ruleContext.attributes().get("interpreter_path", Type.STRING));
     PythonVersion pythonVersion =
         PythonVersion.parseTargetOrSentinelValue(
             ruleContext.attributes().get("python_version", Type.STRING));
+    String stubShebang = ruleContext.attributes().get("stub_shebang", Type.STRING);
 
     // Determine whether we're pointing to an in-build target (hermetic) or absolute system path
     // (non-hermetic).
@@ -82,8 +81,8 @@ public final class PyRuntime implements RuleConfiguredTargetFactory {
 
     PyRuntimeInfo provider =
         hermetic
-            ? PyRuntimeInfo.createForInBuildRuntime(interpreter, files, pythonVersion)
-            : PyRuntimeInfo.createForPlatformRuntime(interpreterPath, pythonVersion);
+            ? PyRuntimeInfo.createForInBuildRuntime(interpreter, files, pythonVersion, stubShebang)
+            : PyRuntimeInfo.createForPlatformRuntime(interpreterPath, pythonVersion, stubShebang);
 
     return new RuleConfiguredTargetBuilder(ruleContext)
         .setFilesToBuild(files)

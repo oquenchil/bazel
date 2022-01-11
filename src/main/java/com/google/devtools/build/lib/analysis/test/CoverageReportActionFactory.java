@@ -19,7 +19,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.eventbus.EventBus;
 import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
-import com.google.devtools.build.lib.actions.ActionLookupValue;
+import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.Actions;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.ArtifactFactory;
@@ -49,7 +49,8 @@ public interface CoverageReportActionFactory {
     public CoverageReportActionsWrapper(
         ActionAnalysisMetadata lcovWriteAction,
         ActionAnalysisMetadata coverageReportAction,
-        ActionKeyContext actionKeyContext) {
+        ActionKeyContext actionKeyContext)
+        throws InterruptedException {
       this.coverageReportAction = coverageReportAction;
       try {
         this.processedActions =
@@ -89,6 +90,7 @@ public interface CoverageReportActionFactory {
       NestedSet<Artifact> baselineCoverageArtifacts,
       ArtifactFactory artifactFactory,
       ActionKeyContext actionKeyContext,
-      ActionLookupValue.ActionLookupKey actionLookupKey,
-      String workspaceName);
+      ActionLookupKey actionLookupKey,
+      String workspaceName)
+      throws InterruptedException;
 }

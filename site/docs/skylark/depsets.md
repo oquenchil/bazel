@@ -1,18 +1,25 @@
 ---
 layout: documentation
 title: Depsets
+category: extending
 ---
 
 # Depsets
+
+This page covers the benefits and examples of using depsets.
 
 [Depsets](lib/depset.html) are a specialized data structure for efficiently
 collecting data across a target’s transitive dependencies. Since this use case
 concerns the [analysis phase](concepts.md#evaluation-model), depsets are useful
 for authors of rules and aspects, but probably not macros.
 
-The main feature of depsets is that they support a time- and space-efficient
-merge operation, whose cost is independent of the size of the existing contents.
-Depsets also have well-defined ordering semantics.
+The defining feature of depset is its time- and space-efficient union operation.
+The depset constructor accepts a list of elements ("direct") and a list of other
+depsets ("transitive"), and returns a depset representing a set containing all the
+direct elements and the union of all the transitive sets. Conceptually, the
+constructor creates a new graph node that has the direct and transitive nodes
+as its successors. Depsets have a well-defined ordering semantics, based on
+traversal of this graph.
 
 Example uses of depsets include:
 
@@ -22,18 +29,18 @@ Example uses of depsets include:
 *   for an interpreted language, storing the transitive source files that will
     be included in an executable's runfiles
 
-If you don't need the merge operation, consider using another type, such as
+If you don't need the union operation, consider using another type, such as
 [list](lib/list.html) or [dict](lib/dict.html).
 
 ## Full example
 
 
 This example is available at
-[https://github.com/bazelbuild/examples/tree/master/rules/depsets](https://github.com/bazelbuild/examples/tree/master/rules/depsets).
+[https://github.com/bazelbuild/examples/tree/HEAD/rules/depsets](https://github.com/bazelbuild/examples/tree/main/rules/depsets).
 
-Suppose we have a hypothetical interpreted language Foo. In order to build each
-`foo_binary` we need to know all the `*.foo` files that it directly or indirectly
-depends on.
+Suppose there is a hypothetical interpreted language Foo. In order to build
+each `foo_binary` you need to know all the `*.foo` files that it directly or
+indirectly depends on.
 
 ```python
 # //depsets:BUILD
@@ -226,7 +233,7 @@ t = depset(["b", "c"])
 # in a loop, and convert it to a dictionary for fast membership tests.
 t_items = {e: None for e in t.to_list()}
 diff_items = [x for x in s.to_list() if x not in t_items]
-# Convert back to depset if it's still going to be used for merge operations.
+# Convert back to depset if it's still going to be used for union operations.
 s = depset(diff_items)
 print(s)  # depset(["a"])
 ```
@@ -287,9 +294,9 @@ is deterministic).
 
 ## Performance
 
-To see the motivation for using depsets, consider what would have happened if we
-had implemented `get_transitive_srcs()` without them. A naive way of writing
-this function would be to collect the sources in a list.
+To see the motivation for using depsets, consider what happens if
+`get_transitive_srcs()` doesn't have depsets. A naive way to write this
+function would be to collect the sources in a list.
 
 ```python
 def get_transitive_srcs(srcs, deps):
@@ -342,8 +349,9 @@ target are added.
 To actually get the performance advantage, it’s important to not retrieve the
 contents of the depset unnecessarily in library rules. One call to `to_list()`
 at the end in a binary rule is fine, since the overall cost is just O(n). It’s
-when many non-terminal targets try to call `to_list()` that we start to get into
-quadratic behavior.
+when many non-terminal targets try to call `to_list()` that quadratic behavior
+occurs.
+
 
 The [performance](performance.md) page also contains information about using
 depsets efficiently.

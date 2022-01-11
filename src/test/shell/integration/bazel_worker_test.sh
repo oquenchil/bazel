@@ -20,7 +20,8 @@
 set -u
 ADDITIONAL_BUILD_FLAGS=$1
 WORKER_TYPE_LOG_STRING=$2
-shift 2
+WORKER_PROTOCOL=$3
+shift 3
 
 # Load the test setup defined in the parent directory
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,8 +35,10 @@ example_worker=$(find $BAZEL_RUNFILES -name ExampleWorker_deploy.jar)
 
 add_to_bazelrc "build -s"
 add_to_bazelrc "build --spawn_strategy=worker,standalone"
+add_to_bazelrc "build --experimental_worker_allow_json_protocol"
 add_to_bazelrc "build --worker_verbose --worker_max_instances=1"
 add_to_bazelrc "build --debug_print_action_contexts"
+add_to_bazelrc "build --noexperimental_worker_multiplex"
 add_to_bazelrc "build ${ADDITIONAL_BUILD_FLAGS}"
 
 function set_up() {
@@ -43,10 +46,16 @@ function set_up() {
   WORKSPACE_SUBDIR=$(basename $(mktemp -d ${WORKSPACE_DIR}/testXXXXXX))
   cd ${WORKSPACE_SUBDIR}
   BINS=$(bazel info $PRODUCT_NAME-bin)/${WORKSPACE_SUBDIR}
+  OUTPUT_BASE="$(bazel info output_base)"
 
-  # This causes Bazel to shut down all running workers.
+  # Tell Bazel to shut down all running workers. Faster than a full shutdown.
   bazel build --worker_quit_after_build &> $TEST_log \
     || fail "'bazel build --worker_quit_after_build' during test set_up failed"
+}
+
+function tear_down() {
+  # This makes sure the blocker from test_missing_worker_directory is gone.
+  rm -rf "${OUTPUT_BASE}/{blaze,bazel}-workers"
 }
 
 function write_hello_library_files() {
@@ -85,8 +94,20 @@ EOF
 function test_compiles_hello_library_using_persistent_javac() {
   write_hello_library_files
 
-  bazel build java/main:main &> $TEST_log \
+  bazel build java/main:main &> "$TEST_log" \
     || fail "build failed"
+  expect_log "Created new ${WORKER_TYPE_LOG_STRING} Javac worker (id [0-9]\+)"
+  $BINS/java/main/main | grep -q "Hello, Library!;Hello, World!" \
+    || fail "comparison failed"
+}
+
+function test_compiles_hello_library_using_persistent_javac_sibling_layout() {
+  write_hello_library_files
+
+  bazel build \
+    --experimental_sibling_repository_layout java/main:main \
+    --worker_max_instances=Javac=1 \
+    &> "$TEST_log" || fail "build failed"
   expect_log "Created new ${WORKER_TYPE_LOG_STRING} Javac worker (id [0-9]\+)"
   $BINS/java/main/main | grep -q "Hello, Library!;Hello, World!" \
     || fail "comparison failed"
@@ -100,7 +121,7 @@ function prepare_example_worker() {
   mkdir worker_data_dir
   echo "veryexample" > worker_data_dir/more_data.txt
 
-  cat >work.bzl <<'EOF'
+  cat >work.bzl <<EOF
 def _impl(ctx):
   worker = ctx.executable.worker
   output = ctx.outputs.out
@@ -126,7 +147,7 @@ def _impl(ctx):
     argfile_inputs.append(argfile)
     argfile_arguments.append("@" + argfile.path)
 
-  execution_requirements = {"supports-workers": "1"}
+  execution_requirements = {"supports-workers": "1", "requires-worker-protocol": "$WORKER_PROTOCOL"}
   if ctx.attr.worker_key_mnemonic:
     execution_requirements["worker-key-mnemonic"] = ctx.attr.worker_key_mnemonic
 
@@ -143,7 +164,7 @@ def _impl(ctx):
 work = rule(
     implementation=_impl,
     attrs={
-        "worker": attr.label(cfg="host", mandatory=True, allow_files=True, executable=True),
+        "worker": attr.label(cfg="exec", mandatory=True, allow_files=True, executable=True),
         "worker_args": attr.string_list(),
         "worker_key_mnemonic": attr.string(),
         "action_mnemonic": attr.string(default = "Work"),
@@ -182,23 +203,97 @@ function test_example_worker() {
 work(
   name = "hello_world",
   worker = ":worker",
+  worker_args = ["--worker_protocol=${WORKER_PROTOCOL}"],
   args = ["hello world"],
 )
 
 work(
   name = "hello_world_uppercase",
   worker = ":worker",
+  worker_args = ["--worker_protocol=${WORKER_PROTOCOL}"],
   args = ["--uppercase", "hello world"],
 )
 EOF
 
-  bazel build  :hello_world &> $TEST_log \
+  bazel build  :hello_world &> "$TEST_log" \
     || fail "build failed"
   assert_equals "hello world" "$(cat $BINS/hello_world.out)"
 
-  bazel build  :hello_world_uppercase &> $TEST_log \
+  bazel build  :hello_world_uppercase &> "$TEST_log" \
     || fail "build failed"
   assert_equals "HELLO WORLD" "$(cat $BINS/hello_world_uppercase.out)"
+}
+
+function test_worker_requests() {
+  prepare_example_worker
+  cat >>BUILD <<EOF
+work(
+  name = "hello_world",
+  worker = ":worker",
+  worker_args = ["--worker_protocol=${WORKER_PROTOCOL}"],
+  args = ["hello world", "--print_requests"],
+)
+
+work(
+  name = "hello_world_uppercase",
+  worker = ":worker",
+  worker_args = ["--worker_protocol=${WORKER_PROTOCOL}"],
+  args = ["--uppercase", "hello world", "--print_requests"],
+)
+EOF
+
+  bazel build  :hello_world &> "$TEST_log" \
+    || fail "build failed"
+  assert_contains "hello world" "$BINS/hello_world.out"
+  assert_contains "arguments: \"hello world\"" "$BINS/hello_world.out"
+  assert_contains "path:.*hello_world_worker_input" "$BINS/hello_world.out"
+  assert_not_contains "request_id" "$BINS/hello_world.out"
+
+  bazel build  :hello_world_uppercase &> "$TEST_log" \
+    || fail "build failed"
+  assert_contains "HELLO WORLD" "$BINS/hello_world_uppercase.out"
+  assert_contains "arguments: \"hello world\"" "$BINS/hello_world_uppercase.out"
+  assert_contains "path:.*hello_world_uppercase_worker_input" "$BINS/hello_world_uppercase.out"
+  assert_not_contains "request_id" "$BINS/hello_world_uppercase.out"
+}
+
+function test_missing_worker_directory() {
+  prepare_example_worker
+  cat >>BUILD <<EOF
+work(
+  name = "hello_world",
+  worker = ":worker",
+)
+work(
+  name = "hello_world2",
+  worker = ":worker",
+)
+EOF
+
+  if bazel info bazel-bin >/dev/null 2>&1; then
+    WORKER_DIR="${OUTPUT_BASE}/bazel-workers"
+  else
+    WORKER_DIR="${OUTPUT_BASE}/blaze-workers"
+  fi
+
+  # Old worker dirs can survive a regular `bazel clean`.
+  bazel clean --expunge || fail "initial clean failed"
+  mkdir -p "${OUTPUT_BASE}" || fail "Can't create outputbase"
+  echo "FOO" > "${WORKER_DIR}" || fail "Can't block worker dir"
+  assert_contains "FOO" "${WORKER_DIR}"
+  # It should be OK to run without workers even without a worker directory.
+  bazel build :hello_world --spawn_strategy=standalone \
+      --strategy=Javac=standalone &> "$TEST_log" \
+    || fail "local build failed"
+
+  assert_contains "FOO" "${WORKER_DIR}"
+
+  # ...but once we try to create a worker, we should get an error.
+  bazel build :hello_world2 --spawn_strategy=worker &> "$TEST_log" \
+    && fail "expected worker build to fail" || true
+
+  expect_log "IOException.*-workers"
+  rm -rf "${WORKER_DIR}"
 }
 
 function test_shared_worker() {
@@ -207,6 +302,7 @@ function test_shared_worker() {
 work(
   name = "hello_world",
   worker = ":worker",
+  worker_args = ["--worker_protocol=${WORKER_PROTOCOL}"],
   action_mnemonic = "Hello",
   worker_key_mnemonic = "SharedWorker",
   args = ["--write_uuid"],
@@ -215,13 +311,13 @@ work(
 work(
   name = "goodbye_world",
   worker = ":worker",
+  worker_args = ["--worker_protocol=${WORKER_PROTOCOL}"],
   action_mnemonic = "Goodbye",
   worker_key_mnemonic = "SharedWorker",
   args = ["--write_uuid"],
 )
 EOF
-
-  bazel build :hello_world :goodbye_world &> $TEST_log \
+  bazel build :hello_world :goodbye_world &> "$TEST_log" \
     || fail "build failed"
   worker_uuid_1=$(cat $BINS/hello_world.out | grep UUID | cut -d' ' -f2)
   worker_uuid_2=$(cat $BINS/goodbye_world.out | grep UUID | cut -d' ' -f2)
@@ -234,77 +330,104 @@ function test_multiple_flagfiles() {
 work(
   name = "multi_hello_world",
   worker = ":worker",
+  worker_args = ["--worker_protocol=${WORKER_PROTOCOL}"],
   args = ["hello", "world", "nice", "to", "meet", "you"],
   multiflagfiles = True,
 )
 EOF
 
-  bazel build  :multi_hello_world &> $TEST_log \
+  bazel build  :multi_hello_world &> "$TEST_log" \
     || fail "build failed"
   assert_equals "hello world nice to meet you" "$(cat $BINS/multi_hello_world.out)"
 }
 
 function test_workers_quit_after_build() {
   prepare_example_worker
-  cat >>BUILD <<'EOF'
+  cat >>BUILD <<EOF
 [work(
   name = "hello_world_%s" % idx,
   worker = ":worker",
+  worker_args = ["--worker_protocol=${WORKER_PROTOCOL}"],
   args = ["--write_counter"],
 ) for idx in range(10)]
 EOF
 
-  bazel build --worker_quit_after_build :hello_world_1 &> $TEST_log \
+  bazel build --worker_quit_after_build :hello_world_1 &> "$TEST_log" \
     || fail "build failed"
   work_count=$(cat $BINS/hello_world_1.out | grep COUNTER | cut -d' ' -f2)
   assert_equals "1" $work_count
 
-  bazel build --worker_quit_after_build :hello_world_2 &> $TEST_log \
+  bazel build --worker_quit_after_build :hello_world_2 &> "$TEST_log" \
     || fail "build failed"
   work_count=$(cat $BINS/hello_world_2.out | grep COUNTER | cut -d' ' -f2)
   # If the worker hadn't quit as we told it, it would have been reused, causing this to be a "2".
   assert_equals "1" $work_count
 }
 
-function test_build_fails_when_worker_exits() {
+# Disabled for being flaky, see b/182373389
+function DISABLED_test_build_succeeds_even_if_worker_exits() {
   prepare_example_worker
-  cat >>BUILD <<'EOF'
+  cat >>BUILD <<EOF
 [work(
   name = "hello_world_%s" % idx,
   worker = ":worker",
-  worker_args = ["--exit_after=1"],
+  worker_args = ["--exit_after=1", "--worker_protocol=${WORKER_PROTOCOL}"],
   args = ["--write_uuid", "--write_counter"],
 ) for idx in range(10)]
 EOF
-
-  bazel build :hello_world_1 &> $TEST_log \
+  # The worker dies after finishing the action, so the build succeeds.
+  bazel build --worker_verbose :hello_world_1 &> "$TEST_log" \
     || fail "build failed"
 
-  bazel build :hello_world_2 &> $TEST_log \
-    && fail "expected build to failed" || true
+  # This time, the worker is dead before the build starts, so a new one is made.
+  bazel build --worker_verbose :hello_world_2 &> "$TEST_log" \
+    || fail "build failed"
 
-  expect_log "Worker process quit or closed its stdin stream when we tried to send a WorkRequest"
+  expect_log "Work worker (id [0-9]\+) has unexpectedly died with exit code 0."
+}
+
+function test_build_fails_if_worker_dies_during_action() {
+  prepare_example_worker
+  cat >>BUILD <<EOF
+[work(
+  name = "hello_world_%s" % idx,
+  worker = ":worker",
+  worker_args = ["--worker_protocol=${WORKER_PROTOCOL}","--exit_during=1"],
+  args = [
+    "--write_uuid",
+    "--write_counter",
+  ],
+) for idx in range(10)]
+EOF
+
+  bazel build --worker_verbose :hello_world_1 &> "$TEST_log" \
+    && fail "expected build to fail" || true
+
+  expect_log "Worker process did not return a WorkResponse:"
+  # Worker log gets displayed on error, including verbosity messages.
+  expect_log "VERBOSE: Pretending to do work."
 }
 
 function test_worker_restarts_when_worker_binary_changes() {
   prepare_example_worker
-  cat >>BUILD <<'EOF'
+  cat >>BUILD <<EOF
 [work(
   name = "hello_world_%s" % idx,
   worker = ":worker",
+  worker_args = ["--worker_protocol=${WORKER_PROTOCOL}"],
   args = ["--write_uuid", "--write_counter"],
 ) for idx in range(10)]
 EOF
 
   echo "First run" >> $TEST_log
-  bazel build :hello_world_1 &> $TEST_log \
+  bazel build :hello_world_1 &> "$TEST_log" \
     || fail "build failed"
   worker_uuid_1=$(cat $BINS/hello_world_1.out | grep UUID | cut -d' ' -f2)
   work_count=$(cat $BINS/hello_world_1.out | grep COUNTER | cut -d' ' -f2)
   assert_equals "1" $work_count
 
   echo "Second run" >> $TEST_log
-  bazel build :hello_world_2 &> $TEST_log \
+  bazel build :hello_world_2 &> "$TEST_log" \
     || fail "build failed"
   worker_uuid_2=$(cat $BINS/hello_world_2.out | grep UUID | cut -d' ' -f2)
   work_count=$(cat $BINS/hello_world_2.out | grep COUNTER | cut -d' ' -f2)
@@ -314,11 +437,11 @@ EOF
   assert_equals "$worker_uuid_1" "$worker_uuid_2"
 
   # Modify the example worker jar to trigger a rebuild of the worker.
-  tr -cd '[:alnum:]' < /dev/urandom | head -c32 > dummy_file
+  tr -cd '[:alnum:]' < /dev/urandom | head -c32 > dummy_file || true
   zip worker_lib.jar dummy_file
   rm dummy_file
 
-  bazel build :hello_world_3 &> $TEST_log \
+  bazel build :hello_world_3 &> "$TEST_log" \
     || fail "build failed"
   worker_uuid_3=$(cat $BINS/hello_world_3.out | grep UUID | cut -d' ' -f2)
   work_count=$(cat $BINS/hello_world_3.out | grep COUNTER | cut -d' ' -f2)
@@ -333,21 +456,22 @@ EOF
 
 function test_worker_restarts_when_worker_runfiles_change() {
   prepare_example_worker
-  cat >>BUILD <<'EOF'
+  cat >>BUILD <<EOF
 [work(
   name = "hello_world_%s" % idx,
   worker = ":worker",
+  worker_args = ["--worker_protocol=${WORKER_PROTOCOL}"],
   args = ["--write_uuid", "--write_counter"],
 ) for idx in range(10)]
 EOF
 
-  bazel build :hello_world_1 &> $TEST_log \
+  bazel build :hello_world_1 &> "$TEST_log" \
     || fail "build failed"
   worker_uuid_1=$(cat $BINS/hello_world_1.out | grep UUID | cut -d' ' -f2)
   work_count=$(cat $BINS/hello_world_1.out | grep COUNTER | cut -d' ' -f2)
   assert_equals "1" $work_count
 
-  bazel build :hello_world_2 &> $TEST_log \
+  bazel build :hello_world_2 &> "$TEST_log" \
     || fail "build failed"
   worker_uuid_2=$(cat $BINS/hello_world_2.out | grep UUID | cut -d' ' -f2)
   work_count=$(cat $BINS/hello_world_2.out | grep COUNTER | cut -d' ' -f2)
@@ -359,7 +483,7 @@ EOF
   # "worker_data.txt" is included in the "data" attribute of the example worker.
   echo "changeddata" > worker_data.txt
 
-  bazel build :hello_world_3 &> $TEST_log \
+  bazel build :hello_world_3 &> "$TEST_log" \
     || fail "build failed"
   worker_uuid_3=$(cat $BINS/hello_world_3.out | grep UUID | cut -d' ' -f2)
   work_count=$(cat $BINS/hello_world_3.out | grep COUNTER | cut -d' ' -f2)
@@ -376,46 +500,48 @@ EOF
 # protobuf, it must be killed and a helpful error message should be printed.
 function test_build_fails_when_worker_returns_junk() {
   prepare_example_worker
-  cat >>BUILD <<'EOF'
+  cat >>BUILD <<EOF
 [work(
   name = "hello_world_%s" % idx,
   worker = ":worker",
-  worker_args = ["--poison_after=1"],
+  worker_args = ["--poison_after=1", "--worker_protocol=${WORKER_PROTOCOL}"],
   args = ["--write_uuid", "--write_counter"],
 ) for idx in range(10)]
 EOF
 
-  bazel build :hello_world_1 &> $TEST_log \
+  bazel build :hello_world_1 &> "$TEST_log" \
     || fail "build failed"
 
   # A failing worker should cause the build to fail.
-  bazel build :hello_world_2 &> $TEST_log \
+  bazel build :hello_world_2 &> "$TEST_log" \
     && fail "expected build to fail" || true
 
   # Check that a helpful error message was printed.
   expect_log "Worker process returned an unparseable WorkResponse!"
   expect_log "Did you try to print something to stdout"
-  expect_log "I'm a poisoned worker and this is not a protobuf."
+  expect_log "Not UTF-8, printing first 1024 bytes as hex"
+  expect_log "49 27 6D 20 61 20 70 6F  69 73 6F 6E 65 64 20 77  |I'm a po isoned w|"
 }
 
 function test_input_digests() {
   prepare_example_worker
-  cat >>BUILD <<'EOF'
+  cat >>BUILD <<EOF
 [work(
   name = "hello_world_%s" % idx,
   worker = ":worker",
+  worker_args = ["--worker_protocol=${WORKER_PROTOCOL}"],
   args = ["--write_uuid", "--print_inputs"],
   srcs = [":input.txt"],
 ) for idx in range(10)]
 EOF
 
   echo "hello world" > input.txt
-  bazel build :hello_world_1 &> $TEST_log \
+  bazel build :hello_world_1 &> "$TEST_log" \
     || fail "build failed"
   worker_uuid_1=$(cat $BINS/hello_world_1.out | grep UUID | cut -d' ' -f2)
   hash1=$(egrep "INPUT .*/input.txt " $BINS/hello_world_1.out | cut -d' ' -f3)
 
-  bazel build :hello_world_2 >> $TEST_log 2>&1 \
+  bazel build :hello_world_2 >> "$TEST_log" 2>&1 \
     || fail "build failed"
   worker_uuid_2=$(cat $BINS/hello_world_2.out | grep UUID | cut -d' ' -f2)
   hash2=$(egrep "INPUT .*/input.txt " $BINS/hello_world_2.out | cut -d' ' -f3)
@@ -425,7 +551,7 @@ EOF
 
   echo "changeddata" > input.txt
 
-  bazel build :hello_world_3 >> $TEST_log 2>&1 \
+  bazel build :hello_world_3 >> "$TEST_log" 2>&1 \
     || fail "build failed"
   worker_uuid_3=$(cat $BINS/hello_world_3.out | grep UUID | cut -d' ' -f2)
   hash3=$(egrep "INPUT .*/input.txt " $BINS/hello_world_3.out | cut -d' ' -f3)
@@ -436,15 +562,16 @@ EOF
 
 function test_worker_verbose() {
   prepare_example_worker
-  cat >>BUILD <<'EOF'
+  cat >>BUILD <<EOF
 [work(
   name = "hello_world_%s" % idx,
   worker = ":worker",
+  worker_args = ["--worker_protocol=${WORKER_PROTOCOL}"],
   args = ["--write_uuid", "--write_counter"],
 ) for idx in range(10)]
 EOF
 
-  bazel build --worker_quit_after_build :hello_world_1 &> $TEST_log \
+  bazel build --worker_quit_after_build :hello_world_1 &> "$TEST_log" \
     || fail "build failed"
   expect_log "Created new ${WORKER_TYPE_LOG_STRING} Work worker (id [0-9]\+)"
   expect_log "Destroying Work worker (id [0-9]\+)"
@@ -453,15 +580,16 @@ EOF
 
 function test_logs_are_deleted_on_server_restart() {
   prepare_example_worker
-  cat >>BUILD <<'EOF'
+  cat >>BUILD <<EOF
 [work(
   name = "hello_world_%s" % idx,
   worker = ":worker",
+  worker_args = ["--worker_protocol=${WORKER_PROTOCOL}"],
   args = ["--write_uuid", "--write_counter"],
 ) for idx in range(10)]
 EOF
 
-  bazel build --worker_quit_after_build :hello_world_1 &> $TEST_log \
+  bazel build --worker_quit_after_build :hello_world_1 &> "$TEST_log" \
     || fail "build failed"
 
   expect_log "Created new ${WORKER_TYPE_LOG_STRING} Work worker (id [0-9]\+)"
@@ -479,9 +607,38 @@ EOF
     || fail "Worker log was not deleted"
 }
 
+function test_requires_worker_protocol_missing_defaults_to_proto {
+  prepare_example_worker
+  cat >>BUILD <<EOF
+work(
+  name = "hello_world_proto",
+  worker = ":worker",
+  worker_args = ["--worker_protocol=proto"],
+  args = ["hello world"],
+)
+work(
+  name = "hello_world_json",
+  worker = ":worker",
+  worker_args = ["--worker_protocol=json"],
+)
+EOF
+
+  sed -i.bak 's/=execution_requirements/={"supports-workers": "1"}/g' work.bzl
+  rm -f work.bzl.bak
+
+  bazel build :hello_world_proto &> "$TEST_log" \
+    || fail "build failed"
+  assert_equals "hello world" "$(cat $BINS/hello_world_proto.out)"
+
+  bazel build :hello_world_json &> "$TEST_log" \
+    && fail "expected proto build with json worker to fail" || true
+}
+
 function test_missing_execution_requirements_fallback_to_standalone() {
   prepare_example_worker
-  cat >>BUILD <<'EOF'
+  # This test ignores the WORKER_PROTOCOL test arg since it doesn't use the
+  # persistent worker when execution falls back to standalone.
+  cat >>BUILD <<EOF
 work(
   name = "hello_world",
   worker = ":worker",
@@ -492,7 +649,7 @@ EOF
   sed -i.bak '/execution_requirements=execution_requirements/d' work.bzl
   rm -f work.bzl.bak
 
-  bazel build --worker_quit_after_build :hello_world &> $TEST_log \
+  bazel build --worker_quit_after_build :hello_world &> "$TEST_log" \
     || fail "build failed"
 
   expect_not_log "Created new ${WORKER_TYPE_LOG_STRING} Work worker (id [0-9]\+)"
@@ -505,17 +662,18 @@ EOF
 
 function test_environment_is_clean() {
   prepare_example_worker
-  cat >>BUILD <<'EOF'
+  cat >>BUILD <<EOF
 work(
   name = "hello_world",
   worker = ":worker",
+  worker_args = ["--worker_protocol=${WORKER_PROTOCOL}"],
   args = ["--print_env"],
 )
 EOF
 
-  bazel shutdown &> $TEST_log \
+  bazel shutdown &> "$TEST_log" \
     || fail "shutdown failed"
-  CAKE=LIE bazel build --worker_quit_after_build :hello_world &> $TEST_log \
+  CAKE=LIE bazel build --worker_quit_after_build :hello_world &> "$TEST_log" \
     || fail "build failed"
 
   fgrep CAKE=LIE $BINS/hello_world.out \
@@ -528,16 +686,17 @@ function test_workers_quit_on_clean() {
 work(
   name = "hello_clean",
   worker = ":worker",
+  worker_args = ["--worker_protocol=${WORKER_PROTOCOL}"],
   args = ["hello clean"],
 )
 EOF
 
-  bazel build :hello_clean &> $TEST_log \
+  bazel build :hello_clean &> "$TEST_log" \
     || fail "build failed"
   assert_equals "hello clean" "$(cat $BINS/hello_clean.out)"
   expect_log "Created new ${WORKER_TYPE_LOG_STRING} Work worker (id [0-9]\+)"
 
-  bazel clean &> $TEST_log \
+  bazel clean &> "$TEST_log" \
     || fail "clean failed"
   expect_log "Clean command is running, shutting down worker pool..."
   expect_log "Destroying Work worker (id [0-9]\+)"
@@ -545,19 +704,23 @@ EOF
 
 function test_crashed_worker_causes_log_dump() {
   prepare_example_worker
-  cat >>BUILD <<'EOF'
+  cat >>BUILD <<EOF
 [work(
   name = "hello_world_%s" % idx,
   worker = ":worker",
-  worker_args = ["--poison_after=1", "--hard_poison"],
+  worker_args = [
+    "--poison_after=1",
+    "--hard_poison",
+    "--worker_protocol=${WORKER_PROTOCOL}"
+  ],
   args = ["--write_uuid", "--write_counter"],
 ) for idx in range(10)]
 EOF
 
-  bazel build :hello_world_1 &> $TEST_log \
+  bazel build :hello_world_1 &> "$TEST_log" \
     || fail "build failed"
 
-  bazel build :hello_world_2 &> $TEST_log \
+  bazel build :hello_world_2 &> "$TEST_log" \
     && fail "expected build to fail" || true
 
   expect_log "^---8<---8<--- Start of log, file at /"
@@ -565,4 +728,5 @@ EOF
   expect_log "I'm a very poisoned worker and will just crash."
   expect_log "^---8<---8<--- End of log ---8<---8<---"
 }
+
 run_suite "Worker integration tests"

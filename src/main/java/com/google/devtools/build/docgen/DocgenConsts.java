@@ -62,6 +62,7 @@ public class DocgenConsts {
 
   public static final String VAR_SECTION_STARLARK_BUILTIN = "SECTION_BUILTIN";
 
+  public static final String TYPICAL_ATTRIBUTES = "typical";
   public static final String COMMON_ATTRIBUTES = "common";
   public static final String TEST_ATTRIBUTES = "test";
   public static final String BINARY_ATTRIBUTES = "binary";
@@ -134,16 +135,6 @@ public class DocgenConsts {
   public static final Pattern BLAZE_RULE_END = Pattern.compile(
       "^[\\s]*\\<!\\-\\-[\\s]*#END_BLAZE_RULE[\\s]*\\-\\-\\>[\\s]*\\*/");
   /**
-   * i.e. <!-- #BLAZE_RULE.EXAMPLE -->
-   */
-  public static final Pattern BLAZE_RULE_EXAMPLE_START = Pattern.compile(
-      "[\\s]*\\<!--[\\s]*#BLAZE_RULE.EXAMPLE[\\s]*--\\>[\\s]*");
-  /**
-   * i.e. <!-- #BLAZE_RULE.END_EXAMPLE -->
-   */
-  public static final Pattern BLAZE_RULE_EXAMPLE_END = Pattern.compile(
-      "[\\s]*\\<!--[\\s]*#BLAZE_RULE.END_EXAMPLE[\\s]*--\\>[\\s]*");
-  /**
    * i.e. <!-- #BLAZE_RULE(RULE_NAME).VARIABLE_NAME -->
    */
   public static final Pattern BLAZE_RULE_VAR_START = Pattern.compile(
@@ -187,7 +178,7 @@ public class DocgenConsts {
   // StarlarkDocumentationProcessor#parseOptions
 
   // Build Encyclopedia documentation root
-  public static String BeDocsRoot = "/versions/master/be";
+  public static String BeDocsRoot = "/versions/main/be";
 
   // Documentation files extension
   public static String documentationExtension = "html";

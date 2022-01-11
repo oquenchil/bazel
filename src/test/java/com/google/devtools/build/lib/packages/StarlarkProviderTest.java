@@ -21,10 +21,12 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.testing.EqualsTester;
 import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.syntax.Mutability;
-import com.google.devtools.build.lib.syntax.Starlark;
-import com.google.devtools.build.lib.syntax.StarlarkSemantics;
-import com.google.devtools.build.lib.syntax.StarlarkThread;
+import net.starlark.java.eval.Mutability;
+import net.starlark.java.eval.Starlark;
+import net.starlark.java.eval.StarlarkInt;
+import net.starlark.java.eval.StarlarkSemantics;
+import net.starlark.java.eval.StarlarkThread;
+import net.starlark.java.syntax.Location;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -35,12 +37,12 @@ public final class StarlarkProviderTest {
 
   @Test
   public void unexportedProvider_Accessors() {
-    StarlarkProvider provider = StarlarkProvider.createUnexportedSchemaless(/*location=*/ null);
+    StarlarkProvider provider = StarlarkProvider.builder(Location.BUILTIN).build();
     assertThat(provider.isExported()).isFalse();
     assertThat(provider.getName()).isEqualTo("<no name>");
     assertThat(provider.getPrintableName()).isEqualTo("<no name>");
-    assertThat(provider.getErrorMessageFormatForUnknownField())
-        .isEqualTo("Object has no '%s' attribute.");
+    assertThat(provider.getErrorMessageForUnknownField("foo"))
+        .isEqualTo("'struct' value has no field or method 'foo'");
     assertThat(provider.isImmutable()).isFalse();
     assertThat(Starlark.repr(provider)).isEqualTo("<provider>");
     assertThrows(
@@ -52,12 +54,12 @@ public final class StarlarkProviderTest {
   public void exportedProvider_Accessors() throws Exception {
     StarlarkProvider.Key key =
         new StarlarkProvider.Key(Label.parseAbsolute("//foo:bar.bzl", ImmutableMap.of()), "prov");
-    StarlarkProvider provider = StarlarkProvider.createExportedSchemaless(key, /*location=*/ null);
+    StarlarkProvider provider = StarlarkProvider.builder(Location.BUILTIN).setExported(key).build();
     assertThat(provider.isExported()).isTrue();
     assertThat(provider.getName()).isEqualTo("prov");
     assertThat(provider.getPrintableName()).isEqualTo("prov");
-    assertThat(provider.getErrorMessageFormatForUnknownField())
-        .isEqualTo("'prov' value has no field or method '%s'");
+    assertThat(provider.getErrorMessageForUnknownField("foo"))
+        .isEqualTo("'prov' value has no field or method 'foo'");
     assertThat(provider.isImmutable()).isTrue();
     assertThat(Starlark.repr(provider)).isEqualTo("<provider>");
     assertThat(provider.getKey()).isEqualTo(key);
@@ -65,29 +67,33 @@ public final class StarlarkProviderTest {
 
   @Test
   public void schemalessProvider_Instantiation() throws Exception {
-    StarlarkProvider provider = StarlarkProvider.createUnexportedSchemaless(/*location=*/ null);
+    StarlarkProvider provider = StarlarkProvider.builder(Location.BUILTIN).build();
     StarlarkInfo info = instantiateWithA1B2C3(provider);
     assertHasExactlyValuesA1B2C3(info);
   }
 
   @Test
   public void schemafulProvider_Instantiation() throws Exception {
-    StarlarkProvider provider = StarlarkProvider.createUnexportedSchemaful(
-        ImmutableList.of("a", "b", "c"), /*location=*/ null);
+    StarlarkProvider provider =
+        StarlarkProvider.builder(Location.BUILTIN)
+            .setSchema(ImmutableList.of("a", "b", "c"))
+            .build();
     StarlarkInfo info = instantiateWithA1B2C3(provider);
     assertHasExactlyValuesA1B2C3(info);
   }
 
   @Test
   public void schemalessProvider_GetFields() throws Exception {
-    StarlarkProvider provider = StarlarkProvider.createUnexportedSchemaless(/*location=*/ null);
+    StarlarkProvider provider = StarlarkProvider.builder(Location.BUILTIN).build();
     assertThat(provider.getFields()).isNull();
   }
 
   @Test
   public void schemafulProvider_GetFields() throws Exception {
-    StarlarkProvider provider = StarlarkProvider.createUnexportedSchemaful(
-        ImmutableList.of("a", "b", "c"), /*location=*/ null);
+    StarlarkProvider provider =
+        StarlarkProvider.builder(Location.BUILTIN)
+            .setSchema(ImmutableList.of("a", "b", "c"))
+            .build();
     assertThat(provider.getFields()).containsExactly("a", "b", "c").inOrder();
   }
 
@@ -105,19 +111,17 @@ public final class StarlarkProviderTest {
 
     // 1 for each key, plus a duplicate for one of the keys, plus 2 that have no key.
     StarlarkProvider provFooA1 =
-        StarlarkProvider.createExportedSchemaless(keyFooA, /*location=*/ null);
+        StarlarkProvider.builder(Location.BUILTIN).setExported(keyFooA).build();
     StarlarkProvider provFooA2 =
-        StarlarkProvider.createExportedSchemaless(keyFooA, /*location=*/ null);
+        StarlarkProvider.builder(Location.BUILTIN).setExported(keyFooA).build();
     StarlarkProvider provFooB =
-        StarlarkProvider.createExportedSchemaless(keyFooB, /*location=*/ null);
+        StarlarkProvider.builder(Location.BUILTIN).setExported(keyFooB).build();
     StarlarkProvider provBarA =
-        StarlarkProvider.createExportedSchemaless(keyBarA, /*location=*/ null);
+        StarlarkProvider.builder(Location.BUILTIN).setExported(keyBarA).build();
     StarlarkProvider provBarB =
-        StarlarkProvider.createExportedSchemaless(keyBarB, /*location=*/ null);
-    StarlarkProvider provUnexported1 =
-        StarlarkProvider.createUnexportedSchemaless(/*location=*/ null);
-    StarlarkProvider provUnexported2 =
-        StarlarkProvider.createUnexportedSchemaless(/*location=*/ null);
+        StarlarkProvider.builder(Location.BUILTIN).setExported(keyBarB).build();
+    StarlarkProvider provUnexported1 = StarlarkProvider.builder(Location.BUILTIN).build();
+    StarlarkProvider provUnexported2 = StarlarkProvider.builder(Location.BUILTIN).build();
 
     // For exported providers, different keys -> unequal, same key -> equal. For unexported
     // providers it comes down to object identity.
@@ -140,7 +144,8 @@ public final class StarlarkProviderTest {
               thread,
               provider,
               /*args=*/ ImmutableList.of(),
-              /*kwargs=*/ ImmutableMap.of("a", 1, "b", 2, "c", 3));
+              /*kwargs=*/ ImmutableMap.of(
+                  "a", StarlarkInt.of(1), "b", StarlarkInt.of(2), "c", StarlarkInt.of(3)));
       assertThat(result).isInstanceOf(StarlarkInfo.class);
       return (StarlarkInfo) result;
     }
@@ -149,8 +154,8 @@ public final class StarlarkProviderTest {
   /** Asserts that a {@link StarlarkInfo} has fields a=1, b=2, c=3 (and nothing else). */
   private static void assertHasExactlyValuesA1B2C3(StarlarkInfo info) throws Exception {
     assertThat(info.getFieldNames()).containsExactly("a", "b", "c");
-    assertThat(info.getValue("a")).isEqualTo(1);
-    assertThat(info.getValue("b")).isEqualTo(2);
-    assertThat(info.getValue("c")).isEqualTo(3);
+    assertThat(info.getValue("a")).isEqualTo(StarlarkInt.of(1));
+    assertThat(info.getValue("b")).isEqualTo(StarlarkInt.of(2));
+    assertThat(info.getValue("c")).isEqualTo(StarlarkInt.of(3));
   }
 }

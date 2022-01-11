@@ -15,18 +15,14 @@
 package com.google.devtools.build.lib.bazel.repository.starlark;
 
 import com.github.difflib.patch.PatchFailedException;
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Ascii;
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
-import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.ImmutableSortedMap;
-import com.google.common.collect.Maps;
-import com.google.devtools.build.lib.actions.FileValue;
+import com.google.devtools.build.docgen.annot.DocCategory;
 import com.google.devtools.build.lib.bazel.debug.WorkspaceRuleEvent;
 import com.google.devtools.build.lib.bazel.repository.DecompressorDescriptor;
 import com.google.devtools.build.lib.bazel.repository.DecompressorValue;
@@ -40,40 +36,23 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.ExtendedEventHandler.FetchProgress;
 import com.google.devtools.build.lib.packages.Attribute;
 import com.google.devtools.build.lib.packages.Rule;
+import com.google.devtools.build.lib.packages.StarlarkInfo;
 import com.google.devtools.build.lib.packages.StructImpl;
 import com.google.devtools.build.lib.packages.StructProvider;
+import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
 import com.google.devtools.build.lib.profiler.Profiler;
-import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.profiler.SilentCloseable;
-import com.google.devtools.build.lib.rules.repository.RepositoryFunction;
 import com.google.devtools.build.lib.rules.repository.RepositoryFunction.RepositoryFunctionException;
 import com.google.devtools.build.lib.rules.repository.WorkspaceAttributeMapper;
 import com.google.devtools.build.lib.runtime.ProcessWrapper;
 import com.google.devtools.build.lib.runtime.RepositoryRemoteExecutor;
-import com.google.devtools.build.lib.runtime.RepositoryRemoteExecutor.ExecutionResult;
-import com.google.devtools.build.lib.skylarkbuildapi.repository.StarlarkRepositoryContextApi;
-import com.google.devtools.build.lib.syntax.Dict;
-import com.google.devtools.build.lib.syntax.EvalException;
-import com.google.devtools.build.lib.syntax.Location;
-import com.google.devtools.build.lib.syntax.Mutability;
-import com.google.devtools.build.lib.syntax.Sequence;
-import com.google.devtools.build.lib.syntax.Starlark;
-import com.google.devtools.build.lib.syntax.StarlarkSemantics;
-import com.google.devtools.build.lib.syntax.StarlarkThread;
-import com.google.devtools.build.lib.util.OsUtils;
 import com.google.devtools.build.lib.util.StringUtilities;
-import com.google.devtools.build.lib.util.io.OutErr;
-import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.build.lib.vfs.RootedPath;
-import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
 import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
-import com.google.devtools.build.skyframe.SkyKey;
-import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.MalformedURLException;
@@ -81,17 +60,38 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
+import net.starlark.java.annot.Param;
+import net.starlark.java.annot.ParamType;
+import net.starlark.java.annot.StarlarkBuiltin;
+import net.starlark.java.annot.StarlarkMethod;
+import net.starlark.java.eval.Dict;
+import net.starlark.java.eval.EvalException;
+import net.starlark.java.eval.Sequence;
+import net.starlark.java.eval.Starlark;
+import net.starlark.java.eval.StarlarkInt;
+import net.starlark.java.eval.StarlarkSemantics;
+import net.starlark.java.eval.StarlarkThread;
+import net.starlark.java.syntax.Location;
 
 /** Starlark API for the repository_rule's context. */
-public class StarlarkRepositoryContext
-    implements StarlarkRepositoryContextApi<RepositoryFunctionException> {
+@StarlarkBuiltin(
+    name = "repository_ctx",
+    category = DocCategory.BUILTIN,
+    doc =
+        "The context of the repository rule containing"
+            + " helper functions and information about attributes. You get a repository_ctx object"
+            + " as an argument to the <code>implementation</code> function when you create a"
+            + " repository rule.")
+public class StarlarkRepositoryContext extends StarlarkBaseExternalContext {
   private static final ImmutableList<String> WHITELISTED_REPOS_FOR_FLAG_ENABLED =
       ImmutableList.of("@rules_cc", "@bazel_tools");
   private static final ImmutableList<String> WHITELISTED_PATHS_FOR_FLAG_ENABLED =
@@ -99,22 +99,10 @@ public class StarlarkRepositoryContext
           "rules_cc/cc/private/toolchain/unix_cc_configure.bzl",
           "bazel_tools/tools/cpp/unix_cc_configure.bzl");
 
-  /** Max. number of command line args added as a profiler description. */
-  private static final int MAX_PROFILE_ARGS_LEN = 80;
-
   private final Rule rule;
   private final PathPackageLocator packageLocator;
-  private final Path outputDirectory;
   private final StructImpl attrObject;
-  private final StarlarkOS osObject;
   private final ImmutableSet<PathFragment> ignoredPatterns;
-  private final Environment env;
-  private final DownloadManager downloadManager;
-  private final double timeoutScaling;
-  @Nullable private final ProcessWrapper processWrapper;
-  private final Map<String, String> markerData;
-  private final StarlarkSemantics starlarkSemantics;
-  private final RepositoryRemoteExecutor remoteExecutor;
 
   /**
    * Create a new context (repository_ctx) object for a Starlark repository rule ({@code rule}
@@ -126,44 +114,56 @@ public class StarlarkRepositoryContext
       Path outputDirectory,
       ImmutableSet<PathFragment> ignoredPatterns,
       Environment environment,
-      Map<String, String> env,
+      ImmutableMap<String, String> env,
       DownloadManager downloadManager,
       double timeoutScaling,
       @Nullable ProcessWrapper processWrapper,
-      Map<String, String> markerData,
       StarlarkSemantics starlarkSemantics,
       @Nullable RepositoryRemoteExecutor remoteExecutor)
       throws EvalException {
+    super(
+        outputDirectory,
+        environment,
+        env,
+        downloadManager,
+        timeoutScaling,
+        processWrapper,
+        starlarkSemantics,
+        remoteExecutor);
     this.rule = rule;
     this.packageLocator = packageLocator;
-    this.outputDirectory = outputDirectory;
     this.ignoredPatterns = ignoredPatterns;
-    this.env = environment;
-    this.osObject = new StarlarkOS(env);
-    this.downloadManager = downloadManager;
-    this.timeoutScaling = timeoutScaling;
-    this.processWrapper = processWrapper;
-    this.markerData = markerData;
     WorkspaceAttributeMapper attrs = WorkspaceAttributeMapper.of(rule);
     ImmutableMap.Builder<String, Object> attrBuilder = new ImmutableMap.Builder<>();
     for (String name : attrs.getAttributeNames()) {
       if (!name.equals("$local")) {
         // Attribute values should be type safe
         attrBuilder.put(
-            Attribute.getStarlarkName(name), Starlark.fromJava(attrs.getObject(name), null));
+            Attribute.getStarlarkName(name), Attribute.valueToStarlark(attrs.getObject(name)));
       }
     }
     attrObject = StructProvider.STRUCT.create(attrBuilder.build(), "No such attribute '%s'");
-    this.starlarkSemantics = starlarkSemantics;
-    this.remoteExecutor = remoteExecutor;
   }
 
   @Override
+  protected String getIdentifyingStringForLogging() {
+    return rule.getLabel().toString();
+  }
+
+  @StarlarkMethod(
+      name = "name",
+      structField = true,
+      doc = "The name of the external repository created by this rule.")
   public String getName() {
     return rule.getName();
   }
 
-  @Override
+  @StarlarkMethod(
+      name = "attr",
+      structField = true,
+      doc =
+          "A struct to access the values of the attributes. The values are provided by "
+              + "the user (if not, a default value is used).")
   public StructImpl getAttr() {
     return attrObject;
   }
@@ -173,7 +173,7 @@ public class StarlarkRepositoryContext
     StarlarkPath starlarkPath = getPath(method, pathObject);
     Path path = starlarkPath.getPath();
     if (packageLocator.getPathEntries().stream().noneMatch(root -> path.startsWith(root.asPath()))
-        || path.startsWith(outputDirectory)) {
+        || path.startsWith(workingDirectory)) {
       return starlarkPath;
     }
     Path workspaceRoot = packageLocator.getWorkspaceFile().getParentDirectory();
@@ -189,29 +189,16 @@ public class StarlarkRepositoryContext
         method);
   }
 
-  @Override
-  public StarlarkPath path(Object path) throws EvalException, InterruptedException {
-    return getPath("path()", path);
-  }
-
-  private StarlarkPath getPath(String method, Object path)
-      throws EvalException, InterruptedException {
-    if (path instanceof String) {
-      PathFragment pathFragment = PathFragment.create(path.toString());
-      return new StarlarkPath(
-          pathFragment.isAbsolute()
-              ? outputDirectory.getFileSystem().getPath(path.toString())
-              : outputDirectory.getRelative(pathFragment));
-    } else if (path instanceof Label) {
-      return getPathFromLabel((Label) path);
-    } else if (path instanceof StarlarkPath) {
-      return (StarlarkPath) path;
-    } else {
-      throw Starlark.errorf("%s can only take a string or a label.", method);
-    }
-  }
-
-  @Override
+  @StarlarkMethod(
+      name = "report_progress",
+      doc = "Updates the progress status for the fetching of this repository",
+      parameters = {
+        @Param(
+            name = "status",
+            allowedTypes = {@ParamType(type = String.class)},
+            doc = "string describing the current status of the fetch progress")
+      })
+  // TODO(wyv): migrate this to the base context.
   public void reportProgress(String status) {
     final String message = status == null ? "" : status;
     final String id = "@" + getName();
@@ -236,7 +223,28 @@ public class StarlarkRepositoryContext
             });
   }
 
-  @Override
+  @StarlarkMethod(
+      name = "symlink",
+      doc = "Creates a symlink on the filesystem.",
+      useStarlarkThread = true,
+      parameters = {
+        @Param(
+            name = "from",
+            allowedTypes = {
+              @ParamType(type = String.class),
+              @ParamType(type = Label.class),
+              @ParamType(type = StarlarkPath.class)
+            },
+            doc = "path to which the created symlink should point to."),
+        @Param(
+            name = "to",
+            allowedTypes = {
+              @ParamType(type = String.class),
+              @ParamType(type = Label.class),
+              @ParamType(type = StarlarkPath.class)
+            },
+            doc = "path of the symlink to create, relative to the repository directory."),
+      })
   public void symlink(Object from, Object to, StarlarkThread thread)
       throws RepositoryFunctionException, EvalException, InterruptedException {
     StarlarkPath fromPath = getPath("symlink()", from);
@@ -258,12 +266,16 @@ public class StarlarkRepositoryContext
               "Could not create symlink from " + fromPath + " to " + toPath + ": " + e.getMessage(),
               e),
           Transience.TRANSIENT);
+    } catch (InvalidPathException e) {
+      throw new RepositoryFunctionException(
+          Starlark.errorf("Could not create %s: %s", toPath, e.getMessage()),
+          Transience.PERSISTENT);
     }
   }
 
   private void checkInOutputDirectory(String operation, StarlarkPath path)
       throws RepositoryFunctionException {
-    if (!path.getPath().getPathString().startsWith(outputDirectory.getPathString())) {
+    if (!path.getPath().getPathString().startsWith(workingDirectory.getPathString())) {
       throw new RepositoryFunctionException(
           Starlark.errorf(
               "Cannot %s outside of the repository directory for path %s", operation, path),
@@ -271,7 +283,37 @@ public class StarlarkRepositoryContext
     }
   }
 
-  @Override
+  @StarlarkMethod(
+      name = "file",
+      doc = "Generates a file in the repository directory with the provided content.",
+      useStarlarkThread = true,
+      parameters = {
+        @Param(
+            name = "path",
+            allowedTypes = {
+              @ParamType(type = String.class),
+              @ParamType(type = Label.class),
+              @ParamType(type = StarlarkPath.class)
+            },
+            doc = "path of the file to create, relative to the repository directory."),
+        @Param(
+            name = "content",
+            named = true,
+            defaultValue = "''",
+            doc = "the content of the file to create, empty by default."),
+        @Param(
+            name = "executable",
+            named = true,
+            defaultValue = "True",
+            doc = "set the executable flag on the created file, true by default."),
+        @Param(
+            name = "legacy_utf8",
+            named = true,
+            defaultValue = "True",
+            doc =
+                "encode file content to UTF-8, true by default. Future versions will change"
+                    + " the default and remove this parameter."),
+      })
   public void createFile(
       Object path, String content, Boolean executable, Boolean legacyUtf8, StarlarkThread thread)
       throws RepositoryFunctionException, EvalException, InterruptedException {
@@ -302,10 +344,49 @@ public class StarlarkRepositoryContext
       }
     } catch (IOException e) {
       throw new RepositoryFunctionException(e, Transience.TRANSIENT);
+    } catch (InvalidPathException e) {
+      throw new RepositoryFunctionException(
+          Starlark.errorf("Could not create %s: %s", p, e.getMessage()), Transience.PERSISTENT);
     }
   }
 
-  @Override
+  @StarlarkMethod(
+      name = "template",
+      doc =
+          "Generates a new file using a <code>template</code>. Every occurrence in "
+              + "<code>template</code> of a key of <code>substitutions</code> will be replaced by "
+              + "the corresponding value. The result is written in <code>path</code>. An optional"
+              + "<code>executable</code> argument (default to true) can be set to turn on or off"
+              + "the executable bit.",
+      useStarlarkThread = true,
+      parameters = {
+        @Param(
+            name = "path",
+            allowedTypes = {
+              @ParamType(type = String.class),
+              @ParamType(type = Label.class),
+              @ParamType(type = StarlarkPath.class)
+            },
+            doc = "path of the file to create, relative to the repository directory."),
+        @Param(
+            name = "template",
+            allowedTypes = {
+              @ParamType(type = String.class),
+              @ParamType(type = Label.class),
+              @ParamType(type = StarlarkPath.class)
+            },
+            doc = "path to the template file."),
+        @Param(
+            name = "substitutions",
+            defaultValue = "{}",
+            named = true,
+            doc = "substitutions to make when expanding the template."),
+        @Param(
+            name = "executable",
+            defaultValue = "True",
+            named = true,
+            doc = "set the executable flag on the created file, true by default."),
+      })
   public void createFileFromTemplate(
       Object path,
       Object template,
@@ -343,251 +424,42 @@ public class StarlarkRepositoryContext
       }
     } catch (IOException e) {
       throw new RepositoryFunctionException(e, Transience.TRANSIENT);
+    } catch (InvalidPathException e) {
+      throw new RepositoryFunctionException(
+          Starlark.errorf("Could not create %s: %s", p, e.getMessage()), Transience.PERSISTENT);
     }
   }
 
   @Override
-  public String readFile(Object path, StarlarkThread thread)
-      throws RepositoryFunctionException, EvalException, InterruptedException {
-    StarlarkPath p = getPath("read()", path);
-    WorkspaceRuleEvent w =
-        WorkspaceRuleEvent.newReadEvent(
-            p.toString(), rule.getLabel().toString(), thread.getCallerLocation());
-    env.getListener().post(w);
-    try {
-      return FileSystemUtils.readContent(p.getPath(), StandardCharsets.ISO_8859_1);
-    } catch (IOException e) {
-      throw new RepositoryFunctionException(e, Transience.TRANSIENT);
-    }
-  }
-
-  // Create parent directories for the given path
-  private void makeDirectories(Path path) throws IOException {
-    Path parent = path.getParentDirectory();
-    if (parent != null) {
-      parent.createDirectoryAndParents();
-    }
-  }
-
-  @Override
-  public StarlarkOS getOS() {
-    // Historically this event reported the location of the ctx.os expression,
-    // but that's no longer available in the interpreter API. Now we report the
-    // location of the rule's implementation function, and the user must inspect
-    // that code manually (or in a debugger) to find the offending ctx.os expression.
-    WorkspaceRuleEvent w =
-        WorkspaceRuleEvent.newOsEvent(
-            rule.getLabel().toString(),
-            rule.getRuleClassObject().getConfiguredTargetFunction().getLocation());
-    env.getListener().post(w);
-    return osObject;
-  }
-
-  private void createDirectory(Path directory) throws RepositoryFunctionException {
-    try {
-      if (!directory.exists()) {
-        makeDirectories(directory);
-        directory.createDirectory();
-      }
-    } catch (IOException e) {
-      throw new RepositoryFunctionException(e, Transience.TRANSIENT);
-    }
-  }
-
-  boolean isRemotable() {
-    Object remotable = rule.getAttributeContainer().getAttr("$remotable");
+  protected boolean isRemotable() {
+    Object remotable = rule.getAttr("$remotable");
     if (remotable != null) {
       return (Boolean) remotable;
     }
     return false;
   }
 
-  private boolean canExecuteRemote() {
-    boolean featureEnabled = starlarkSemantics.experimentalRepoRemoteExec();
-    boolean remoteExecEnabled = remoteExecutor != null;
-    return featureEnabled && isRemotable() && remoteExecEnabled;
-  }
-
-  private ImmutableMap<String, String> getExecProperties() throws EvalException {
+  @Override
+  protected ImmutableMap<String, String> getRemoteExecProperties() throws EvalException {
     return ImmutableMap.copyOf(
         Dict.cast(
             getAttr().getValue("exec_properties"), String.class, String.class, "exec_properties"));
   }
 
-  private Map.Entry<PathFragment, Path> getRemotePathFromLabel(Label label)
-      throws EvalException, InterruptedException {
-    Path localPath = getPathFromLabel(label).getPath();
-    PathFragment remotePath =
-        label.getPackageIdentifier().getSourceRoot().getRelative(label.getName());
-    return Maps.immutableEntry(remotePath, localPath);
-  }
-
-  private StarlarkExecutionResult executeRemote(
-      Sequence<?> argumentsUnchecked, // <String> or <Label> expected
-      int timeout,
-      Map<String, String> environment,
-      boolean quiet,
-      String workingDirectory)
-      throws EvalException, InterruptedException {
-    Preconditions.checkState(canExecuteRemote());
-
-    ImmutableSortedMap.Builder<PathFragment, Path> inputsBuilder =
-        ImmutableSortedMap.naturalOrder();
-    ImmutableList.Builder<String> argumentsBuilder = ImmutableList.builder();
-    for (Object argumentUnchecked : argumentsUnchecked) {
-      if (argumentUnchecked instanceof Label) {
-        Label label = (Label) argumentUnchecked;
-        Map.Entry<PathFragment, Path> remotePath = getRemotePathFromLabel(label);
-        argumentsBuilder.add(remotePath.getKey().toString());
-        inputsBuilder.put(remotePath);
-      } else {
-        argumentsBuilder.add(argumentUnchecked.toString());
-      }
-    }
-
-    ImmutableList<String> arguments = argumentsBuilder.build();
-
-    try (SilentCloseable c =
-        Profiler.instance()
-            .profile(ProfilerTask.STARLARK_REPOSITORY_FN, profileArgsDesc("remote", arguments))) {
-      ExecutionResult result =
-          remoteExecutor.execute(
-              arguments,
-              inputsBuilder.build(),
-              getExecProperties(),
-              ImmutableMap.copyOf(environment),
-              workingDirectory,
-              Duration.ofSeconds(timeout));
-
-      String stdout = new String(result.stdout(), StandardCharsets.US_ASCII);
-      String stderr = new String(result.stderr(), StandardCharsets.US_ASCII);
-
-      if (!quiet) {
-        OutErr outErr = OutErr.SYSTEM_OUT_ERR;
-        outErr.printOut(stdout);
-        outErr.printErr(stderr);
-      }
-
-      return new StarlarkExecutionResult(result.exitCode(), stdout, stderr);
-    } catch (IOException e) {
-      throw Starlark.errorf("remote_execute failed: %s", e.getMessage());
-    }
-  }
-
-  private void validateExecuteArguments(Sequence<?> arguments) throws EvalException {
-    boolean isRemotable = isRemotable();
-    for (int i = 0; i < arguments.size(); i++) {
-      Object arg = arguments.get(i);
-      if (isRemotable) {
-        if (!(arg instanceof String || arg instanceof Label)) {
-          throw new EvalException(
-              Location.BUILTIN, "Argument " + i + " of execute is neither a label nor a string.");
-        }
-      } else {
-        if (!(arg instanceof String || arg instanceof StarlarkPath)) {
-          throw new EvalException(
-              Location.BUILTIN, "Argument " + i + " of execute is neither a path nor a string.");
-        }
-      }
-    }
-  }
-
-  /** Returns the command line arguments as a string for display in the profiler. */
-  private static String profileArgsDesc(String method, List<String> args) {
-    StringBuilder b = new StringBuilder();
-    b.append(method).append(":");
-
-    final String sep = " ";
-    for (String arg : args) {
-      int appendLen = sep.length() + arg.length();
-      int remainingLen = MAX_PROFILE_ARGS_LEN - b.length();
-
-      if (appendLen <= remainingLen) {
-        b.append(sep);
-        b.append(arg);
-      } else {
-        String shortenedArg = (sep + arg).substring(0, remainingLen);
-        b.append(shortenedArg);
-        b.append("...");
-        break;
-      }
-    }
-
-    return b.toString();
-  }
-
-  @Override
-  public StarlarkExecutionResult execute(
-      Sequence<?> arguments, // <String> or <StarlarkPath> or <Label> expected
-      Integer timeout,
-      Dict<?, ?> uncheckedEnvironment, // <String, String> expected
-      boolean quiet,
-      String workingDirectory,
-      StarlarkThread thread)
-      throws EvalException, RepositoryFunctionException, InterruptedException {
-    validateExecuteArguments(arguments);
-
-    Map<String, String> environment =
-        Dict.cast(uncheckedEnvironment, String.class, String.class, "environment");
-
-    if (canExecuteRemote()) {
-      return executeRemote(arguments, timeout, environment, quiet, workingDirectory);
-    }
-
-    // Execute on the local/host machine
-
-    List<String> args = new ArrayList<>(arguments.size());
-    for (Object arg : arguments) {
-      if (arg instanceof Label) {
-        args.add(getPathFromLabel((Label) arg).toString());
-      } else {
-        // String or StarlarkPath expected
-        args.add(arg.toString());
-      }
-    }
-
-    WorkspaceRuleEvent w =
-        WorkspaceRuleEvent.newExecuteEvent(
-            args,
-            timeout,
-            osObject.getEnvironmentVariables(),
-            environment,
-            outputDirectory.getPathString(),
-            quiet,
-            rule.getLabel().toString(),
-            thread.getCallerLocation());
-    env.getListener().post(w);
-    createDirectory(outputDirectory);
-
-    long timeoutMillis = Math.round(timeout.longValue() * 1000 * timeoutScaling);
-    if (processWrapper != null) {
-      args =
-          processWrapper
-              .commandLineBuilder(args)
-              .setTimeout(Duration.ofMillis(timeoutMillis))
-              .build();
-    }
-
-    Path workingDirectoryPath = outputDirectory;
-    if (workingDirectory != null && !workingDirectory.isEmpty()) {
-      workingDirectoryPath = getPath("execute()", workingDirectory).getPath();
-    }
-    createDirectory(workingDirectoryPath);
-
-    try (SilentCloseable c =
-        Profiler.instance()
-            .profile(ProfilerTask.STARLARK_REPOSITORY_FN, profileArgsDesc("local", args))) {
-      return StarlarkExecutionResult.builder(osObject.getEnvironmentVariables())
-          .addArguments(args)
-          .setDirectory(workingDirectoryPath.getPathFile())
-          .addEnvironmentVariables(environment)
-          .setTimeout(timeoutMillis)
-          .setQuiet(quiet)
-          .execute();
-    }
-  }
-
-  @Override
+  @StarlarkMethod(
+      name = "delete",
+      doc =
+          "Deletes a file or a directory. Returns a bool, indicating whether the file or directory"
+              + " was actually deleted by this call.",
+      useStarlarkThread = true,
+      parameters = {
+        @Param(
+            name = "path",
+            allowedTypes = {@ParamType(type = String.class), @ParamType(type = StarlarkPath.class)},
+            doc =
+                "Path of the file to delete, relative to the repository directory, or absolute."
+                    + " Can be a path or a string."),
+      })
   public boolean delete(Object pathObject, StarlarkThread thread)
       throws EvalException, RepositoryFunctionException, InterruptedException {
     StarlarkPath starlarkPath = externalPath("delete()", pathObject);
@@ -597,24 +469,50 @@ public class StarlarkRepositoryContext
     env.getListener().post(w);
     try {
       Path path = starlarkPath.getPath();
-      FileSystem fileSystem = path.getFileSystem();
-      fileSystem.deleteTreesBelow(path);
-      return fileSystem.delete(path);
+      path.deleteTreesBelow();
+      return path.delete();
     } catch (IOException e) {
       throw new RepositoryFunctionException(e, Transience.TRANSIENT);
     }
   }
 
-  @Override
-  public void patch(Object patchFile, Integer strip, StarlarkThread thread)
+  @StarlarkMethod(
+      name = "patch",
+      doc =
+          "Apply a patch file to the root directory of external repository. "
+              + "The patch file should be a standard "
+              + "<a href=\"https://en.wikipedia.org/wiki/Diff#Unified_format\">"
+              + "unified diff format</a> file. "
+              + "The Bazel-native patch implementation doesn't support fuzz match and binary patch "
+              + "like the patch command line tool.",
+      useStarlarkThread = true,
+      parameters = {
+        @Param(
+            name = "patch_file",
+            allowedTypes = {
+              @ParamType(type = String.class),
+              @ParamType(type = Label.class),
+              @ParamType(type = StarlarkPath.class)
+            },
+            doc =
+                "The patch file to apply, it can be label, relative path or absolute path. "
+                    + "If it's a relative path, it will resolve to the repository directory."),
+        @Param(
+            name = "strip",
+            named = true,
+            defaultValue = "0",
+            doc = "strip the specified number of leading components from file names."),
+      })
+  public void patch(Object patchFile, StarlarkInt stripI, StarlarkThread thread)
       throws EvalException, RepositoryFunctionException, InterruptedException {
+    int strip = Starlark.toInt(stripI, "strip");
     StarlarkPath starlarkPath = getPath("patch()", patchFile);
     WorkspaceRuleEvent w =
         WorkspaceRuleEvent.newPatchEvent(
             starlarkPath.toString(), strip, rule.getLabel().toString(), thread.getCallerLocation());
     env.getListener().post(w);
     try {
-      PatchUtil.apply(starlarkPath.getPath(), strip, outputDirectory);
+      PatchUtil.apply(starlarkPath.getPath(), strip, workingDirectory);
     } catch (PatchFailedException e) {
       throw new RepositoryFunctionException(
           Starlark.errorf("Error applying patch %s: %s", starlarkPath, e.getMessage()),
@@ -622,48 +520,6 @@ public class StarlarkRepositoryContext
     } catch (IOException e) {
       throw new RepositoryFunctionException(e, Transience.TRANSIENT);
     }
-  }
-
-  @Override
-  public StarlarkPath which(String program, StarlarkThread thread) throws EvalException {
-    WorkspaceRuleEvent w =
-        WorkspaceRuleEvent.newWhichEvent(
-            program, rule.getLabel().toString(), thread.getCallerLocation());
-    env.getListener().post(w);
-    if (program.contains("/") || program.contains("\\")) {
-      throw Starlark.errorf(
-          "Program argument of which() may not contains a / or a \\ ('%s' given)", program);
-    }
-    try {
-      StarlarkPath commandPath = findCommandOnPath(program);
-      if (commandPath != null) {
-        return commandPath;
-      }
-
-      if (!program.endsWith(OsUtils.executableExtension())) {
-        program += OsUtils.executableExtension();
-        return findCommandOnPath(program);
-      }
-    } catch (IOException e) {
-      // IOException when checking executable file means we cannot read the file data so
-      // we cannot execute it, swallow the exception.
-    }
-    return null;
-  }
-
-  private StarlarkPath findCommandOnPath(String program) throws IOException {
-    for (String p : getPathEnvironment()) {
-      PathFragment fragment = PathFragment.create(p);
-      if (fragment.isAbsolute()) {
-        // We ignore relative path as they don't mean much here (relative to where? the workspace
-        // root?).
-        Path path = outputDirectory.getFileSystem().getPath(fragment).getChild(program);
-        if (path.exists() && path.isFile(Symlinks.FOLLOW) && path.isExecutable()) {
-          return new StarlarkPath(path);
-        }
-      }
-    }
-    return null;
   }
 
   private void warnAboutChecksumError(List<URL> urls, String errorMessage) {
@@ -686,7 +542,78 @@ public class StarlarkRepositoryContext
     return res;
   }
 
-  @Override
+  @StarlarkMethod(
+      name = "download",
+      doc =
+          "Downloads a file to the output path for the provided url and returns a struct"
+              + " containing a hash of the file with the fields <code>sha256</code> and"
+              + " <code>integrity</code>.",
+      useStarlarkThread = true,
+      parameters = {
+        @Param(
+            name = "url",
+            allowedTypes = {
+              @ParamType(type = String.class),
+              @ParamType(type = Iterable.class, generic1 = String.class),
+            },
+            named = true,
+            doc = "List of mirror URLs referencing the same file."),
+        @Param(
+            name = "output",
+            allowedTypes = {
+              @ParamType(type = String.class),
+              @ParamType(type = Label.class),
+              @ParamType(type = StarlarkPath.class)
+            },
+            defaultValue = "''",
+            named = true,
+            doc = "path to the output file, relative to the repository directory."),
+        @Param(
+            name = "sha256",
+            defaultValue = "''",
+            named = true,
+            doc =
+                "the expected SHA-256 hash of the file downloaded."
+                    + " This must match the SHA-256 hash of the file downloaded. It is a security"
+                    + " risk to omit the SHA-256 as remote files can change. At best omitting this"
+                    + " field will make your build non-hermetic. It is optional to make development"
+                    + " easier but should be set before shipping."),
+        @Param(
+            name = "executable",
+            defaultValue = "False",
+            named = true,
+            doc = "set the executable flag on the created file, false by default."),
+        @Param(
+            name = "allow_fail",
+            defaultValue = "False",
+            named = true,
+            doc =
+                "If set, indicate the error in the return value"
+                    + " instead of raising an error for failed downloads"),
+        @Param(
+            name = "canonical_id",
+            defaultValue = "''",
+            named = true,
+            doc =
+                "If set, restrict cache hits to those cases where the file was added to the cache"
+                    + " with the same canonical id"),
+        @Param(
+            name = "auth",
+            defaultValue = "{}",
+            named = true,
+            doc = "An optional dict specifying authentication information for some of the URLs."),
+        @Param(
+            name = "integrity",
+            defaultValue = "''",
+            named = true,
+            positional = false,
+            doc =
+                "Expected checksum of the file downloaded, in Subresource Integrity format."
+                    + " This must match the checksum of the file downloaded. It is a security"
+                    + " risk to omit the checksum as remote files can change. At best omitting this"
+                    + " field will make your build non-hermetic. It is optional to make development"
+                    + " easier but should be set before shipping."),
+      })
   public StructImpl download(
       Object url,
       Object output,
@@ -741,7 +668,7 @@ public class StarlarkRepositoryContext
               Optional.<String>absent(),
               outputPath.getPath(),
               env.getListener(),
-              osObject.getEnvironmentVariables(),
+              envVariables,
               getName());
       if (executable) {
         outputPath.getPath().setExecutable(true);
@@ -751,11 +678,15 @@ public class StarlarkRepositoryContext
           new IOException("thread interrupted"), Transience.TRANSIENT);
     } catch (IOException e) {
       if (allowFail) {
-        Dict<String, Object> dict = Dict.of((Mutability) null, "success", false);
-        return StructProvider.STRUCT.createWithBuiltinLocation(dict);
+        return StarlarkInfo.create(
+            StructProvider.STRUCT, ImmutableMap.of("success", false), Location.BUILTIN);
       } else {
         throw new RepositoryFunctionException(e, Transience.TRANSIENT);
       }
+    } catch (InvalidPathException e) {
+      throw new RepositoryFunctionException(
+          Starlark.errorf("Could not create output path %s: %s", outputPath, e.getMessage()),
+          Transience.PERSISTENT);
     }
     if (checksumValidation != null) {
       throw checksumValidation;
@@ -764,7 +695,45 @@ public class StarlarkRepositoryContext
     return calculateDownloadResult(checksum, downloadedPath);
   }
 
-  @Override
+  @StarlarkMethod(
+      name = "extract",
+      doc = "Extract an archive to the repository directory.",
+      useStarlarkThread = true,
+      parameters = {
+        @Param(
+            name = "archive",
+            allowedTypes = {
+              @ParamType(type = String.class),
+              @ParamType(type = Label.class),
+              @ParamType(type = StarlarkPath.class)
+            },
+            named = true,
+            doc =
+                "path to the archive that will be unpacked,"
+                    + " relative to the repository directory."),
+        @Param(
+            name = "output",
+            allowedTypes = {
+              @ParamType(type = String.class),
+              @ParamType(type = Label.class),
+              @ParamType(type = StarlarkPath.class)
+            },
+            defaultValue = "''",
+            named = true,
+            doc =
+                "path to the directory where the archive will be unpacked,"
+                    + " relative to the repository directory."),
+        @Param(
+            name = "stripPrefix",
+            defaultValue = "''",
+            named = true,
+            doc =
+                "a directory prefix to strip from the extracted files."
+                    + "\nMany archives contain a top-level directory that contains all files in the"
+                    + " archive. Instead of needing to specify this prefix over and over in the"
+                    + " <code>build_file</code>, this field can be used to strip it from extracted"
+                    + " files."),
+      })
   public void extract(Object archive, Object output, String stripPrefix, StarlarkThread thread)
       throws RepositoryFunctionException, InterruptedException, EvalException {
     StarlarkPath archivePath = getPath("extract()", archive);
@@ -801,7 +770,100 @@ public class StarlarkRepositoryContext
     env.getListener().post(new ExtractProgress(outputPath.getPath().toString()));
   }
 
-  @Override
+  @StarlarkMethod(
+      name = "download_and_extract",
+      doc =
+          "Downloads a file to the output path for the provided url, extracts it, and returns"
+              + " a struct containing a hash of the downloaded file with the fields"
+              + " <code>sha256</code> and <code>integrity</code>.",
+      useStarlarkThread = true,
+      parameters = {
+        @Param(
+            name = "url",
+            allowedTypes = {
+              @ParamType(type = String.class),
+              @ParamType(type = Iterable.class, generic1 = String.class),
+            },
+            named = true,
+            doc = "List of mirror URLs referencing the same file."),
+        @Param(
+            name = "output",
+            allowedTypes = {
+              @ParamType(type = String.class),
+              @ParamType(type = Label.class),
+              @ParamType(type = StarlarkPath.class)
+            },
+            defaultValue = "''",
+            named = true,
+            doc =
+                "path to the directory where the archive will be unpacked,"
+                    + " relative to the repository directory."),
+        @Param(
+            name = "sha256",
+            defaultValue = "''",
+            named = true,
+            doc =
+                "the expected SHA-256 hash of the file downloaded."
+                    + " This must match the SHA-256 hash of the file downloaded. It is a security"
+                    + " risk to omit the SHA-256 as remote files can change. At best omitting this"
+                    + " field will make your build non-hermetic. It is optional to make development"
+                    + " easier but should be set before shipping."
+                    + " If provided, the repository cache will first be checked for a file with the"
+                    + " given hash; a download will only be attempted if the file was not found in"
+                    + " the cache. After a successful download, the file will be added to the"
+                    + " cache."),
+        @Param(
+            name = "type",
+            defaultValue = "''",
+            named = true,
+            doc =
+                "the archive type of the downloaded file."
+                    + " By default, the archive type is determined from the file extension of"
+                    + " the URL."
+                    + " If the file has no extension, you can explicitly specify either \"zip\","
+                    + " \"jar\", \"war\", \"aar\", \"tar.gz\", \"tgz\", \"tar.bz2\", or \"tar.xz\""
+                    + " here."),
+        @Param(
+            name = "stripPrefix",
+            defaultValue = "''",
+            named = true,
+            doc =
+                "a directory prefix to strip from the extracted files."
+                    + "\nMany archives contain a top-level directory that contains all files in the"
+                    + " archive. Instead of needing to specify this prefix over and over in the"
+                    + " <code>build_file</code>, this field can be used to strip it from extracted"
+                    + " files."),
+        @Param(
+            name = "allow_fail",
+            defaultValue = "False",
+            named = true,
+            doc =
+                "If set, indicate the error in the return value"
+                    + " instead of raising an error for failed downloads"),
+        @Param(
+            name = "canonical_id",
+            defaultValue = "''",
+            named = true,
+            doc =
+                "If set, restrict cache hits to those cases where the file was added to the cache"
+                    + " with the same canonical id"),
+        @Param(
+            name = "auth",
+            defaultValue = "{}",
+            named = true,
+            doc = "An optional dict specifying authentication information for some of the URLs."),
+        @Param(
+            name = "integrity",
+            defaultValue = "''",
+            named = true,
+            positional = false,
+            doc =
+                "Expected checksum of the file downloaded, in Subresource Integrity format."
+                    + " This must match the checksum of the file downloaded. It is a security"
+                    + " risk to omit the checksum as remote files can change. At best omitting this"
+                    + " field will make your build non-hermetic. It is optional to make development"
+                    + " easier but should be set before shipping."),
+      })
   public StructImpl downloadAndExtract(
       Object url,
       Object output,
@@ -842,14 +904,21 @@ public class StarlarkRepositoryContext
             rule.getLabel().toString(),
             thread.getCallerLocation());
 
-    // Download to outputDirectory and delete it after extraction
     StarlarkPath outputPath = getPath("download_and_extract()", output);
     checkInOutputDirectory("write", outputPath);
     createDirectory(outputPath.getPath());
 
     Path downloadedPath;
+    Path downloadDirectory;
     try (SilentCloseable c =
         Profiler.instance().profile("fetching: " + rule.getLabel().toString())) {
+
+      // Download to temp directory inside the outputDirectory and delete it after extraction
+      java.nio.file.Path tempDirectory =
+          Files.createTempDirectory(Paths.get(outputPath.toString()), "temp");
+      downloadDirectory =
+          workingDirectory.getFileSystem().getPath(tempDirectory.toFile().getAbsolutePath());
+
       downloadedPath =
           downloadManager.download(
               urls,
@@ -857,9 +926,9 @@ public class StarlarkRepositoryContext
               checksum,
               canonicalId,
               Optional.of(type),
-              outputPath.getPath(),
+              downloadDirectory,
               env.getListener(),
-              osObject.getEnvironmentVariables(),
+              envVariables,
               getName());
     } catch (InterruptedException e) {
       env.getListener().post(w);
@@ -868,8 +937,8 @@ public class StarlarkRepositoryContext
     } catch (IOException e) {
       env.getListener().post(w);
       if (allowFail) {
-        Dict<String, Object> dict = Dict.of((Mutability) null, "success", false);
-        return StructProvider.STRUCT.createWithBuiltinLocation(dict);
+        return StarlarkInfo.create(
+            StructProvider.STRUCT, ImmutableMap.of("success", false), Location.BUILTIN);
       } else {
         throw new RepositoryFunctionException(e, Transience.TRANSIENT);
       }
@@ -896,30 +965,51 @@ public class StarlarkRepositoryContext
 
     StructImpl downloadResult = calculateDownloadResult(checksum, downloadedPath);
     try {
-      if (downloadedPath.exists()) {
-        downloadedPath.delete();
+      if (downloadDirectory.exists()) {
+        downloadDirectory.deleteTree();
       }
     } catch (IOException e) {
       throw new RepositoryFunctionException(
           new IOException(
-              "Couldn't delete temporary file (" + downloadedPath.getPathString() + ")", e),
+              "Couldn't delete temporary directory (" + downloadDirectory.getPathString() + ")", e),
           Transience.TRANSIENT);
     }
     return downloadResult;
   }
 
-  @Override
+  @StarlarkMethod(
+      name = "flag_enabled",
+      doc =
+          "This method is present temporarily for a migration. It can be used only by a few "
+              + "whitelisted bzl files embedded in Bazel.",
+      useStarlarkThread = true,
+      documented = false,
+      parameters = {
+        @Param(name = "flag", doc = "Flag to get the value for."),
+      })
   public boolean flagEnabled(String flag, StarlarkThread starlarkThread) throws EvalException {
-    try {
-      if (WHITELISTED_PATHS_FOR_FLAG_ENABLED.stream()
-          .noneMatch(x -> !starlarkThread.getCallerLocation().toString().endsWith(x))) {
-        throw Starlark.errorf(
-            "flag_enabled() is restricted to: '%s'.",
-            Joiner.on(", ").join(WHITELISTED_REPOS_FOR_FLAG_ENABLED));
-      }
-      return starlarkSemantics.flagValue(flag);
-    } catch (IllegalArgumentException e) {
-      throw Starlark.errorf("Can't query value of '%s'.\n%s", flag, e.getMessage());
+    if (WHITELISTED_PATHS_FOR_FLAG_ENABLED.stream()
+        .noneMatch(x -> !starlarkThread.getCallerLocation().toString().endsWith(x))) {
+      throw Starlark.errorf(
+          "flag_enabled() is restricted to: '%s'.",
+          Joiner.on(", ").join(WHITELISTED_REPOS_FOR_FLAG_ENABLED));
+    }
+
+    // This function previously exposed the names of the StarlarkSemantics
+    // options, which have historically been *almost* the same as the corresponding
+    // flag names, but for minor accidental differences (e.g. case, plurals, underscores).
+    // But now that we have decoupled Bazel's Starlarksemantics features from the core
+    // interpreter, there is no reliable way to look up a semantics key by flag name.
+    // (For booleans, the key must encode its default value).
+    // So, for now, we'll special-case this to a single flag.
+    // Thank goodness (and laurentlb) it is access-restricted to a single .bzl file that we control.
+    // If this hack is really necessary, we could add logic to BuildLanguageOptions to extract
+    // values from StarlarkSemantics based on flag name.
+    switch (flag) {
+      case "incompatible_linkopts_to_linklibs":
+        return starlarkSemantics.getBool(BuildLanguageOptions.INCOMPATIBLE_LINKOPTS_TO_LINKLIBS);
+      default:
+        throw Starlark.errorf("flag_enabled: unsupported key: %s", flag);
     }
   }
 
@@ -929,7 +1019,14 @@ public class StarlarkRepositoryContext
       // The checksum is checked on download, so if we got here, the user provided checksum is good
       return originalChecksum.get();
     }
-    return Checksum.fromString(KeyType.SHA256, RepositoryCache.getChecksum(KeyType.SHA256, path));
+    try {
+      return Checksum.fromString(KeyType.SHA256, RepositoryCache.getChecksum(KeyType.SHA256, path));
+    } catch (Checksum.InvalidChecksumException e) {
+      throw new IllegalStateException(
+          "Unexpected invalid checksum from internal computation of SHA-256 checksum on "
+              + path.getPathString(),
+          e);
+    }
   }
 
   private Optional<Checksum> validateChecksum(String sha256, String integrity, List<URL> urls)
@@ -940,7 +1037,7 @@ public class StarlarkRepositoryContext
       }
       try {
         return Optional.of(Checksum.fromString(KeyType.SHA256, sha256));
-      } catch (IllegalArgumentException e) {
+      } catch (Checksum.InvalidChecksumException e) {
         warnAboutChecksumError(urls, e.getMessage());
         throw new RepositoryFunctionException(
             Starlark.errorf(
@@ -956,7 +1053,7 @@ public class StarlarkRepositoryContext
 
     try {
       return Optional.of(Checksum.fromSubresourceIntegrity(integrity));
-    } catch (IllegalArgumentException e) {
+    } catch (Checksum.InvalidChecksumException e) {
       warnAboutChecksumError(urls, e.getMessage());
       throw new RepositoryFunctionException(
           Starlark.errorf(
@@ -978,7 +1075,7 @@ public class StarlarkRepositoryContext
           Transience.PERSISTENT);
     }
 
-    ImmutableMap.Builder<String, Object> out = new ImmutableMap.Builder<>();
+    ImmutableMap.Builder<String, Object> out = ImmutableMap.builder();
     out.put("success", true);
     out.put("integrity", finalChecksum.toSubresourceIntegrity());
 
@@ -986,7 +1083,7 @@ public class StarlarkRepositoryContext
     if (finalChecksum.getKeyType() == KeyType.SHA256) {
       out.put("sha256", finalChecksum.toString());
     }
-    return StructProvider.STRUCT.createWithBuiltinLocation(Dict.copyOf(null, out.build()));
+    return StarlarkInfo.create(StructProvider.STRUCT, out.build(), Location.BUILTIN);
   }
 
   private static ImmutableList<String> checkAllUrls(Iterable<?> urlList) throws EvalException {
@@ -994,12 +1091,10 @@ public class StarlarkRepositoryContext
 
     for (Object o : urlList) {
       if (!(o instanceof String)) {
-        throw new EvalException(
-            null,
-            String.format(
-                "Expected a string or sequence of strings for 'url' argument, "
-                    + "but got '%s' item in the sequence",
-                Starlark.type(o)));
+        throw Starlark.errorf(
+            "Expected a string or sequence of strings for 'url' argument, but got '%s' item in the"
+                + " sequence",
+            Starlark.type(o));
       }
       result.add((String) o);
     }
@@ -1049,55 +1144,9 @@ public class StarlarkRepositoryContext
     return urls;
   }
 
-  // This is just for test to overwrite the path environment
-  private static ImmutableList<String> pathEnv = null;
-
-  @VisibleForTesting
-  static void setPathEnvironment(String... pathEnv) {
-    StarlarkRepositoryContext.pathEnv = ImmutableList.<String>copyOf(pathEnv);
-  }
-
-  private ImmutableList<String> getPathEnvironment() {
-    if (pathEnv != null) {
-      return pathEnv;
-    }
-    String pathEnviron = osObject.getEnvironmentVariables().get("PATH");
-    if (pathEnviron == null) {
-      return ImmutableList.of();
-    }
-    return ImmutableList.copyOf(pathEnviron.split(File.pathSeparator));
-  }
-
   @Override
   public String toString() {
     return "repository_ctx[" + rule.getLabel() + "]";
-  }
-
-  // Resolve the label given by value into a file path.
-  private StarlarkPath getPathFromLabel(Label label) throws EvalException, InterruptedException {
-    RootedPath rootedPath = RepositoryFunction.getRootedPathFromLabel(label, env);
-    SkyKey fileSkyKey = FileValue.key(rootedPath);
-    FileValue fileValue = null;
-    try {
-      fileValue = (FileValue) env.getValueOrThrow(fileSkyKey, IOException.class);
-    } catch (IOException e) {
-      throw Starlark.errorf("%s", e.getMessage());
-    }
-
-    if (fileValue == null) {
-      throw RepositoryFunction.restart();
-    }
-    if (!fileValue.isFile() || fileValue.isSpecialFile()) {
-      throw Starlark.errorf("Not a regular file: %s", rootedPath.asPath().getPathString());
-    }
-
-    // A label does not contains space so it safe to use as a key.
-    try {
-      markerData.put("FILE:" + label, RepositoryFunction.fileValueToMarkerValue(fileValue));
-    } catch (IOException e) {
-      throw Starlark.errorf("%s", e.getMessage());
-    }
-    return new StarlarkPath(rootedPath.asPath());
   }
 
   /**
@@ -1108,6 +1157,7 @@ public class StarlarkRepositoryContext
    * exception thrown). In this way, we can enforce that all arguments are evaluated before we start
    * potentially more expensive operations.
    */
+  // TODO(wyv): somehow migrate this to the base context too.
   public void enforceLabelAttributes() throws EvalException, InterruptedException {
     StructImpl attr = getAttr();
     for (String name : attr.getFieldNames()) {
@@ -1151,11 +1201,10 @@ public class StarlarkRepositoryContext
         if (authMap.containsKey("type")) {
           if ("basic".equals(authMap.get("type"))) {
             if (!authMap.containsKey("login") || !authMap.containsKey("password")) {
-              throw new EvalException(
-                  null,
-                  "Found request to do basic auth for "
-                      + entry.getKey()
-                      + " without 'login' and 'password' being provided.");
+              throw Starlark.errorf(
+                  "Found request to do basic auth for %s without 'login' and 'password' being"
+                      + " provided.",
+                  entry.getKey());
             }
             String credentials = authMap.get("login") + ":" + authMap.get("password");
             headers.put(
@@ -1167,11 +1216,9 @@ public class StarlarkRepositoryContext
                             .encodeToString(credentials.getBytes(StandardCharsets.UTF_8))));
           } else if ("pattern".equals(authMap.get("type"))) {
             if (!authMap.containsKey("pattern")) {
-              throw new EvalException(
-                  null,
-                  "Found request to do pattern auth for "
-                      + entry.getKey()
-                      + " without a pattern being provided");
+              throw Starlark.errorf(
+                  "Found request to do pattern auth for %s without a pattern being provided",
+                  entry.getKey());
             }
 
             String result = (String) authMap.get("pattern");
@@ -1181,11 +1228,9 @@ public class StarlarkRepositoryContext
 
               if (result.contains(demarcatedComponent)) {
                 if (!authMap.containsKey(component)) {
-                  throw new EvalException(
-                      null,
-                      "Auth pattern contains "
-                          + demarcatedComponent
-                          + " but it was not provided in auth dict.");
+                  throw Starlark.errorf(
+                      "Auth pattern contains %s but it was not provided in auth dict.",
+                      demarcatedComponent);
                 }
               } else {
                 // component isn't in the pattern, ignore it
@@ -1201,7 +1246,7 @@ public class StarlarkRepositoryContext
       } catch (MalformedURLException e) {
         throw new RepositoryFunctionException(e, Transience.PERSISTENT);
       } catch (URISyntaxException e) {
-        throw new EvalException(null, e.getMessage());
+        throw new EvalException(e);
       }
     }
     return headers.build();

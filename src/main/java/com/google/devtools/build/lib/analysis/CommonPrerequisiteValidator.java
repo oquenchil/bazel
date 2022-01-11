@@ -25,9 +25,9 @@ import com.google.devtools.build.lib.packages.OutputFile;
 import com.google.devtools.build.lib.packages.PackageGroup;
 import com.google.devtools.build.lib.packages.RawAttributeMapper;
 import com.google.devtools.build.lib.packages.Rule;
-import com.google.devtools.build.lib.packages.RuleErrorConsumer;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.packages.Type;
+import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
 
 /**
@@ -81,13 +81,11 @@ public abstract class CommonPrerequisiteValidator implements PrerequisiteValidat
         && !Attribute.isLateBound(attrName)) {
 
       // Determine if we should use the new visibility rules for tools.
-      boolean toolCheckAtDefinition = false;
-      try {
-        toolCheckAtDefinition =
-            context.getStarlarkSemantics().incompatibleVisibilityPrivateAttributesAtDefinition();
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-      }
+      boolean toolCheckAtDefinition =
+          context
+              .getStarlarkSemantics()
+              .getBool(
+                  BuildLanguageOptions.INCOMPATIBLE_VISIBILITY_PRIVATE_ATTRIBUTES_AT_DEFINITION);
 
       if (!toolCheckAtDefinition
           || !attribute.isImplicit()
@@ -111,11 +109,10 @@ public abstract class CommonPrerequisiteValidator implements PrerequisiteValidat
       if (configuredAttribute == null) { // handles aspects
         configuredAttribute = attribute;
       }
+      String description = configuredAttribute.getRequiredProviders().getDescription();
       boolean containsPackageSpecificationProvider =
-          configuredAttribute
-              .getRequiredProviders()
-              .getDescription()
-              .contains("PackageSpecificationProvider");
+          description.contains("PackageSpecificationProvider")
+              || description.contains("PackageSpecificationInfo");
       // TODO(plf): Add the PackageSpecificationProvider to the 'visibility' attribute.
       if (!attrName.equals("visibility")
           && !attrName.equals(FunctionSplitTransitionAllowlist.ATTRIBUTE_NAME)

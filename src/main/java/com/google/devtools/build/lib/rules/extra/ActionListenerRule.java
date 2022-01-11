@@ -56,18 +56,18 @@ public final class ActionListenerRule implements RuleDefinition {
   public Metadata getMetadata() {
     return RuleDefinition.Metadata.builder()
         .name("action_listener")
-        .ancestors(BaseRuleClasses.RuleBase.class)
+        .ancestors(BaseRuleClasses.NativeActionCreatingRule.class)
         .factoryClass(ActionListener.class)
         .build();
   }
 }
 
-/*<!-- #BLAZE_RULE (NAME = action_listener, TYPE = BINARY, FAMILY = Extra Actions)[GENERIC_RULE] -->
+/*<!-- #BLAZE_RULE (NAME = action_listener, FAMILY = Extra Actions)[GENERIC_RULE] -->
 
 <p>
-  <b>DISCLAIMER:</b>
-  This is an experimental feature, expect breaking changes when
-  implementing an <code>action_listener</code>/<code>extra_action</code>.
+  <b>WARNING:</b> Extra actions are deprecated. Use
+  <a href="https://docs.bazel.build/versions/main/skylark/aspects.html">aspects</a>
+  instead.
 </p>
 
 <p>
@@ -84,7 +84,7 @@ public final class ActionListenerRule implements RuleDefinition {
 </p>
 
 <p>
-  By specifying the option <a href="${link user-manual.html#flag--experimental_action_listener}">
+  By specifying the option <a href="../user-manual.html#flag--experimental_action_listener">
   <code>--experimental_action_listener=&lt;label&gt;</code></a>,
   the build will use the specified <code>action_listener</code> to insert
   <a href="${link extra_action}"><code>extra_action</code></a>s into the build graph.

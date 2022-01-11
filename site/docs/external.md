@@ -1,16 +1,19 @@
 ---
 layout: documentation
 title: External dependencies
+category: getting-started
 ---
 
-# Working with external dependencies
+# Working with External Dependencies
 
-Bazel can depend on targets from other projects.  Dependencies from these other
+Bazel can depend on targets from other projects. Dependencies from these other
 projects are called _external dependencies_.
 
+Note: Bazel 5.0 and newer has a new external dependency system, codenamed "Bzlmod", which renders a lot of the content on this page obsolete. See [Bzlmod user guide](bzlmod.md) for more information.
+
 The `WORKSPACE` file (or `WORKSPACE.bazel` file) in the [workspace directory](build-ref.html#workspace)
-tells Bazel how to get other projects' sources.  These other projects can
-contain one or more `BUILD` files with their own targets.  `BUILD` files within
+tells Bazel how to get other projects' sources. These other projects can
+contain one or more `BUILD` files with their own targets. `BUILD` files within
 the main project can depend on these external targets by using their name from
 the `WORKSPACE` file.
 
@@ -37,7 +40,7 @@ If `project1` wanted to depend on a target, `:foo`, defined in
 `/home/user/project1/BUILD` could depend on `@project2//:foo`.
 
 The `WORKSPACE` file allows users to depend on targets from other parts of the
-filesystem or downloaded from the internet. It uses the same syntax as BUILD
+filesystem or downloaded from the internet. It uses the same syntax as `BUILD`
 files, but allows a different set of rules called _repository rules_ (sometimes
 also known as _workspace rules_). Bazel comes with a few [built-in repository
 rules](be/workspace.html) and a set of [embedded Starlark repository
@@ -79,8 +82,7 @@ local_repository(
 
 If your coworker has a target `//foo:bar`, your project can refer to it as
 `@coworkers_project//foo:bar`. External project names must be
-[valid workspace names](skylark/lib/globals.html#workspace), so `_` (valid) is used to
-replace `-` (invalid) in the name `coworkers_project`.
+[valid workspace names](skylark/lib/globals.html#workspace).
 
 <a name="non-bazel-projects"></a>
 ### Depending on non-Bazel projects
@@ -102,7 +104,7 @@ new_local_repository(
 )
 ```
 
-`build_file` specifies a BUILD file to overlay on the existing project, for
+`build_file` specifies a `BUILD` file to overlay on the existing project, for
 example:
 
 ```python
@@ -113,8 +115,8 @@ cc_library(
 )
 ```
 
-You can then depend on `@coworkers_project//:some-lib` from your project's BUILD
-files.
+You can then depend on `@coworkers_project//:some-lib` from your project's
+`BUILD` files.
 
 <a name="external-packages"></a>
 ### Depending on external packages
@@ -131,9 +133,9 @@ dependencies.
 
 By default, external dependencies are fetched as needed during `bazel build`. If
 you would like to prefetch the dependencies needed for a specific set of targets, use
-[`bazel fetch`](https://docs.bazel.build/versions/master/command-line-reference.html#commands).
+[`bazel fetch`](https://docs.bazel.build/versions/main/command-line-reference.html#commands).
 To unconditionally fetch all external dependencies, use
-[`bazel sync`](https://docs.bazel.build/versions/master/command-line-reference.html#commands).
+[`bazel sync`](https://docs.bazel.build/versions/main/command-line-reference.html#commands).
 As fetched repositories are [stored in the output base](#layout), fetching
 happens per workspace.
 
@@ -247,6 +249,38 @@ Some of the use cases include:
 Bazel will pick up proxy addresses from the `HTTPS_PROXY` and `HTTP_PROXY`
 environment variables and use these to download HTTP/HTTPS files (if specified).
 
+<a name="support-for-ipv6"></a>
+## Support for IPv6
+On IPv6-only machines, Bazel will be able to download dependencies with
+no changes. On dual-stack IPv4/IPv6 machines, however, Bazel follows the same
+convention as Java: if IPv4 is enabled, IPv4 is preferred. In some situations,
+for example when IPv4 network is unable to resolve/reach external addresses,
+this can cause `Network unreachable` exceptions and build failures.
+In these cases, you can override Bazel's behavior to prefer IPv6
+by using [`java.net.preferIPv6Addresses=true` system property](https://docs.oracle.com/javase/8/docs/api/java/net/doc-files/net-properties.html).
+Specifically:
+
+* Use `--host_jvm_args=-Djava.net.preferIPv6Addresses=true`
+  [startup option](user-manual.html#startup_options),
+  for example by adding the following line in your
+  [`.bazelrc` file](guide.html#bazelrc):
+
+  `startup --host_jvm_args=-Djava.net.preferIPv6Addresses=true`
+
+* If you are running Java build targets that need to connect to the internet
+  as well (integration tests sometimes needs that), also use
+  `--jvmopt=-Djava.net.preferIPv6Addresses=true`
+  [tool flag](user-manual.html#flags-options), for example by having the
+  following line in your [`.bazelrc` file](guide.html#bazelrc):
+
+  `build --jvmopt=-Djava.net.preferIPv6Addresses`
+
+* If you are using
+  [rules_jvm_external](https://github.com/bazelbuild/rules_jvm_external),
+  for example, for dependency version resolution, also add
+  `-Djava.net.preferIPv6Addresses=true` to the `COURSIER_OPTS`
+  environment variable to [provide JVM options for Coursier](https://github.com/bazelbuild/rules_jvm_external#provide-jvm-options-for-coursier-with-coursier_opts)
+
 <a name="transitive-dependencies"></a>
 ## Transitive dependencies
 
@@ -331,7 +365,7 @@ Prefer [`http_archive`](repo/http.html#http_archive) to `git_repository` and
    [#5116](https://github.com/bazelbuild/bazel/issues/5116) for more information.
 
 
-Do not use `bind()`.  See "[Consider removing
+Do not use `bind()`. See "[Consider removing
 bind](https://github.com/bazelbuild/bazel/issues/1952)" for a long discussion of its issues and
 alternatives.
 
@@ -344,6 +378,6 @@ A repository rule should generally be responsible for:
 -  Downloading resources from URLs.
 -  Generating or symlinking BUILD files into the external repository directory.
 
-Avoid using `repository_ctx.execute` when possible.  For example, when using a non-Bazel C++
+Avoid using `repository_ctx.execute` when possible. For example, when using a non-Bazel C++
 library that has a build using Make, it is preferable to use `repository_ctx.download()` and then
 write a BUILD file that builds it, instead of running `ctx.execute(["make"])`.

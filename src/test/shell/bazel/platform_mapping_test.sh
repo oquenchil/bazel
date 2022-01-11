@@ -203,8 +203,8 @@ my_rule = rule(
   implementation = _my_rule_impl,
   attrs = {
       "deps": attr.label_list(cfg = my_transition),
-      "_whitelist_function_transition": attr.label(
-          default = "@//tools/whitelists/function_transition_whitelist"),
+      "_allowlist_function_transition": attr.label(
+          default = "@//tools/allowlists/function_transition_allowlist"),
   }
 )
 EOF
@@ -221,8 +221,7 @@ my_rule(
 report_flags(name = "report")
 EOF
 
-  bazel build --cpu=k8 package:custom \
-      --experimental_starlark_config_transitions &> $TEST_log \
+  bazel build --cpu=k8 package:custom &> $TEST_log \
       || fail "Build failed unexpectedly"
   expect_not_log "platform: //plat:platform1"
   expect_log "platform: //plat:platform2"
@@ -276,8 +275,8 @@ transitioning_rule = rule(
   implementation = _transitioning_rule_impl,
   attrs = {
       "deps": attr.label_list(cfg = my_transition),
-      "_whitelist_function_transition": attr.label(
-          default = "@//tools/whitelists/function_transition_whitelist"),
+      "_allowlist_function_transition": attr.label(
+          default = "@//tools/allowlists/function_transition_allowlist"),
   }
 )
 

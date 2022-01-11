@@ -38,8 +38,9 @@ java_test(
         "//src/main/java/com/google/devtools/build/lib/vfs",
         "//src/main/java/com/google/devtools/build/lib/vfs:pathfragment",
         "//src/main/java/com/google/devtools/build/lib/windows",
+        "//src/main/java/com/google/devtools/build/lib/windows:file",
+        "//src/main/java/com/google/devtools/build/lib/windows:processes",
         "//src/main/java/com/google/devtools/build/lib/windows:windows_short_path",
-        "//src/main/java/com/google/devtools/build/lib/windows/jni",
         "//src/test/java/com/google/devtools/build/lib/testutil",
         "//src/test/java/com/google/devtools/build/lib/windows/util",
         "//third_party:guava",
@@ -59,19 +60,4 @@ cc_binary(
     name = "printarg",
     testonly = 1,
     srcs = ["printarg.cc"],
-)
-
-test_suite(
-    name = "windows_tests",
-    tags = [
-        "-no_windows",
-        "-slow",
-    ],
-)
-
-test_suite(
-    name = "all_windows_tests",
-    tests = [
-        ":windows_tests",
-    ],
 )

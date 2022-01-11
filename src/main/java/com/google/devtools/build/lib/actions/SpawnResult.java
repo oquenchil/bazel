@@ -15,10 +15,13 @@ package com.google.devtools.build.lib.actions;
 
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
+import com.google.devtools.build.lib.bugreport.BugReport;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.shell.TerminationStatus;
+import com.google.devtools.build.lib.util.DetailedExitCode;
+import com.google.devtools.build.lib.util.ExitCode;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.protobuf.ByteString;
 import java.io.InputStream;
@@ -163,6 +166,9 @@ public interface SpawnResult {
    */
   String getRunnerName();
 
+  /** Returns optional details about the runner. */
+  String getRunnerSubtype();
+
   /**
    * Returns the wall time taken by the {@link Spawn}'s execution.
    *
@@ -211,6 +217,16 @@ public interface SpawnResult {
    */
   Optional<Long> getNumInvoluntaryContextSwitches();
 
+  /**
+   * Returns the memory in Kilobytes used during the {@link Spawn}'s execution. The spawn memory
+   * based on the maximum resident set size during command execution.
+   *
+   * @return the measurement, or empty in case of execution errors or when the measurement is not
+   *     implemented for the current platform
+   */
+  // TODO(b/181317827) implement for windows systems.
+  Optional<Long> getMemoryInKb();
+
   SpawnMetrics getMetrics();
 
   /** Returns whether the spawn result was a cache hit. */
@@ -233,9 +249,7 @@ public interface SpawnResult {
   }
 
   String getDetailMessage(
-      String messagePrefix,
       String message,
-      boolean verboseFailures,
       boolean catastrophe,
       boolean forciblyRunRemotely);
 
@@ -254,6 +268,7 @@ public interface SpawnResult {
     @Nullable private final FailureDetail failureDetail;
     private final String executorHostName;
     private final String runnerName;
+    private final String runnerSubtype;
     private final SpawnMetrics spawnMetrics;
     private final Optional<Duration> wallTime;
     private final Optional<Duration> userTime;
@@ -261,6 +276,7 @@ public interface SpawnResult {
     private final Optional<Long> numBlockOutputOperations;
     private final Optional<Long> numBlockInputOperations;
     private final Optional<Long> numInvoluntaryContextSwitches;
+    private final Optional<Long> memoryKb;
     private final Optional<MetadataLog> actionMetadataLog;
     private final boolean cacheHit;
     private final String failureMessage;
@@ -276,6 +292,7 @@ public interface SpawnResult {
       this.failureDetail = builder.failureDetail;
       this.executorHostName = builder.executorHostName;
       this.runnerName = builder.runnerName;
+      this.runnerSubtype = builder.runnerSubtype;
       this.spawnMetrics = builder.spawnMetrics != null
           ? builder.spawnMetrics
           : SpawnMetrics.forLocalExecution(builder.wallTime.orElse(Duration.ZERO));
@@ -285,6 +302,7 @@ public interface SpawnResult {
       this.numBlockOutputOperations = builder.numBlockOutputOperations;
       this.numBlockInputOperations = builder.numBlockInputOperations;
       this.numInvoluntaryContextSwitches = builder.numInvoluntaryContextSwitches;
+      this.memoryKb = builder.memoryInKb;
       this.cacheHit = builder.cacheHit;
       this.failureMessage = builder.failureMessage;
       this.inMemoryOutputFile = builder.inMemoryOutputFile;
@@ -317,6 +335,11 @@ public interface SpawnResult {
     @Override
     public String getRunnerName() {
       return runnerName;
+    }
+
+    @Override
+    public String getRunnerSubtype() {
+      return runnerSubtype;
     }
 
     @Override
@@ -355,6 +378,11 @@ public interface SpawnResult {
     }
 
     @Override
+    public Optional<Long> getMemoryInKb() {
+      return memoryKb;
+    }
+
+    @Override
     public boolean isCacheHit() {
       return cacheHit;
     }
@@ -366,23 +394,14 @@ public interface SpawnResult {
 
     @Override
     public String getDetailMessage(
-        String messagePrefix,
         String message,
-        boolean verboseFailures,
         boolean catastrophe,
         boolean forciblyRunRemotely) {
       TerminationStatus status = new TerminationStatus(
           exitCode(), status() == Status.TIMEOUT);
-      String reason = " (" + status.toShortString() + ")"; // e.g " (Exit 1)"
-      // Include the command line as error message if --verbose_failures is enabled or
-      // the command line didn't exit normally.
-      String explanation = verboseFailures || !status.exited() ? ": " + message : "";
+      String reason = "(" + status.toShortString() + ")"; // e.g "(Exit 1)"
+      String explanation = Strings.isNullOrEmpty(message) ? "" : ": " + message;
 
-      if (!status().isConsideredUserError()) {
-        String errorDetail = status().name().toLowerCase(Locale.US)
-            .replace('_', ' ');
-        explanation += ". Note: Remote connection/protocol failed with: " + errorDetail;
-      }
       if (status() == Status.TIMEOUT) {
         if (getWallTime().isPresent()) {
           explanation +=
@@ -400,10 +419,7 @@ public interface SpawnResult {
         explanation += " Action tagged as local was forcibly run remotely and failed - it's "
             + "possible that the action simply doesn't work remotely";
       }
-      if (!Strings.isNullOrEmpty(failureMessage)) {
-        explanation += " " + failureMessage;
-      }
-      return messagePrefix + " failed" + reason + explanation;
+      return reason + explanation;
     }
 
     @Nullable
@@ -433,6 +449,7 @@ public interface SpawnResult {
     private FailureDetail failureDetail;
     private String executorHostName;
     private String runnerName = "";
+    private String runnerSubtype = "";
     private SpawnMetrics spawnMetrics;
     private Optional<Duration> wallTime = Optional.empty();
     private Optional<Duration> userTime = Optional.empty();
@@ -440,6 +457,7 @@ public interface SpawnResult {
     private Optional<Long> numBlockOutputOperations = Optional.empty();
     private Optional<Long> numBlockInputOperations = Optional.empty();
     private Optional<Long> numInvoluntaryContextSwitches = Optional.empty();
+    private Optional<Long> memoryInKb = Optional.empty();
     private Optional<MetadataLog> actionMetadataLog = Optional.empty();
     private boolean cacheHit;
     private String failureMessage = "";
@@ -452,17 +470,37 @@ public interface SpawnResult {
     public SpawnResult build() {
       Preconditions.checkArgument(!runnerName.isEmpty());
 
-      if (status == Status.SUCCESS) {
-        Preconditions.checkArgument(exitCode == 0, exitCode);
-      } else if (status == Status.TIMEOUT) {
-        Preconditions.checkArgument(exitCode == POSIX_TIMEOUT_EXIT_CODE, exitCode);
-      } else if (status == Status.NON_ZERO_EXIT || status == Status.OUT_OF_MEMORY) {
-        Preconditions.checkArgument(exitCode != 0, exitCode);
+      switch (status) {
+        case SUCCESS:
+          Preconditions.checkArgument(exitCode == 0, exitCode);
+          Preconditions.checkArgument(failureDetail == null, failureDetail);
+          break;
+        case TIMEOUT:
+          Preconditions.checkArgument(exitCode == POSIX_TIMEOUT_EXIT_CODE, exitCode);
+          // Fall through.
+        default:
+          Preconditions.checkArgument(
+              exitCode != 0,
+              "Failed spawn with status %s had exit code 0 (%s %s)",
+              status,
+              failureMessage,
+              failureDetail);
+          Preconditions.checkArgument(
+              failureDetail != null,
+              "Failed spawn with status %s and exit code %s had no failure detail (%s)",
+              status,
+              exitCode,
+              failureMessage);
+          if (!status.isConsideredUserError()
+              && ExitCode.BUILD_FAILURE.equals(DetailedExitCode.getExitCode(failureDetail))) {
+            BugReport.sendBugReport(
+                new IllegalStateException(
+                    String.format(
+                        "System error %s should not have failure detail %s with 'build failure'"
+                            + " exit code (%s)",
+                        status, failureDetail, failureMessage)));
+          }
       }
-
-      // TODO(mschaller): Once SimpleSpawnResult.Builder's uses have picked up FailureDetails for
-      //  unsuccessful spawns, add a precondition that asserts failureDetail's nullity is the same
-      //  as whether status is SUCCESS.
 
       return new SimpleSpawnResult(this);
     }
@@ -524,6 +562,11 @@ public interface SpawnResult {
 
     public Builder setNumInvoluntaryContextSwitches(long numInvoluntaryContextSwitches) {
       this.numInvoluntaryContextSwitches = Optional.of(numInvoluntaryContextSwitches);
+      return this;
+    }
+
+    public Builder setMemoryInKb(long memoryInKb) {
+      this.memoryInKb = Optional.of(memoryInKb);
       return this;
     }
 

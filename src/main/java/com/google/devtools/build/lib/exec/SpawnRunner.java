@@ -14,16 +14,19 @@
 package com.google.devtools.build.lib.exec;
 
 import com.google.devtools.build.lib.actions.ActionContext;
+import com.google.devtools.build.lib.actions.ActionExecutionMetadata;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
 import com.google.devtools.build.lib.actions.ArtifactPathResolver;
 import com.google.devtools.build.lib.actions.ExecException;
+import com.google.devtools.build.lib.actions.ForbiddenActionInputException;
 import com.google.devtools.build.lib.actions.FutureSpawn;
 import com.google.devtools.build.lib.actions.LostInputsExecException;
 import com.google.devtools.build.lib.actions.MetadataProvider;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.cache.MetadataInjector;
+import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -103,25 +106,9 @@ public interface SpawnRunner {
    * <p>{@link SpawnRunner} implementations should post a progress status before any potentially
    * long-running operation.
    */
-  enum ProgressStatus {
-    /** Spawn is waiting for local or remote resources to become available. */
-    SCHEDULING,
-
-    /** The {@link SpawnRunner} is looking for a cache hit. */
-    CHECKING_CACHE,
-
-    /**
-     * Resources are acquired, and there was probably no cache hit. This MUST be posted before
-     * attempting to execute the subprocess.
-     *
-     * <p>Caching {@link SpawnRunner} implementations should only post this after a failed cache
-     * lookup, but may post this if cache lookup and execution happen within the same step, e.g. as
-     * part of a single RPC call with no mechanism to report cache misses.
-     */
-    EXECUTING,
-
-    /** Downloading outputs from a remote machine. */
-    DOWNLOADING
+  interface ProgressStatus {
+    /** Post this progress event to the given {@link ExtendedEventHandler}. */
+    void postTo(ExtendedEventHandler eventHandler, ActionExecutionMetadata action);
   }
 
   /**
@@ -159,7 +146,7 @@ public interface SpawnRunner {
      * again. I suppose we could require implementations to memoize getInputMapping (but not compute
      * it eagerly), and that may change in the future.
      */
-    void prefetchInputs() throws IOException, InterruptedException;
+    void prefetchInputs() throws IOException, InterruptedException, ForbiddenActionInputException;
 
     /**
      * The input file metadata cache for this specific spawn, which can be used to efficiently
@@ -174,6 +161,12 @@ public interface SpawnRunner {
     // directories? Or maybe we need a separate method to return the set of directories?
     ArtifactExpander getArtifactExpander();
 
+    /** A spawn input expander. */
+    // TODO(moroten): This is only used for the remote cache and remote execution to optimize
+    // Merkle tree generation. Having both this and the getInputMapping method seems a bit
+    // duplicated.
+    SpawnInputExpander getSpawnInputExpander();
+
     /** The {@link ArtifactPathResolver} to use when directly writing output files. */
     default ArtifactPathResolver getPathResolver() {
       return ArtifactPathResolver.IDENTITY;
@@ -183,8 +176,23 @@ public interface SpawnRunner {
      * All implementations must call this method before writing to the provided stdout / stderr or
      * to any of the output file locations. This method is used to coordinate - implementations must
      * throw an {@link InterruptedException} for all but one caller.
+     *
+     * <p>This method may look at various outputs from the finished action to decide whether to grab
+     * the lock. It may decide that the failure is of a character where the other branch should be
+     * allowed to finish this action. In that case, this method will throw {@link
+     * InterruptedException} to stop itself.
+     *
+     * @param exitCode The exit code from running the command. This and the other parameters are
+     *     used only to determine whether to ignore failures, so pass 0 if you know the command was
+     *     successful or you don't yet have success information.
+     * @param errorMessage The error messages returned from the command, possibly in other ways than
+     *     through stdout/err.
+     * @param outErr The location of the stdout and stderr files from the command.
+     * @throws InterruptedException if the error info indicates an error we can ignore or if we got
+     *     interrupted before we finished.
      */
-    void lockOutputFiles() throws InterruptedException, IOException;
+    void lockOutputFiles(int exitCode, String errorMessage, FileOutErr outErr)
+        throws InterruptedException;
 
     /**
      * Returns whether this spawn may be executing concurrently under multiple spawn runners. If so,
@@ -198,11 +206,22 @@ public interface SpawnRunner {
     /** The files to which to write stdout and stderr. */
     FileOutErr getFileOutErr();
 
-    SortedMap<PathFragment, ActionInput> getInputMapping(boolean expandTreeArtifactsInRunfiles)
-        throws IOException;
+    /**
+     * Returns a sorted map from input paths to action inputs.
+     *
+     * <p>Resolves cases where a single input of the {@link Spawn} gives rise to multiple files in
+     * the input tree, for example, tree artifacts, runfiles trees and {@code Fileset} input
+     * manifests.
+     *
+     * <p>{@code baseDirectory} is prepended to every path in the input key. This is useful if the
+     * mapping is used in a context where the directory relative to which the keys are interpreted
+     * is not the same as the execroot.
+     */
+    SortedMap<PathFragment, ActionInput> getInputMapping(PathFragment baseDirectory)
+        throws IOException, ForbiddenActionInputException;
 
     /** Reports a progress update to the Spawn strategy. */
-    void report(ProgressStatus state, String name);
+    void report(ProgressStatus progress);
 
     /**
      * Returns a {@link MetadataInjector} that allows a caller to inject metadata about spawn
@@ -231,12 +250,13 @@ public interface SpawnRunner {
    * @param context the spawn execution context
    * @return the result from running the spawn
    * @throws InterruptedException if the calling thread was interrupted, or if the runner could not
-   *     lock the output files (see {@link SpawnExecutionContext#lockOutputFiles()})
+   *     lock the output files (see {@link SpawnExecutionContext#lockOutputFiles(int, String,
+   *     FileOutErr)})
    * @throws IOException if something went wrong reading or writing to the local file system
    * @throws ExecException if the request is malformed
    */
   default FutureSpawn execAsync(Spawn spawn, SpawnExecutionContext context)
-      throws InterruptedException, IOException, ExecException {
+      throws InterruptedException, IOException, ExecException, ForbiddenActionInputException {
     // TODO(ulfjack): Remove this default implementation. [exec-async]
     return FutureSpawn.immediate(exec(spawn, context));
   }
@@ -248,15 +268,21 @@ public interface SpawnRunner {
    * @param context the spawn execution context
    * @return the result from running the spawn
    * @throws InterruptedException if the calling thread was interrupted, or if the runner could not
-   *     lock the output files (see {@link SpawnExecutionContext#lockOutputFiles()})
+   *     lock the output files (see {@link SpawnExecutionContext#lockOutputFiles(int, String,
+   *     FileOutErr)})
    * @throws IOException if something went wrong reading or writing to the local file system
    * @throws ExecException if the request is malformed
    */
   SpawnResult exec(Spawn spawn, SpawnExecutionContext context)
-      throws InterruptedException, IOException, ExecException;
+      throws InterruptedException, IOException, ExecException, ForbiddenActionInputException;
 
   /** Returns whether this SpawnRunner supports executing the given Spawn. */
   boolean canExec(Spawn spawn);
+
+  /** Returns whether this SpawnRunner supports executing the given Spawn using legacy fallbacks. */
+  default boolean canExecWithLegacyFallback(Spawn spawn) {
+    return false;
+  }
 
   /** Returns whether this SpawnRunner handles caching of actions internally. */
   boolean handlesCaching();

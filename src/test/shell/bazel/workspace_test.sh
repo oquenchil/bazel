@@ -171,7 +171,7 @@ EOF
   [ ! -L bazel-x ] || fail "bazel-x should have been removed"
 }
 
-function test_skylark_flags_affect_workspace() {
+function test_starlark_flags_affect_workspace() {
   cat >> $(create_workspace_with_default_repos WORKSPACE) <<EOF
 load("//:macro.bzl", "macro")
 print("In workspace: ")
@@ -187,7 +187,7 @@ EOF
 
   MARKER="<== Starlark flag test ==>"
 
-  # Sanity check.
+  # Initial check.
   bazel build //:x &>"$TEST_log" \
     || fail "Expected build to succeed"
   expect_log "In workspace: " "Did not find workspace print output"
@@ -1192,6 +1192,25 @@ data(name="it")
 EOF
     echo; echo remapping main repo; echo
     bazel build @foo//:it || fail "Expected success"
-
 }
+
+function test_cannot_define_repo_named_builtins() {
+    # The name "@_builtins" is reserved for use by builtins injection.
+    # It should be disallowed as a user repo name anyway because it doesn't
+    # begin with a letter.
+    cat > WORKSPACE <<'EOF'
+local_repository(
+  name = "_builtins",
+  path = "subrepo",
+)
+EOF
+    mkdir -p subrepo
+    touch subrepo/WORKSPACE
+    touch BUILD
+
+    bazel build //:BUILD \
+        && fail "Expected to be unable to define a repo named @_builtins" \
+        || true
+}
+
 run_suite "workspace tests"

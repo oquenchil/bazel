@@ -3,7 +3,7 @@ layout: documentation
 title: Execution groups
 ---
 
-# Execution groups
+# Execution Groups
 
 
 Execution groups allow for multiple execution platforms within a single target.
@@ -11,9 +11,6 @@ Each execution group has its own [toolchain](toolchains.md) dependencies and
 performs its own [toolchain resolution](toolchains.md#toolchain-resolution).
 
 ## Current status
-
-This feature is implemented but experimental. In order to use, you must set the
-flag `--experimental_exec_group=true`.
 
 ## Background
 
@@ -30,28 +27,23 @@ like linking in c++ builds without over-allocating to less demanding tasks.
 
 ## Defining execution groups
 
-During rule definition, rule authors can declare a set of execution groups. On
-each execution group, the rule author can specify everything needed to select
-an execution platform for that execution group, namely any constraints via
-`exec_compatible_with` and toolchain types via `toolchain`. If an execution group
-is created as empty (no specified toolchains or constraints) it will
-automatically inherit these
-[parameters](https://docs.bazel.build/versions/master/skylark/lib/globals.html#rule)
-from the rule to which the group is attached.
-
-TODO(juliexxia): link to exec_group method docs when they get released in bazel.
+During rule definition, rule authors can
+[declare](https://docs.bazel.build/versions/main/skylark/lib/globals.html#exec_group)
+a set of execution groups. On each execution group, the rule author can specify
+everything needed to select an execution platform for that execution group,
+namely any constraints via `exec_compatible_with` and toolchain types via
+`toolchain`.
 
 ```python
 # foo.bzl
 my_rule = rule(
     _impl,
     exec_groups = {
-        “link”: exec_group(
-            exec_compatible_with = [ "@platforms//os:linux" ]
+        "link": exec_group(
+            exec_compatible_with = ["@platforms//os:linux"],
             toolchains = ["//foo:toolchain_type"],
-
         ),
-        “test”: exec_group(
+        "test": exec_group(
             toolchains = ["//foo_tools:toolchain_type"],
         ),
     },
@@ -63,20 +55,65 @@ my_rule = rule(
 
 In the code snippet above, you can see that tool dependencies can also specify
 transition for an exec group using the
-[`cfg`](https://docs.bazel.build/versions/master/skylark/lib/attr.html#label)
+[`cfg`](https://docs.bazel.build/versions/main/skylark/lib/attr.html#label)
 attribute param and the
-[`config`](https://docs.bazel.build/versions/master/skylark/lib/config.html)
+[`config`](https://docs.bazel.build/versions/main/skylark/lib/config.html)
 module. The module exposes an `exec` function which takes a single string
 parameter which is the name of the exec group for which the dependency should be
 built.
+
+As on native rules, the `test` execution group is present by default on Stalark
+test rules.
+
+### Execution group inheritance
+
+In addition to defining its own constraints and toolchains, a new execution
+group can declare that it wants to inherit from the rule's default execution
+group, by passing the `copy_from_rule = True` parameter. It is an error to set
+`copy_from_rule` to true and to also pass `exec_compatible_with` or
+`toolchains`.
+
+An execution group that inherits from the default execution group copies
+constraints, toolchains, and execution properties from the default. This
+includes constraints and execution properties set on the target level, not just
+those specified by the rule itself. In other words, given the following:
+
+```python
+# foo.bzl
+my_rule = rule(
+    _impl,
+    exec_groups = {
+        "copied": exec_group(
+            copy_from_rule = True,
+            # This will inherit exec_compatible_with and toolchains.
+            # Setting them here directly would be an error, however.
+        ),
+    },
+    toolchains = ["//foo_tools:toolchain_type"],
+    exec_compatible_with = [ "@platforms//os:linux" ]
+)
+
+# BUILD
+
+my_rule(
+    name = "demo",
+    exec_compatible_with = [":local_constraint"],
+)
+```
+
+The `copied` execution group for the configured target `demo` will include all
+of:
+- `//fool_tools:toolchain_type`
+- `@platforms//os:linux`
+- `:local_constraint`
 
 ## Accessing execution groups
 
 In the rule implementation, you can declare that actions should be run on the
 execution platform of an execution group. You can do this by using the `exec_group`
 param of action generating methods, specifically [`ctx.actions.run`]
-(https://docs.bazel.build/versions/master/skylark/lib/actions.html#run) and
-[`ctx.actions.run_shell`](https://docs.bazel.build/versions/master/skylark/lib/actions.html#run_shell).
+(https://docs.bazel.build/versions/main/skylark/lib/actions.html#run) and
+[`ctx.actions.run_shell`](https://docs.bazel.build/versions/main/skylark/lib/actions.html#run_shell).
 
 ```python
 # foo.bzl
@@ -134,3 +171,73 @@ All actions with `exec_group = "link"` would see the exec properties
 dictionary as `{"mem": "16g"}`. As you see here, execution-group-level
 settings override target-level settings.
 
+### Execution groups for native rules
+
+The following execution groups are available for actions defined by native rules:
+
+* `test`: Test runner actions.
+* `cpp_link`: C++ linking actions.
+
+### Creating exec groups to set exec properties
+
+Sometimes you want to use an exec group to give specific actions different exec
+properties but don't actually want different toolchains or constraints than the
+rule. For these situations, you can create exec groups using the `copy_from_rule`
+parameter:
+
+```python
+# foo.bzl
+
+# Creating an exec group with `copy_from_rule=True` is the same as explicitly
+# setting the exec group's toolchains and constraints to the same values as the
+# rule's respective parameters.
+my_rule = rule(
+    _impl,
+    exec_compatible_with = [ "@platforms//os:linux" ],
+    toolchains = ["//foo:toolchain_type"],
+    exec_groups = {
+        # The following two groups have the same toolchains and constraints:
+        "foo": exec_group(copy_from_rule = True),
+        "bar": exec_group(
+            exec_compatible_with = [ "@platforms//os:linux" ],
+            toolchains = ["//foo:toolchain_type"],
+        ),
+    },
+)
+
+#
+```
+
+### Execution groups and platform execution properties
+
+It is possible to define `exec_properties` for arbitrary execution groups on
+platform targets (unlike `exec_properties` set directly on a target, where
+properties for unknown execution groups are rejected). Targets then inherit the
+execution platform's `exec_properties` that affect the default execution group
+and any other relevant execution groups.
+
+For example, suppose running a C++ test requires some resource to be available,
+but it isn't required for compiling and linking; this can be modelled as
+follows:
+
+```python
+constraint_setting(name = "resource")
+constraint_value(name = "has_resource", constraint_setting = ":resource")
+
+platform(
+    name = "platform_with_resource",
+    constraint_values = [":has_resource"],
+    exec_properties = {
+        "test.resource": "...",
+    },
+)
+
+cc_test(
+    name = "my_test",
+    srcs = ["my_test.cc"],
+    exec_compatible_with = [":has_resource"],
+)
+```
+
+`exec_properties` defined directly on targets take precedence over those that
+are inherited from the execution platform.

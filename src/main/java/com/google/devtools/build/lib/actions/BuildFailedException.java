@@ -16,12 +16,8 @@ package com.google.devtools.build.lib.actions;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
-import com.google.devtools.build.lib.causes.Cause;
-import com.google.devtools.build.lib.collect.nestedset.NestedSet;
-import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
-import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
-import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
+import com.google.devtools.build.lib.skyframe.DetailedException;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.ExitCode;
 
@@ -39,9 +35,8 @@ import com.google.devtools.build.lib.util.ExitCode;
  * propagated by specifying the exit code to the constructor using a {@link DetailedExitCode}.
  */
 @ThreadSafe
-public class BuildFailedException extends Exception {
+public class BuildFailedException extends Exception implements DetailedException {
   private final boolean catastrophic;
-  private final NestedSet<Cause> rootCauses;
   private final boolean errorAlreadyShown;
   private final DetailedExitCode detailedExitCode;
 
@@ -49,7 +44,6 @@ public class BuildFailedException extends Exception {
     this(
         message,
         /*catastrophic=*/ false,
-        NestedSetBuilder.emptySet(Order.STABLE_ORDER),
         /*errorAlreadyShown=*/ false,
         detailedExitCode);
   }
@@ -57,12 +51,10 @@ public class BuildFailedException extends Exception {
   public BuildFailedException(
       String message,
       boolean catastrophic,
-      NestedSet<Cause> rootCauses,
       boolean errorAlreadyShown,
       DetailedExitCode detailedExitCode) {
     super(message);
     this.catastrophic = catastrophic;
-    this.rootCauses = rootCauses;
     this.errorAlreadyShown = errorAlreadyShown;
     this.detailedExitCode = checkNotNull(detailedExitCode);
   }
@@ -71,18 +63,11 @@ public class BuildFailedException extends Exception {
     return catastrophic;
   }
 
-  public NestedSet<Cause> getRootCauses() {
-    return rootCauses;
-  }
-
   public boolean isErrorAlreadyShown() {
     return errorAlreadyShown || getMessage() == null;
   }
 
-  /**
-   * Returns the pair of {@link ExitCode} and optional {@link FailureDetail} to return from this
-   * Bazel invocation.
-   */
+  @Override
   public DetailedExitCode getDetailedExitCode() {
     return detailedExitCode;
   }

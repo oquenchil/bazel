@@ -5,23 +5,20 @@ title: Migrating from Maven to Bazel
 
 # Migrating from Maven to Bazel
 
+This page describes how to migrate from Maven to Bazel, including the
+prerequisites and installation steps. It describes the differences
+between Maven and Bazel, and provides a migration example using the
+Guava project.
+
 When migrating from any build tool to Bazel, it's best to have both build
 tools running in parallel until you have fully migrated your development team,
 CI system, and any other relevant systems. You can run Maven and Bazel in the
 same repository.
 
-## Table of contents
-
-
-*  [Before you begin](#before-you-begin)
-*  [Differences between Maven and Bazel](#differences-between-maven-and-bazel)
-*  [Migrate from Maven to Bazel:](#migrate-from-maven-to-bazel)
-   *  [1. Create the WORKSPACE file](#1-workspace)
-      *  [Guava project example](#guava-1)
-   *  [2. Create one BUILD file](#2-build)
-      *  [Guava project example](#guava-2)
-   *  [3. Create more BUILD files  (Optional)](#3-build)
-   *  [4. Build using Bazel](#4-build)
+Note that while Bazel supports downloading and publishing Maven artifacts with
+[rules_jvm_external](https://github.com/bazelbuild/rules_jvm_external), it
+does not directly support Maven-based plugins. Maven plugins can't be directly
+run by Bazel since there's no Maven compatibility layer.
 
 ## Before you begin
 
@@ -34,13 +31,13 @@ same repository.
 ## Differences between Maven and Bazel
 
 *  Maven uses top-level `pom.xml` file(s). Bazel supports multiple build
-   files and multiple targets per BUILD file, allowing for builds that
+   files and multiple targets per `BUILD` file, allowing for builds that
    are more incremental than Maven's.
 *  Maven takes charge of steps for the deployment process. Bazel does
    not automate deployment.
 *  Bazel enables you to express dependencies between languages.
 *  As you add new sections to the project, with Bazel you may need to add new
-   BUILD files. Best practice is to add a BUILD file to each new Java package.
+   `BUILD` files. Best practice is to add a `BUILD` file to each new Java package.
 
 ## Migrate from Maven to Bazel
 
@@ -73,10 +70,10 @@ maintained by the Bazel team.
 
 #### <a name="guava-1"></a>Guava project example: external dependencies
 
-Using the
+You can list the external dependencies of the
+[Guava project](https://github.com/google/guava) with the
 [`rules_jvm_external`](https://github.com/bazelbuild/rules_jvm_external)
-ruleset, we can list the external dependencies of the
-[Guava project](https://github.com/google/guava).
+ruleset.
 
 Add the following snippet to the `WORKSPACE` file:
 
@@ -102,7 +99,6 @@ maven_install(
         "com.google.j2objc:j2objc-annotations:1.1",
     ],
     repositories = [
-        "https://jcenter.bintray.com/",
         "https://repo1.maven.org/maven2",
     ],
 )
@@ -111,20 +107,20 @@ maven_install(
 ### <a name="2-build"></a>2. Create one BUILD file
 
 Now that you have your workspace defined and external dependencies (if
-applicable) listed, you need to create BUILD files to describe how your project
+applicable) listed, you need to create `BUILD` files to describe how your project
 should be built. Unlike Maven with its one `pom.xml` file, Bazel can use many
-BUILD files to build a project. These files specify multiple build targets,
+`BUILD` files to build a project. These files specify multiple build targets,
 which allow Bazel to produce incremental builds.
 
-Add BUILD files in stages. Start with adding one BUILD file
+Add `BUILD` files in stages. Start with adding one `BUILD` file
 at the root of your project and using it to do an initial build using Bazel.
-Then, you refine your build by adding more BUILD files with more granular
+Then, you refine your build by adding more `BUILD` files with more granular
 targets.
 
 1.  In the same directory as your `WORKSPACE` file, create a text file and
     name it `BUILD`.
 
-2.  In this BUILD file, use the appropriate rule to create one target to
+2.  In this `BUILD` file, use the appropriate rule to create one target to
     build your project. Here are some tips:
     *  Use the appropriate rule:
        *  To build projects with a single Maven module, use the
@@ -169,8 +165,8 @@ targets.
           )
           ```
     *  Specify the attributes:
-       *  `name`: Give the target a meaningful name. In the examples above
-          we call the target "everything."
+       *  `name`: Give the target a meaningful name. In the examples above,
+          the target is called "everything."
        *  `srcs`: Use globbing to list all .java files in your project.
        *  `resources`: Use globbing to list all resources in your project.
        *  `deps`: You need to determine which external dependencies your
@@ -182,17 +178,17 @@ targets.
        [example below of this top-level BUILD file](#guava-example-2) from
        the migration of the Guava project.
 
-3.  Now that you have a BUILD file at the root of your project, build
+3.  Now that you have a `BUILD` file at the root of your project, build
     your project to ensure that it works. On the command line, from your
     workspace directory, use `bazel build //:everything` to build your
     project with Bazel.
 
     The project has now been successfully built with Bazel. You will need
-    to add more BUILD files to allow incremental builds of the project.
+    to add more `BUILD` files to allow incremental builds of the project.
 
 #### <a name="guava-2"></a>Guava project example: start with one BUILD file
 
-When migrating the Guava project to Bazel, initially one BUILD file is used
+When migrating the Guava project to Bazel, initially one `BUILD` file is used
 to build the entire project. Here are the contents of this initial `BUILD`
 file in the workspace directory:
 
@@ -208,13 +204,13 @@ java_library(
 )
 ```
 
-### <a name="3-build"></a>3. Create more BUILD files (Optional)
+### <a name="3-build"></a>3. Create more BUILD files (optional)
 
-Bazel does work with just one BUILD file, as you saw after completing your first
+Bazel does work with just one `BUILD file`, as you saw after completing your first
 build. You should still consider breaking the build into smaller chunks by
-adding more BUILD files with granular targets.
+adding more `BUILD` files with granular targets.
 
-Multiple BUILD files with multiple targets will give the build increased
+Multiple `BUILD` files with multiple targets will give the build increased
 granularity, allowing:
 
 *  increased incremental builds of the project,
@@ -224,26 +220,26 @@ granularity, allowing:
    issues such as libraries containing implementation details leaking into
    public APIs.
 
-Tips for adding more BUILD files:
+Tips for adding more `BUILD` files:
 
-*  You can start by adding a BUILD file to each Java package. Start with
+*  You can start by adding a `BUILD` file to each Java package. Start with
    Java packages that have the fewest dependencies and work you way up
    to packages with the most dependencies.
-*  As you add BUILD files and specify targets, add these new targets to the
+*  As you add `BUILD` files and specify targets, add these new targets to the
    `deps` sections of targets that depend on them. Note that the `glob()`
    function does not cross package boundaries, so as the number
    of packages grows the files matched by `glob()` will shrink.
-*  Any time you add a BUILD file to a `main` directory, ensure that you add
-   a BUILD file to the corresponding `test` directory.
+*  Any time you add a `BUILD` file to a `main` directory, ensure that you add
+   a `BUILD` file to the corresponding `test` directory.
 *  Take care to limit visibility properly between packages.
-*  To simplify troubleshooting errors in your setup of BUILD files, ensure
+*  To simplify troubleshooting errors in your setup of `BUILD` files, ensure
    that the project continues to build with Bazel as you add each build
    file. Run `bazel build //...` to ensure all of your targets still build.
 
 ### <a name="4-build"></a>4. Build using Bazel
 
-You've been building using Bazel as you add BUILD files to validate the setup
+You've been building using Bazel as you add `BUILD` files to validate the setup
 of the build.
 
-When you have BUILD files at the desired granularity, you can use Bazel
+When you have `BUILD` files at the desired granularity, you can use Bazel
 to produce all of your builds.

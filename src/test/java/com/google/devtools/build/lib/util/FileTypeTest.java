@@ -19,6 +19,7 @@ import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.util.FileType.HasFileType;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
@@ -55,6 +56,14 @@ public class FileTypeTest {
     }
   }
 
+  private static void assertTrueOnWindows(boolean condition) {
+    if (OS.getCurrent() == OS.WINDOWS) {
+      assertThat(condition).isTrue();
+    } else {
+      assertThat(condition).isFalse();
+    }
+  }
+
   @Test
   public void simpleDotMatch() {
     assertThat(TEXT.matches("readme.txt")).isTrue();
@@ -79,18 +88,25 @@ public class FileTypeTest {
   @Test
   public void onlyExtensionStillMatches() {
     assertThat(TEXT.matches(".txt")).isTrue();
+    assertTrueOnWindows(TEXT.matches(".TXT"));
   }
 
   @Test
   public void handlesPathObjects() {
-    Path readme = new InMemoryFileSystem().getPath("/readme.txt");
+    Path readme = new InMemoryFileSystem(DigestHashFunction.SHA256).getPath("/readme.txt");
+    Path readmeUppercase = new InMemoryFileSystem(DigestHashFunction.SHA256).getPath("/readme.TXT");
+
     assertThat(TEXT.matches(readme)).isTrue();
+    assertTrueOnWindows(TEXT.matches(readmeUppercase));
   }
 
   @Test
   public void handlesPathFragmentObjects() {
     PathFragment readme = PathFragment.create("some/where/readme.txt");
+    PathFragment readmeUppercase = PathFragment.create("some/where/readme.TXT");
+
     assertThat(TEXT.matches(readme)).isTrue();
+    assertTrueOnWindows(TEXT.matches(readmeUppercase));
   }
 
   @Test
@@ -99,13 +115,15 @@ public class FileTypeTest {
 
     assertThat(allowedTypes.matches("readme.txt")).isTrue();
     assertThat(allowedTypes.matches("style.css")).isFalse();
+    assertTrueOnWindows(allowedTypes.matches("readme.TXT"));
   }
 
   private List<HasFileType> getArtifacts() {
     return Lists.newArrayList(
         new HasFileTypeImpl("Foo.java"),
         new HasFileTypeImpl("bar.cc"),
-        new HasFileTypeImpl("baz.py"));
+        new HasFileTypeImpl("baz.py"),
+        new HasFileTypeImpl("Foobar.CC"));
   }
 
   private String filterAll(FileType... fileTypes) {
@@ -119,13 +137,22 @@ public class FileTypeTest {
 
   @Test
   public void javaAndCpp() {
-    assertThat(filterAll(JAVA_SOURCE, CPP_SOURCE)).isEqualTo("Foo.java bar.cc");
+    if (OS.getCurrent() == OS.WINDOWS) {
+      assertThat(filterAll(JAVA_SOURCE, CPP_SOURCE)).isEqualTo("Foo.java bar.cc Foobar.CC");
+    } else {
+      assertThat(filterAll(JAVA_SOURCE, CPP_SOURCE)).isEqualTo("Foo.java bar.cc");
+    }
   }
 
   @Test
   public void allThree() {
-    assertThat(filterAll(JAVA_SOURCE, CPP_SOURCE, PYTHON_SOURCE))
-        .isEqualTo("Foo.java bar.cc baz.py");
+    if (OS.getCurrent() == OS.WINDOWS) {
+      assertThat(filterAll(JAVA_SOURCE, CPP_SOURCE, PYTHON_SOURCE))
+          .isEqualTo("Foo.java bar.cc baz.py Foobar.CC");
+    } else {
+      assertThat(filterAll(JAVA_SOURCE, CPP_SOURCE, PYTHON_SOURCE))
+          .isEqualTo("Foo.java bar.cc baz.py");
+    }
   }
 
   private HasFileType filename(final String name) {
@@ -135,18 +162,21 @@ public class FileTypeTest {
   @Test
   public void checkingSingleWithTypePredicate() throws Exception {
     HasFileType item = filename("config.txt");
+    HasFileType itemUppercase = filename("config.TXT");
 
     assertThat(FileType.contains(item, TEXT)).isTrue();
     assertThat(FileType.contains(item, CFG)).isFalse();
+    assertTrueOnWindows(FileType.contains(itemUppercase, TEXT));
   }
 
   @Test
   public void checkingListWithTypePredicate() throws Exception {
     ImmutableList<HasFileType> unfiltered =
-        ImmutableList.of(filename("config.txt"), filename("index.html"), filename("README.txt"));
+        ImmutableList.of(filename("config.txt"), filename("index.HTML"), filename("README.txt"));
 
     assertThat(FileType.contains(unfiltered, TEXT)).isTrue();
     assertThat(FileType.contains(unfiltered, CFG)).isFalse();
+    assertTrueOnWindows(FileType.contains(unfiltered, HTML));
   }
 
   @Test
@@ -156,10 +186,18 @@ public class FileTypeTest {
             filename("config.txt"),
             filename("index.html"),
             filename("README.txt"),
-            filename("archive.zip"));
+            filename("archive.zip"),
+            filename("INFO.TXT"));
 
-    assertThat(FileType.filter(unfiltered, TEXT)).containsExactly(unfiltered.get(0),
-        unfiltered.get(2)).inOrder();
+    if (OS.getCurrent() == OS.WINDOWS) {
+      assertThat(FileType.filter(unfiltered, TEXT))
+          .containsExactly(unfiltered.get(0), unfiltered.get(2), unfiltered.get(4))
+          .inOrder();
+    } else {
+      assertThat(FileType.filter(unfiltered, TEXT))
+          .containsExactly(unfiltered.get(0), unfiltered.get(2))
+          .inOrder();
+    }
   }
 
   @Test
@@ -169,11 +207,18 @@ public class FileTypeTest {
             filename("config.txt"),
             filename("index.html"),
             filename("README.txt"),
-            filename("archive.zip"));
+            filename("archive.zip"),
+            filename("INFO.TXT"));
 
-    assertThat(FileType.filter(unfiltered, TEXT::matches))
-        .containsExactly(unfiltered.get(0), unfiltered.get(2))
-        .inOrder();
+    if (OS.getCurrent() == OS.WINDOWS) {
+      assertThat(FileType.filter(unfiltered, TEXT::matches))
+          .containsExactly(unfiltered.get(0), unfiltered.get(2), unfiltered.get(4))
+          .inOrder();
+    } else {
+      assertThat(FileType.filter(unfiltered, TEXT::matches))
+          .containsExactly(unfiltered.get(0), unfiltered.get(2))
+          .inOrder();
+    }
   }
 
   @Test
@@ -183,7 +228,8 @@ public class FileTypeTest {
             filename("config.txt"),
             filename("index.html"),
             filename("binary"),
-            filename("archive.zip"));
+            filename("archive.zip"),
+            filename("INFO.TXT"));
 
     assertThat(FileType.filter(unfiltered, FileTypeSet.NO_FILE)).isEmpty();
   }
@@ -195,10 +241,17 @@ public class FileTypeTest {
             filename("config.txt"),
             filename("index.html"),
             filename("binary"),
-            filename("archive.zip"));
+            filename("archive.zip"),
+            filename("INFO.TXT"));
 
-    assertThat(FileType.filter(unfiltered, FileTypeSet.ANY_FILE)).containsExactly(unfiltered.get(0),
-        unfiltered.get(1), unfiltered.get(2), unfiltered.get(3)).inOrder();
+    assertThat(FileType.filter(unfiltered, FileTypeSet.ANY_FILE))
+        .containsExactly(
+            unfiltered.get(0),
+            unfiltered.get(1),
+            unfiltered.get(2),
+            unfiltered.get(3),
+            unfiltered.get(4))
+        .inOrder();
   }
 
   @Test
@@ -208,10 +261,18 @@ public class FileTypeTest {
             filename("config.txt"),
             filename("index.html"),
             filename("README.txt"),
-            filename("server.cfg"));
+            filename("server.cfg"),
+            filename("INFO.TXT"));
 
-    assertThat(FileType.except(unfiltered, TEXT)).containsExactly(unfiltered.get(1),
-        unfiltered.get(3)).inOrder();
+    if (OS.getCurrent() == OS.WINDOWS) {
+      assertThat(FileType.except(unfiltered, TEXT))
+          .containsExactly(unfiltered.get(1), unfiltered.get(3))
+          .inOrder();
+    } else {
+      assertThat(FileType.except(unfiltered, TEXT))
+          .containsExactly(unfiltered.get(1), unfiltered.get(3), unfiltered.get(4))
+          .inOrder();
+    }
   }
 
   @Test
@@ -221,10 +282,18 @@ public class FileTypeTest {
             filename("config.txt"),
             filename("index.html"),
             filename("README.txt"),
-            filename("server.cfg"));
+            filename("server.cfg"),
+            filename("CLIENT.CFG"));
     FileTypeSet filter = FileTypeSet.of(HTML, CFG);
 
-    assertThat(FileType.filterList(unfiltered, filter)).containsExactly(unfiltered.get(1),
-        unfiltered.get(3)).inOrder();
+    if (OS.getCurrent() == OS.WINDOWS) {
+      assertThat(FileType.filterList(unfiltered, filter))
+          .containsExactly(unfiltered.get(1), unfiltered.get(3), unfiltered.get(4))
+          .inOrder();
+    } else {
+      assertThat(FileType.filterList(unfiltered, filter))
+          .containsExactly(unfiltered.get(1), unfiltered.get(3))
+          .inOrder();
+    }
   }
 }

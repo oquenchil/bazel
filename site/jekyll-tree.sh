@@ -13,6 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Don't run this script directly, do this instead:
+#
+# bazel build //site
+# cd bazel-bin/site/site-build
+# python -m SimpleHTTPServer
+#
+# Also, install jekyll and some other dependencies:
+#
+# sudo apt-get install jekyll
+# sudo gem install jekyll-paginate jekyll-toc jekyll-sitemap
+#
 # This script constructs the final Jekyll tree by combining the static Jekyll
 # site files with generated documentation, such as the Build Encyclopedia and
 # Starlark Library. It then constructs the site directory structure for
@@ -45,7 +56,7 @@ readonly TMP=$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXX")
 readonly OUT_DIR="$TMP/out"
 trap "rm -rf ${TMP}" EXIT
 
-readonly VERSION="${DOC_VERSION:-master}"
+readonly VERSION="${DOC_VERSION:-main}"
 readonly VERSION_DIR="$OUT_DIR/versions/$VERSION"
 
 # Unpacks the base Jekyll tree, Build Encyclopedia, etc.
@@ -162,13 +173,13 @@ EOF
 # During setup, all documentation under docs are moved to the /versions/$VERSION
 # directory. This leaves nothing in the root directory.
 #
-# As a fix, when generating the master tarball, this function generates a
+# As a fix, when generating the head tarball, this function generates a
 # redirect from the root of the site for the given doc page under
 # /versions/$LATEST_RELEASE_VERSION so that
 # https://docs.bazel.build/foo.html will be redirected to
 # https://docs.bazel.build/versions/$LATEST_RELEASE_VERSION/foo.html
 function gen_redirects {
-  if [[ "$VERSION" == "master" ]]; then
+  if [[ "$VERSION" == "main" ]]; then
     pushd "$VERSION_DIR" > /dev/null
     for f in $(find . -name "*.html" -type f); do
       gen_redirect $f
@@ -177,6 +188,41 @@ function gen_redirects {
       gen_redirect $f
     done
     popd > /dev/null
+  fi
+}
+
+# TODO(https://github.com/bazelbuild/bazel/issues/12200):
+# Temporarily redirect /versions/master to main. Remove when we decide to stop
+# serving under the old name.
+
+# Generates a redirect for a documentation page under
+# /versions/$LATEST_RELEASE_VERSION.
+function gen_master_redirect {
+  f="$1"
+  local output_dir=$OUT_DIR/versions/master/$(dirname $f)
+  if [[ ! -d "$output_dir" ]]; then
+    mkdir -p "$output_dir"
+  fi
+
+  local src_basename=$(basename $f)
+  local md_basename="${src_basename%.*}.md"
+  local html_file="${f%.*}.html"
+  local redirect_file="$output_dir/$md_basename"
+  cat > "$redirect_file" <<EOF
+---
+layout: redirect
+redirect: /versions/main/$html_file
+---
+EOF
+}
+
+function gen_master_redirects {
+  if [[ "$VERSION" == "main" ]]; then
+    MASTER_DIR="$OUT_DIR/versions/master"
+    mkdir -p "$MASTER_DIR"
+    for f in $(cd "$OUT_DIR/versions/main" ; find . -name '*.html' -o -name '*.md' -type f) ; do
+      gen_master_redirect $f
+    done
   fi
 }
 
@@ -191,6 +237,7 @@ function main {
   unpack_skylark_rule_docs
   process_docs
   gen_redirects
+  gen_master_redirects
   package_output
 }
 main

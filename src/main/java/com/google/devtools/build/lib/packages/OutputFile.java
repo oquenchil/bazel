@@ -15,34 +15,20 @@
 package com.google.devtools.build.lib.packages;
 
 import com.google.devtools.build.lib.cmdline.Label;
-import com.google.devtools.build.lib.syntax.Location;
+import net.starlark.java.syntax.Location;
 
 /**
  * A generated file that is the output of a rule.
  */
 public final class OutputFile extends FileTarget {
 
-  /**
-   * A kind of output file.
-   *
-   * The FILESET kind is only supported for a non-open-sourced {@code fileset} rule.
-   */
-  public enum Kind {
-    FILE,
-    FILESET
-  }
-
   private final Rule generatingRule;
-  private final Kind kind;
 
   /**
-   * Constructs an output file with the given label, which must be in the given
-   * package.
+   * Constructs an OutputFile with the given label, which must be in the generating rule's package.
    */
-  OutputFile(Package pkg, Label label,
-      Kind kind, Rule generatingRule) {
-    super(pkg, label);
-    this.kind = kind;
+  OutputFile(Label label, Rule generatingRule) {
+    super(generatingRule.getPackage(), label);
     this.generatingRule = generatingRule;
   }
 
@@ -63,11 +49,26 @@ public final class OutputFile extends FileTarget {
     return generatingRule;
   }
 
+  @Override
+  public Package getPackage() {
+    return generatingRule.getPackage();
+  }
+
+  /**
+   * A kind of output file.
+   *
+   * <p>The FILESET kind is only supported for a non-open-sourced {@code fileset} rule.
+   */
+  public enum Kind {
+    FILE,
+    FILESET
+  }
+
   /**
    * Returns the kind of this output file.
    */
   public Kind getKind() {
-    return kind;
+    return generatingRule.getRuleClassObject().getOutputFileKind();
   }
 
   @Override
@@ -77,7 +78,7 @@ public final class OutputFile extends FileTarget {
 
   @Override
   public Rule getAssociatedRule() {
-    return getGeneratingRule();
+    return generatingRule;
   }
 
   @Override

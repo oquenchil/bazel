@@ -20,8 +20,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.ParameterFile;
 import com.google.devtools.build.lib.actions.ParameterFile.ParameterFileType;
 import com.google.devtools.build.lib.testutil.FoundationTestCase;
-import com.google.devtools.build.lib.testutil.Suite;
-import com.google.devtools.build.lib.testutil.TestSpec;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.Charset;
@@ -30,10 +28,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/**
- * Tests for {@link ParameterFile}.
- */
-@TestSpec(size = Suite.SMALL_TESTS)
+/** Tests for {@link ParameterFile}. */
 @RunWith(JUnit4.class)
 public class ParameterFileTest extends FoundationTestCase {
 
@@ -67,6 +62,19 @@ public class ParameterFileTest extends FoundationTestCase {
         .containsExactly("--lambda=?");
     assertThat(writeContent(StandardCharsets.UTF_8, ImmutableList.of("--lambda=λ")))
         .containsExactly("--lambda=λ");
+  }
+
+  private static final ImmutableList<String> MIXED_ARGS =
+      ImmutableList.of("a", "--b", "--c=d", "e");
+
+  @Test
+  public void flagsOnly() throws Exception {
+    assertThat(ParameterFile.flagsOnly(MIXED_ARGS)).containsExactly("--b", "--c=d").inOrder();
+  }
+
+  @Test
+  public void nonFlags() throws Exception {
+    assertThat(ParameterFile.nonFlags(MIXED_ARGS)).containsExactly("a", "e").inOrder();
   }
 
   private static ImmutableList<String> writeContent(Charset charset, Iterable<String> content)

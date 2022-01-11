@@ -13,8 +13,7 @@
 // limitations under the License.
 package com.google.devtools.build.lib.packages;
 
-import static java.util.Collections.singleton;
-import static java.util.stream.Collectors.toCollection;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
@@ -27,13 +26,7 @@ import com.google.common.escape.Escaper;
 import com.google.common.escape.Escapers;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.EventHandler;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
-import com.google.devtools.build.lib.syntax.ClassObject;
-import com.google.devtools.build.lib.syntax.Dict;
-import com.google.devtools.build.lib.syntax.EvalException;
-import com.google.devtools.build.lib.syntax.Location;
-import com.google.devtools.build.lib.syntax.Starlark;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
 import com.google.devtools.build.lib.util.StringUtil;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -45,6 +38,10 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import net.starlark.java.eval.Dict;
+import net.starlark.java.eval.EvalException;
+import net.starlark.java.eval.Starlark;
+import net.starlark.java.eval.Structure;
 
 /**
  * A function interface allowing rules to specify their set of implicit outputs in a more dynamic
@@ -77,17 +74,13 @@ public abstract class ImplicitOutputsFunction {
   }
 
   /** Implicit output functions executing Starlark code. */
-  @AutoCodec
   public static final class StarlarkImplicitOutputsFunctionWithCallback
       extends StarlarkImplicitOutputsFunction {
 
     private final StarlarkCallbackHelper callback;
-    private final Location loc;
 
-    public StarlarkImplicitOutputsFunctionWithCallback(
-        StarlarkCallbackHelper callback, Location loc) {
+    public StarlarkImplicitOutputsFunctionWithCallback(StarlarkCallbackHelper callback) {
       this.callback = callback;
-      this.loc = loc;
     }
 
     @Override
@@ -100,11 +93,10 @@ public abstract class ImplicitOutputsFunction {
         // since we don't yet have a build configuration.
         if (!map.isConfigurable(attrName)) {
           Object value = map.get(attrName, attrType);
-          attrValues.put(
-              Attribute.getStarlarkName(attrName), Starlark.fromJava(value, /*mutability=*/ null));
+          attrValues.put(Attribute.getStarlarkName(attrName), Attribute.valueToStarlark(value));
         }
       }
-      ClassObject attrs =
+      Structure attrs =
           StructProvider.STRUCT.create(
               attrValues,
               "Attribute '%s' either doesn't exist "
@@ -123,24 +115,21 @@ public abstract class ImplicitOutputsFunction {
           Iterable<String> substitutions =
               fromTemplates(entry.getValue()).getImplicitOutputs(eventHandler, map);
           if (Iterables.isEmpty(substitutions)) {
-            throw new EvalException(
-                loc,
-                String.format(
-                    "For attribute '%s' in outputs: %s",
-                    entry.getKey(), "Invalid placeholder(s) in template"));
+            throw Starlark.errorf(
+                "For attribute '%s' in outputs: Invalid placeholder(s) in template",
+                entry.getKey());
           }
 
           builder.put(entry.getKey(), Iterables.getOnlyElement(substitutions));
         }
         return builder.build();
-      } catch (IllegalArgumentException e) {
-        throw new EvalException(loc, e.getMessage());
+      } catch (IllegalArgumentException ex) {
+        throw new EvalException(ex);
       }
     }
   }
 
   /** Implicit output functions using a simple an output map. */
-  @AutoCodec
   public static final class StarlarkImplicitOutputsFunctionWithMap
       extends StarlarkImplicitOutputsFunction {
 
@@ -161,12 +150,8 @@ public abstract class ImplicitOutputsFunction {
             fromUnsafeTemplates(ImmutableList.of(entry.getValue()));
         Iterable<String> substitutions = outputsFunction.getImplicitOutputs(eventHandler, map);
         if (Iterables.isEmpty(substitutions)) {
-          throw new EvalException(
-              null,
-              String.format(
-                  "For attribute '%s' in outputs: %s",
-                  entry.getKey(), "Invalid placeholder(s) in template"));
-
+          throw Starlark.errorf(
+              "For attribute '%s' in outputs: Invalid placeholder(s) in template", entry.getKey());
         }
 
         builder.put(entry.getKey(), Iterables.getOnlyElement(substitutions));
@@ -194,20 +179,6 @@ public abstract class ImplicitOutputsFunction {
     Set<String> get(AttributeMap rule, String attr);
   }
 
-  /**
-   * The default rule attribute retriever.
-   *
-   * <p>Custom {@link AttributeValueGetter} implementations may delegate to this object as a
-   * fallback mechanism.
-   */
-  public static final AttributeValueGetter DEFAULT_RULE_ATTRIBUTE_GETTER =
-      new AttributeValueGetter() {
-        @Override
-        public Set<String> get(AttributeMap rule, String attr) {
-          return attributeValues(rule, attr);
-        }
-      };
-
   private static final Escaper PERCENT_ESCAPER = Escapers.builder().addEscape('%', "%%").build();
 
   /**
@@ -218,7 +189,7 @@ public abstract class ImplicitOutputsFunction {
       throws EvalException, InterruptedException;
 
   /** The implicit output function that returns no files. */
-  @AutoCodec
+  @SerializationConstant
   public static final SafeImplicitOutputsFunction NONE =
       new SafeImplicitOutputsFunction() {
         @Override
@@ -249,13 +220,10 @@ public abstract class ImplicitOutputsFunction {
     return new TemplateImplicitOutputsFunction(templates);
   }
 
-  @VisibleForSerialization
-  @AutoCodec
-  static class TemplateImplicitOutputsFunction extends SafeImplicitOutputsFunction {
+  private static class TemplateImplicitOutputsFunction extends SafeImplicitOutputsFunction {
 
     private final Iterable<String> templates;
 
-    @VisibleForSerialization
     TemplateImplicitOutputsFunction(Iterable<String> templates) {
       this.templates = templates;
     }
@@ -281,13 +249,10 @@ public abstract class ImplicitOutputsFunction {
       }
   }
 
-  @AutoCodec
-  @VisibleForSerialization
-  static class UnsafeTemplatesImplicitOutputsFunction extends ImplicitOutputsFunction {
+  private static class UnsafeTemplatesImplicitOutputsFunction extends ImplicitOutputsFunction {
 
     private final Iterable<String> templates;
 
-    @VisibleForSerialization
     UnsafeTemplatesImplicitOutputsFunction(Iterable<String> templates) {
       this.templates = templates;
     }
@@ -296,24 +261,24 @@ public abstract class ImplicitOutputsFunction {
     @Override
     public Iterable<String> getImplicitOutputs(EventHandler eventHandler, AttributeMap rule)
         throws EvalException {
-        ImmutableSet.Builder<String> result = new ImmutableSet.Builder<>();
-        for (String template : templates) {
-          List<String> substitutions =
-              substitutePlaceholderIntoUnsafeTemplate(
-                  template, rule, DEFAULT_RULE_ATTRIBUTE_GETTER);
-          if (substitutions.isEmpty()) {
-            continue;
-          }
-          result.addAll(substitutions);
+      ImmutableSet.Builder<String> result = new ImmutableSet.Builder<>();
+      for (String template : templates) {
+        List<String> substitutions =
+            substitutePlaceholderIntoUnsafeTemplate(
+                template, rule, ImplicitOutputsFunction::attributeValues);
+        if (substitutions.isEmpty()) {
+          continue;
         }
-
-        return result.build();
+        result.addAll(substitutions);
       }
 
-      @Override
-      public String toString() {
-        return StringUtil.joinEnglishList(templates);
-      }
+      return result.build();
+    }
+
+    @Override
+    public String toString() {
+      return StringUtil.joinEnglishList(templates);
+    }
   }
 
   /**
@@ -329,7 +294,7 @@ public abstract class ImplicitOutputsFunction {
    */
   // It would be nice to unify this with fromTemplates above, but that's not possible because
   // substitutePlaceholderIntoUnsafeTemplate can throw an exception.
-  public static ImplicitOutputsFunction fromUnsafeTemplates(Iterable<String> templates) {
+  private static ImplicitOutputsFunction fromUnsafeTemplates(Iterable<String> templates) {
     return new UnsafeTemplatesImplicitOutputsFunction(templates);
   }
 
@@ -339,13 +304,11 @@ public abstract class ImplicitOutputsFunction {
     return fromFunctions(Arrays.asList(functions));
   }
 
-  @AutoCodec
-  @VisibleForSerialization
-  static class FunctionCombinationImplicitOutputsFunction extends SafeImplicitOutputsFunction {
+  private static class FunctionCombinationImplicitOutputsFunction
+      extends SafeImplicitOutputsFunction {
 
     private final Iterable<SafeImplicitOutputsFunction> functions;
 
-    @VisibleForSerialization
     FunctionCombinationImplicitOutputsFunction(Iterable<SafeImplicitOutputsFunction> functions) {
       this.functions = functions;
     }
@@ -381,46 +344,44 @@ public abstract class ImplicitOutputsFunction {
   }
 
   /**
-   * Coerces attribute "attrName" of the specified rule into a sequence of
-   * strings.  Helper function for {@link #fromTemplates(Iterable)}.
+   * Coerces attribute "attrName" of the specified rule into a sequence of strings. Helper function
+   * for {@link #fromTemplates(Iterable)}.
    */
-  private static Set<String> attributeValues(AttributeMap rule, String attrName) {
+  private static ImmutableSet<String> attributeValues(AttributeMap rule, String attrName) {
     if (attrName.equals("dirname")) {
       PathFragment dir = PathFragment.create(rule.getName()).getParentDirectory();
-      return (dir.segmentCount() == 0) ? singleton("") : singleton(dir.getPathString() + "/");
+      return dir.isEmpty() ? ImmutableSet.of("") : ImmutableSet.of(dir.getPathString() + "/");
     } else if (attrName.equals("basename")) {
-      return singleton(PathFragment.create(rule.getName()).getBaseName());
+      return ImmutableSet.of(PathFragment.create(rule.getName()).getBaseName());
     }
 
     Type<?> attrType = rule.getAttributeType(attrName);
     if (attrType == null) {
-      return Collections.emptySet();
+      return ImmutableSet.of();
     }
     // String attributes and lists are easy.
     if (Type.STRING == attrType) {
-      return singleton(rule.get(attrName, Type.STRING));
+      return ImmutableSet.of(rule.get(attrName, Type.STRING));
     } else if (Type.STRING_LIST == attrType) {
-      return Sets.newLinkedHashSet(rule.get(attrName, Type.STRING_LIST));
+      return ImmutableSet.copyOf(rule.get(attrName, Type.STRING_LIST));
     } else if (BuildType.LABEL == attrType) {
       // Labels are most often used to change the extension,
       // e.g. %.foo -> %.java, so we return the basename w/o extension.
       Label label = rule.get(attrName, BuildType.LABEL);
-      return singleton(FileSystemUtils.removeExtension(label.getName()));
+      return ImmutableSet.of(FileSystemUtils.removeExtension(label.getName()));
     } else if (BuildType.LABEL_LIST == attrType) {
       // Labels are most often used to change the extension,
       // e.g. %.foo -> %.java, so we return the basename w/o extension.
-      return rule.get(attrName, BuildType.LABEL_LIST)
-          .stream()
+      return rule.get(attrName, BuildType.LABEL_LIST).stream()
           .map(label -> FileSystemUtils.removeExtension(label.getName()))
-          .collect(toCollection(LinkedHashSet::new));
+          .collect(toImmutableSet());
     } else if (BuildType.OUTPUT == attrType) {
       Label out = rule.get(attrName, BuildType.OUTPUT);
-      return singleton(out.getName());
+      return ImmutableSet.of(out.getName());
     } else if (BuildType.OUTPUT_LIST == attrType) {
-      return rule.get(attrName, BuildType.OUTPUT_LIST)
-          .stream()
+      return rule.get(attrName, BuildType.OUTPUT_LIST).stream()
           .map(Label::getName)
-          .collect(toCollection(LinkedHashSet::new));
+          .collect(toImmutableSet());
     }
     throw new IllegalArgumentException(
         "Don't know how to handle " + attrName + " : " + attrType);
@@ -472,7 +433,8 @@ public abstract class ImplicitOutputsFunction {
    */
   public static ImmutableList<String> substitutePlaceholderIntoTemplate(String template,
       AttributeMap rule) {
-    return substitutePlaceholderIntoTemplate(template, rule, DEFAULT_RULE_ATTRIBUTE_GETTER);
+    return substitutePlaceholderIntoTemplate(
+        template, rule, ImplicitOutputsFunction::attributeValues);
   }
 
   @AutoValue
@@ -484,7 +446,7 @@ public abstract class ImplicitOutputsFunction {
     abstract List<String> attributeNames();
 
     static ParsedTemplate parse(String rawTemplate) {
-      List<String> placeholders = Lists.<String>newArrayList();
+      List<String> placeholders = Lists.newArrayList();
       String formatStr = createPlaceholderSubstitutionFormatString(rawTemplate, placeholders);
       if (placeholders.isEmpty()) {
         placeholders = ImmutableList.of();
@@ -503,7 +465,7 @@ public abstract class ImplicitOutputsFunction {
       for (String placeholder : attributeNames()) {
         Set<String> attrValues = attributeGetter.get(attributeMap, placeholder);
         if (attrValues.isEmpty()) {
-          return ImmutableList.<String>of();
+          return ImmutableList.of();
         }
         values.add(attrValues);
       }
@@ -543,10 +505,8 @@ public abstract class ImplicitOutputsFunction {
     // Make sure all attributes are valid.
     for (String placeholder : parsedTemplate.attributeNames()) {
       if (rule.isConfigurable(placeholder)) {
-        throw new EvalException(
-            /*location=*/ null,
-            String.format(
-                "Attribute %s is configurable and cannot be used in outputs", placeholder));
+        throw Starlark.errorf(
+            "Attribute %s is configurable and cannot be used in outputs", placeholder);
       }
     }
 

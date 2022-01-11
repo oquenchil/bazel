@@ -14,6 +14,7 @@
 
 package com.google.devtools.build.lib.analysis;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -28,21 +29,20 @@ import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.BuiltinProvider;
 import com.google.devtools.build.lib.packages.StructImpl;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
-import com.google.devtools.build.lib.skylarkbuildapi.OutputGroupInfoApi;
-import com.google.devtools.build.lib.syntax.Dict;
-import com.google.devtools.build.lib.syntax.EvalException;
-import com.google.devtools.build.lib.syntax.Location;
-import com.google.devtools.build.lib.syntax.Starlark;
-import com.google.devtools.build.lib.syntax.StarlarkIndexable;
-import com.google.devtools.build.lib.syntax.StarlarkIterable;
-import com.google.devtools.build.lib.syntax.StarlarkSemantics;
+import com.google.devtools.build.lib.starlarkbuildapi.OutputGroupInfoApi;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.Dict;
+import net.starlark.java.eval.EvalException;
+import net.starlark.java.eval.Starlark;
+import net.starlark.java.eval.StarlarkIndexable;
+import net.starlark.java.eval.StarlarkIterable;
+import net.starlark.java.eval.StarlarkSemantics;
+import net.starlark.java.syntax.Location;
 
 /**
  * {@code ConfiguredTarget}s implementing this interface can provide artifacts that <b>can</b> be
@@ -58,7 +58,6 @@ import javax.annotation.Nullable;
  * not mentioned on the output.
  */
 @Immutable
-@AutoCodec
 public final class OutputGroupInfo extends StructImpl
     implements StarlarkIndexable, StarlarkIterable<String>, OutputGroupInfoApi {
   public static final String STARLARK_NAME = "output_groups";
@@ -112,6 +111,14 @@ public final class OutputGroupInfo extends StructImpl
    */
   public static final String VALIDATION = HIDDEN_OUTPUT_GROUP_PREFIX + "validation";
 
+  /** Helper output group used to request {@link #VALIDATION} outputs from top-level aspect. */
+  public static final String VALIDATION_TOP_LEVEL =
+      HIDDEN_OUTPUT_GROUP_PREFIX + "validation_top_level" + INTERNAL_SUFFIX;
+
+  /** Helper output group to override {@link #VALIDATION} outputs from dependencies */
+  public static final String VALIDATION_TRANSITIVE =
+      HIDDEN_OUTPUT_GROUP_PREFIX + "validation_transitive";
+
   /**
    * Temporary files created during building a rule, for example, .i, .d and .s files for C++
    * compilation.
@@ -134,11 +141,31 @@ public final class OutputGroupInfo extends StructImpl
   public static final ImmutableSortedSet<String> DEFAULT_GROUPS =
       ImmutableSortedSet.of(DEFAULT, TEMP_FILES, HIDDEN_TOP_LEVEL);
 
+  /** Request parameter for {@link #determineOutputGroups}. */
+  public enum ValidationMode {
+    /** Validation outputs not built. */
+    OFF,
+    /**
+     * Validation outputs built by requesting {@link #VALIDATION} output group Blaze core collects.
+     */
+    OUTPUT_GROUP,
+    /**
+     * Validation outputs built by {@code ValidateTarget} aspect "promoting" {@link #VALIDATION}
+     * output group Blaze core collects to {@link #VALIDATION_TOP_LEVEL} and requesting the latter.
+     */
+    ASPECT
+  }
+
   private final ImmutableMap<String, NestedSet<Artifact>> outputGroups;
 
   public OutputGroupInfo(ImmutableMap<String, NestedSet<Artifact>> outputGroups) {
-    super(STARLARK_CONSTRUCTOR, Location.BUILTIN);
+    super(Location.BUILTIN);
     this.outputGroups = outputGroups;
+  }
+
+  @Override
+  public OutputGroupInfoProvider getProvider() {
+    return STARLARK_CONSTRUCTOR;
   }
 
   @Override
@@ -157,9 +184,8 @@ public final class OutputGroupInfo extends StructImpl
    *     If the specified output group is not present, the empty set is returned.
    */
   public NestedSet<Artifact> getOutputGroup(String outputGroupName) {
-    return outputGroups.containsKey(outputGroupName)
-        ? outputGroups.get(outputGroupName)
-        : NestedSetBuilder.<Artifact>emptySet(Order.STABLE_ORDER);
+    return outputGroups.getOrDefault(
+        outputGroupName, NestedSetBuilder.emptySet(Order.STABLE_ORDER));
   }
 
   /**
@@ -170,7 +196,7 @@ public final class OutputGroupInfo extends StructImpl
   @Nullable
   public static OutputGroupInfo merge(List<OutputGroupInfo> providers)
       throws DuplicateException {
-    if (providers.size() == 0) {
+    if (providers.isEmpty()) {
       return null;
     }
     if (providers.size() == 1) {
@@ -193,14 +219,16 @@ public final class OutputGroupInfo extends StructImpl
   }
 
   public static ImmutableSortedSet<String> determineOutputGroups(
-      List<String> outputGroups, boolean includeValidationOutputGroup) {
-    return determineOutputGroups(DEFAULT_GROUPS, outputGroups, includeValidationOutputGroup);
+      List<String> outputGroups, ValidationMode validationMode, boolean shouldRunTests) {
+    return determineOutputGroups(DEFAULT_GROUPS, outputGroups, validationMode, shouldRunTests);
   }
 
-  public static ImmutableSortedSet<String> determineOutputGroups(
+  @VisibleForTesting
+  static ImmutableSortedSet<String> determineOutputGroups(
       Set<String> defaultOutputGroups,
       List<String> outputGroups,
-      boolean includeValidationOutputGroup) {
+      ValidationMode validationMode,
+      boolean shouldRunTests) {
 
     Set<String> current = Sets.newHashSet();
 
@@ -230,8 +258,21 @@ public final class OutputGroupInfo extends StructImpl
     }
 
     // Add the validation output group regardless of the additions and subtractions above.
-    if (includeValidationOutputGroup) {
-      current.add(VALIDATION);
+    switch (validationMode) {
+      case OUTPUT_GROUP:
+        current.add(VALIDATION);
+        break;
+      case ASPECT:
+        current.add(VALIDATION_TOP_LEVEL);
+        break;
+      case OFF: // fall out
+    }
+
+    // The `test` command ultimately requests artifacts from the `default` output group in order to
+    // execute the tests, so we should ensure these artifacts are requested by the targets for
+    // proper failure reporting.
+    if (shouldRunTests) {
+      current.add(DEFAULT);
     }
 
     return ImmutableSortedSet.copyOf(current);
@@ -253,7 +294,7 @@ public final class OutputGroupInfo extends StructImpl
   }
 
   @Override
-  public boolean containsKey(StarlarkSemantics semantics, Object key) throws EvalException {
+  public boolean containsKey(StarlarkSemantics semantics, Object key) {
     return outputGroups.containsKey(key);
   }
 
@@ -286,10 +327,9 @@ public final class OutputGroupInfo extends StructImpl
     }
 
     @Override
-    public OutputGroupInfoApi constructor(Dict<?, ?> kwargs) throws EvalException {
+    public OutputGroupInfoApi constructor(Dict<String, Object> kwargs) throws EvalException {
       ImmutableMap.Builder<String, NestedSet<Artifact>> builder = ImmutableMap.builder();
-      for (Map.Entry<String, Object> entry :
-          Dict.cast(kwargs, String.class, Object.class, "kwargs").entrySet()) {
+      for (Map.Entry<String, Object> entry : kwargs.entrySet()) {
         builder.put(
             entry.getKey(),
             StarlarkRuleConfiguredTargetUtil.convertToOutputGroupValue(

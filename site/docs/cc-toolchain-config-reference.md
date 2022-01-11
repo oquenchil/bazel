@@ -3,11 +3,7 @@ layout: documentation
 title: C++ toolchain configuration
 ---
 
-# C++ toolchain configuration
-
-* ToC
-{:toc}
-
+# C++ Toolchain Configuration
 
 ## Overview
 
@@ -23,7 +19,7 @@ Bazel needs to know the following:
 * Paths to the required tools such as gcc, ld, ar, objcopy, and so on.
 * The built-in system include directories. Bazel needs these to validate that
   all headers that were included in the source file were properly declared in
-  the build file.
+  the `BUILD` file.
 * The default sysroot.
 * Which flags to use for compilation, linking, archiving.
 * Which flags to use for the supported compilation modes (opt, dbg, fastbuild).
@@ -45,9 +41,9 @@ You can find Starlark constructors for all structs you'll need in the process in
 
 
 When a C++ target enters the analysis phase, Bazel selects the appropriate
-`cc_toolchain` target based on the BUILD file, and obtains the
+`cc_toolchain` target based on the `BUILD` file, and obtains the
 `CcToolchainConfigInfo` provider from the target specified in the
-`cc_toolchain.toolchain_config` attribute.  The `cc_toolchain` target
+`cc_toolchain.toolchain_config` attribute. The `cc_toolchain` target
 passes this information to the C++ target through a `CcToolchainProvider`.
 
 For example, a compile or link action, instantiated by a rule such as
@@ -95,8 +91,8 @@ The toolchain selection logic operates as follows:
 
 Once a toolchain has been selected, corresponding `feature` and `action_config`
 objects in the Starlark rule govern the configuration of the build (that is,
-items described later in this document). These messages allow the
-implementation of fully fledged C++ features in Bazel without modifying the
+items described later). These messages allow the implementation of
+fully fledged C++ features in Bazel without modifying the
 Bazel binary. C++ rules support multiple unique actions documented in detail
 [in the Bazel source code](https://source.bazel.build/bazel/+/4f547a7ea86df80e4c76145ffdbb0c8b75ba3afa:tools/build_defs/cc/action_names.bzl).
 
@@ -104,7 +100,7 @@ Bazel binary. C++ rules support multiple unique actions documented in detail
 
 A feature is an entity that requires command-line flags, actions,
 constraints on the execution environment, or dependency alterations. A feature
-can be something as simple as allowing BUILD files to select configurations of
+can be something as simple as allowing `BUILD` files to select configurations of
 flags, such as `treat_warnings_as_errors`, or interact with the C++ rules and
 include new compile actions and inputs to the compilation, such as
 `header_modules` or `thin_lto`.
@@ -365,12 +361,14 @@ and encode some semantics into the name.
   </tr>
 </table>
 
-## Action config
+## Using action_config
 
-A `action_config` is a Starlark struct that describes a Bazel action
-by specifying the tool (binary) to invoke during the action and sets of flags,
-defined by features, that apply constraints to the action's execution. The
-`action_config()` constructor has the following parameters:
+The `action_config` is a Starlark struct that describes a Bazel
+action by specifying the tool (binary) to invoke during the action and sets of
+flags, defined by features. These flags apply constraints to the action's
+execution.
+
+The `action_config()` constructor has the following parameters:
 
 <table>
   <col width="300">
@@ -420,7 +418,7 @@ is similar to that of a feature.
 
 The last two attributes are redundant against the corresponding attributes on
 features and are included because some Bazel actions require certain flags or
-environment variables and we want to avoid unnecessary `action_config`+`feature`
+environment variables and the goal is to avoid unnecessary `action_config`+`feature`
 pairs. Typically, sharing a single feature across multiple `action_config`s is
 preferred.
 
@@ -429,7 +427,7 @@ within the same toolchain. This prevents ambiguity in tool paths
 and enforces the intention behind `action_config` - that an action's properties
 are clearly described in a single place in the toolchain.
 
-### `tool`
+### Using tool constructor
 
 An`action_config` can specify a set of tools via its `tools` parameter.
 The `tool()` constructor takes in the following parameters:
@@ -453,7 +451,7 @@ The `tool()` constructor takes in the following parameters:
   <tr>
    <td><code>with_features</code>
    </td>
-   <td>A a list of feature sets out of which at least one must be satisfied
+   <td>A list of feature sets out of which at least one must be satisfied
        for this tool to apply.
    </td>
   </tr>
@@ -463,8 +461,8 @@ For a given `action_config`, only a single `tool` applies
 its tool path and execution requirements to the Bazel action. A tool is selected
 by iterating through the `tools` attribute on an `action_config` until a tool
 with a `with_feature` set matching the feature configuration is found
-(see [Feature relationships](#feature-relationships) earlier in this document
-for more information). We recommend that you end your tool lists with a default
+(see [Feature relationships](#feature-relationships) earlier on this page
+for more information). You should end your tool lists with a default
 tool that corresponds to an empty feature configuration.
 
 ### Example usage
@@ -483,8 +481,8 @@ With Bazel, this process can instead be implemented as follows, with
 
     action_configs = [
         action_config (
-            config_name = "ACTION_NAMES.cpp_link_executable",
-            action_name = "ACTION_NAMES.cpp_link_executable",
+            config_name = ACTION_NAMES.cpp_link_executable,
+            action_name = ACTION_NAMES.cpp_link_executable,
             tools = [
                 tool(
                     with_features = [
@@ -503,8 +501,8 @@ With Bazel, this process can instead be implemented as follows, with
             flag_sets = [
                 flag_set (
                     actions = [
-                        "ACTION_NAMES.c_compile",
-                        "ACTION_NAMES.cpp_compile"
+                        ACTION_NAMES.c_compile,
+                        ACTION_NAMES.cpp_compile
                     ],
                     flag_groups = [
                         flag_group(
@@ -519,7 +517,7 @@ With Bazel, this process can instead be implemented as follows, with
 
 
 This same feature can be implemented entirely differently for Linux, which uses
-`fission`, or for Windows, which produces `.pdb` files.  For example, the
+`fission`, or for Windows, which produces `.pdb` files. For example, the
 implementation for `fission`-based debug symbol generation might look as
 follows:
 
@@ -527,7 +525,7 @@ follows:
 
     action_configs = [
         action_config (
-            name = "ACTION_NAMES.cpp_compile",
+            name = ACTION_NAMES.cpp_compile,
             tools = [
                 tool(
                     tool_path = "toolchain/bin/gcc",
@@ -542,7 +540,7 @@ follows:
             requires = [with_feature_set(features = ["dbg"])],
             flag_sets = [
                 flag_set(
-                    actions = ["ACTION_NAMES.cpp_compile"],
+                    actions = [ACTION_NAMES.cpp_compile],
                     flag_groups = [
                         flag_group(
                             flags = ["-gsplit-dwarf"],
@@ -550,7 +548,7 @@ follows:
                     ],
                 ),
                 flag_set(
-                    actions = ["ACTION_NAMES.cpp_link_executable"],
+                    actions = [ACTION_NAMES.cpp_link_executable],
                     flag_groups = [
                         flag_group(
                             flags = ["-Wl", "--gdb-index"],
@@ -666,12 +664,12 @@ variable or its field using the `expand_if_available`, `expand_if_not_available`
 the build command only when a currently iterated library has an
 `is_whole_archive` field.
 
-## `CcToolchainConfigInfo` reference
+## CcToolchainConfigInfo reference
 
 This section provides a reference of build variables, features, and other
 information required to successfully configure C++ rules.
 
-### `CcToolchainConfigInfo` build variables
+### CcToolchainConfigInfo build variables
 
 The following is a reference of `CcToolchainConfigInfo` build variables.
 
@@ -1109,8 +1107,8 @@ conditions.
 #### Legacy features patching logic
 
 <p>
-  Bazel does following changes to the features and their order to stay backwards
-  compatible:
+  Bazel applies the following changes to the toolchain's features for backwards
+  compatibility:
 
   <ul>
     <li>Moves <code>legacy_compile_flags</code> feature to the top of the toolchain</li>

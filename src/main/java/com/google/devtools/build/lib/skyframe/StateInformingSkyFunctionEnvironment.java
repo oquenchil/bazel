@@ -25,11 +25,13 @@ import com.google.devtools.build.skyframe.ValueOrException3;
 import com.google.devtools.build.skyframe.ValueOrException4;
 import com.google.devtools.build.skyframe.ValueOrException5;
 import com.google.devtools.build.skyframe.Version;
+import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import javax.annotation.Nullable;
 
 /** An environment that wraps each call to its delegate by informing injected {@link Informee}s. */
-class StateInformingSkyFunctionEnvironment implements SkyFunction.Environment {
+final class StateInformingSkyFunctionEnvironment implements SkyFunction.Environment {
   private final SkyFunction.Environment delegate;
   private final Informee preFetch;
   private final Informee postFetch;
@@ -148,7 +150,7 @@ class StateInformingSkyFunctionEnvironment implements SkyFunction.Environment {
       throws InterruptedException {
     preFetch.inform();
     try {
-    return delegate.getValues(depKeys);
+      return delegate.getValues(depKeys);
     } finally {
       postFetch.inform();
     }
@@ -247,13 +249,112 @@ class StateInformingSkyFunctionEnvironment implements SkyFunction.Environment {
   }
 
   @Override
+  public List<SkyValue> getOrderedValues(Iterable<? extends SkyKey> depKeys)
+      throws InterruptedException {
+    preFetch.inform();
+    try {
+      return delegate.getOrderedValues(depKeys);
+    } finally {
+      postFetch.inform();
+    }
+  }
+
+  @Override
+  public <E extends Exception> List<ValueOrException<E>> getOrderedValuesOrThrow(
+      Iterable<? extends SkyKey> depKeys, Class<E> exceptionClass) throws InterruptedException {
+    preFetch.inform();
+    try {
+      return delegate.getOrderedValuesOrThrow(depKeys, exceptionClass);
+    } finally {
+      postFetch.inform();
+    }
+  }
+
+  @Override
+  public <E1 extends Exception, E2 extends Exception>
+      List<ValueOrException2<E1, E2>> getOrderedValuesOrThrow(
+          Iterable<? extends SkyKey> depKeys, Class<E1> exceptionClass1, Class<E2> exceptionClass2)
+          throws InterruptedException {
+    preFetch.inform();
+    try {
+      return delegate.getOrderedValuesOrThrow(depKeys, exceptionClass1, exceptionClass2);
+    } finally {
+      postFetch.inform();
+    }
+  }
+
+  @Override
+  public <E1 extends Exception, E2 extends Exception, E3 extends Exception>
+      List<ValueOrException3<E1, E2, E3>> getOrderedValuesOrThrow(
+          Iterable<? extends SkyKey> depKeys,
+          Class<E1> exceptionClass1,
+          Class<E2> exceptionClass2,
+          Class<E3> exceptionClass3)
+          throws InterruptedException {
+    preFetch.inform();
+    try {
+      return delegate.getOrderedValuesOrThrow(
+          depKeys, exceptionClass1, exceptionClass2, exceptionClass3);
+    } finally {
+      postFetch.inform();
+    }
+  }
+
+  @Override
+  public <E1 extends Exception, E2 extends Exception, E3 extends Exception, E4 extends Exception>
+      List<ValueOrException4<E1, E2, E3, E4>> getOrderedValuesOrThrow(
+          Iterable<? extends SkyKey> depKeys,
+          Class<E1> exceptionClass1,
+          Class<E2> exceptionClass2,
+          Class<E3> exceptionClass3,
+          Class<E4> exceptionClass4)
+          throws InterruptedException {
+    preFetch.inform();
+    try {
+      return delegate.getOrderedValuesOrThrow(
+          depKeys, exceptionClass1, exceptionClass2, exceptionClass3, exceptionClass4);
+    } finally {
+      postFetch.inform();
+    }
+  }
+
+  @Override
+  public <
+          E1 extends Exception,
+          E2 extends Exception,
+          E3 extends Exception,
+          E4 extends Exception,
+          E5 extends Exception>
+      List<ValueOrException5<E1, E2, E3, E4, E5>> getOrderedValuesOrThrow(
+          Iterable<? extends SkyKey> depKeys,
+          Class<E1> exceptionClass1,
+          Class<E2> exceptionClass2,
+          Class<E3> exceptionClass3,
+          Class<E4> exceptionClass4,
+          Class<E5> exceptionClass5)
+          throws InterruptedException {
+    preFetch.inform();
+    try {
+      return delegate.getOrderedValuesOrThrow(
+          depKeys,
+          exceptionClass1,
+          exceptionClass2,
+          exceptionClass3,
+          exceptionClass4,
+          exceptionClass5);
+    } finally {
+      postFetch.inform();
+    }
+  }
+
+  @Override
   public ExtendedEventHandler getListener() {
     return delegate.getListener();
   }
 
   @Override
-  public boolean inErrorBubblingForTesting() {
-    return delegate.inErrorBubblingForTesting();
+  public boolean inErrorBubblingForSkyFunctionsThatCanFullyRecoverFromErrors() {
+    return delegate.inErrorBubblingForSkyFunctionsThatCanFullyRecoverFromErrors();
   }
 
   @Nullable
@@ -268,6 +369,11 @@ class StateInformingSkyFunctionEnvironment implements SkyFunction.Environment {
   }
 
   @Override
+  public void registerDependencies(Iterable<SkyKey> keys) {
+    delegate.registerDependencies(keys);
+  }
+
+  @Override
   public void dependOnFuture(ListenableFuture<?> future) {
     delegate.dependOnFuture(future);
   }
@@ -275,6 +381,11 @@ class StateInformingSkyFunctionEnvironment implements SkyFunction.Environment {
   @Override
   public boolean restartPermitted() {
     return delegate.restartPermitted();
+  }
+
+  @Override
+  public <T extends SkyKeyComputeState> T getState(Supplier<T> stateSupplier) {
+    return delegate.getState(stateSupplier);
   }
 
   interface Informee {

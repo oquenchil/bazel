@@ -14,7 +14,6 @@
 package com.google.devtools.build.lib.pkgcache;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.cmdline.LabelConstants;
@@ -35,21 +34,18 @@ import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.lib.vfs.UnixGlob;
 import java.io.IOException;
-import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * A mapping from the name of a package to the location of its BUILD file.
- * The implementation composes an ordered sequence of directories according to
- * the package-path rules.
+ * A mapping from the name of a package to the location of its BUILD file. The implementation
+ * composes an ordered sequence of directories according to the package-path rules.
  *
- * <p>All methods are thread-safe, and (assuming no change to the underlying
- * filesystem) idempotent.
+ * <p>All methods are thread-safe, and (assuming no change to the underlying filesystem) idempotent.
  */
-public class PathPackageLocator implements Serializable {
+public final class PathPackageLocator {
   private static final String WORKSPACE_WILDCARD = "%workspace%";
 
   private final ImmutableList<Root> pathEntries;
@@ -109,7 +105,6 @@ public class PathPackageLocator implements Serializable {
   public Path getPackageBuildFileNullable(
       PackageIdentifier packageIdentifier,
       AtomicReference<? extends UnixGlob.FilesystemCalls> cache) {
-    Preconditions.checkArgument(!packageIdentifier.getRepository().isDefault());
     if (packageIdentifier.getRepository().isMain()) {
       for (BuildFileName buildFileName : buildFilesByPriority) {
         Path buildFilePath =
@@ -133,6 +128,8 @@ public class PathPackageLocator implements Serializable {
       for (BuildFileName buildFileName : buildFilesByPriority) {
         Path buildFile =
             outputBase
+                .getRelative(LabelConstants.EXTERNAL_REPOSITORY_LOCATION)
+                .getRelative(packageIdentifier.getRepository().strippedName())
                 .getRelative(packageIdentifier.getSourceRoot())
                 .getRelative(buildFileName.getFilenameFragment());
         try {
@@ -159,7 +156,7 @@ public class PathPackageLocator implements Serializable {
     return "PathPackageLocator" + pathEntries;
   }
 
-  public static String maybeReplaceWorkspaceInString(String pathElement, Path workspace) {
+  public static String maybeReplaceWorkspaceInString(String pathElement, PathFragment workspace) {
     return pathElement.replace(WORKSPACE_WILDCARD, workspace.getPathString());
   }
   /**
@@ -186,7 +183,7 @@ public class PathPackageLocator implements Serializable {
       Path outputBase,
       List<String> pathElements,
       EventHandler eventHandler,
-      Path workspace,
+      PathFragment workspace,
       Path clientWorkingDirectory,
       List<BuildFileName> buildFilesByPriority) {
     return createInternal(
@@ -195,8 +192,7 @@ public class PathPackageLocator implements Serializable {
         eventHandler,
         workspace,
         clientWorkingDirectory,
-        buildFilesByPriority,
-        true);
+        buildFilesByPriority);
   }
 
   /**
@@ -218,10 +214,9 @@ public class PathPackageLocator implements Serializable {
       Path outputBase,
       List<String> pathElements,
       EventHandler eventHandler,
-      Path workspace,
+      PathFragment workspace,
       Path clientWorkingDirectory,
-      List<BuildFileName> buildFilesByPriority,
-      boolean checkExistence) {
+      List<BuildFileName> buildFilesByPriority) {
     List<Root> resolvedPaths = new ArrayList<>();
 
     for (String pathElement : pathElements) {
@@ -230,11 +225,12 @@ public class PathPackageLocator implements Serializable {
 
       PathFragment pathElementFragment = PathFragment.create(pathElement);
 
-      // If the path string started with "%workspace%" or "/", it is already absolute,
-      // so the following line is a no-op.
+      // If the path string started with "%workspace%" or "/", it is already absolute, so the
+      // following line returns a path pointing to pathElementFragment.
       Path rootPath = clientWorkingDirectory.getRelative(pathElementFragment);
 
-      if (!pathElementFragment.isAbsolute() && !clientWorkingDirectory.equals(workspace)) {
+      if (!pathElementFragment.isAbsolute()
+          && !clientWorkingDirectory.asFragment().equals(workspace)) {
         eventHandler.handle(
             Event.warn(
                 "The package path element '"
@@ -246,7 +242,7 @@ public class PathPackageLocator implements Serializable {
                     + "' wildcard."));
       }
 
-      if (!checkExistence || rootPath.exists()) {
+      if (rootPath.exists()) {
         resolvedPaths.add(Root.fromPath(rootPath));
       }
     }
@@ -301,7 +297,7 @@ public class PathPackageLocator implements Serializable {
       return false;
     }
     PathPackageLocator pathPackageLocator = (PathPackageLocator) other;
-    return Objects.equals(getPathEntries(), pathPackageLocator.getPathEntries())
+    return Objects.equals(pathEntries, pathPackageLocator.pathEntries)
         && Objects.equals(outputBase, pathPackageLocator.outputBase);
   }
 

@@ -68,7 +68,9 @@ public final class DependencyModule {
   private static final ImmutableSet<String> SJD_EXEMPT_PROCESSORS =
       ImmutableSet.of(
           // Relax strict deps for dagger-generated code (b/17979436).
-          "dagger.internal.codegen.ComponentProcessor");
+          "dagger.internal.codegen.ComponentProcessor",
+          // Relax strict deps for Hilt-generated code (b/21307381).
+          "dagger.hilt.processor.internal.root.RootProcessor");
 
   private final StrictJavaDeps strictJavaDeps;
   private final FixTool fixDepsTool;
@@ -273,7 +275,7 @@ public final class DependencyModule {
   private void collectDependenciesFromArtifact(Path path) throws IOException {
     try (BufferedInputStream bis = new BufferedInputStream(Files.newInputStream(path))) {
       Dependencies deps = Dependencies.parseFrom(bis);
-      // Sanity check to make sure we have a valid proto.
+      // Quick check to make sure we have a valid proto.
       if (!deps.hasRuleLabel()) {
         throw new IOException("Could not parse Deps.Dependencies message from proto.");
       }

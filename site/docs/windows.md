@@ -5,16 +5,13 @@ title: Windows
 
 # Using Bazel on Windows
 
-<a name="install"></a>
-## Installation
-
-See [Install Bazel on Windows](install-windows.html) for installation
-instructions.
+This page covers Best Practices for using Bazel on Windows. For installation
+instructions, see [Install Bazel on Windows](install-windows.html).
 
 ## Known issues
 
-We mark Windows-related Bazel issues on GitHub with the "team-Windows"
-label. [You can see the open issues here.](https://github.com/bazelbuild/bazel/issues?q=is%3Aopen+is%3Aissue+label%3Ateam-Windows)
+Windows-related Bazel issues are marked with the "team-Windows"
+label on GitHub. [You can see the open issues here.](https://github.com/bazelbuild/bazel/issues?q=is%3Aopen+is%3Aissue+label%3Ateam-Windows)
 
 ## Best practices
 
@@ -27,10 +24,19 @@ For example, add the following line to your bazelrc file:
 startup --output_user_root=C:/tmp
 ```
 
+### Enable 8.3 filename support
+Bazel attempts to create a short name version for long file paths. But to do so the [8.3 filename support](https://docs.microsoft.com/en-us/windows-server/administration/windows-commands/fsutil-8dot3name) needs to be enabled for the volume in which the file with the long path resides. You can enable 8.3 name creation in all volumes by running the following command:
+```
+fsutil 8dot3name set 0
+```
+
 ### Enable symlink support
 
-Some features require Bazel to create file symlink on Windows, you can allow Bazel to do that by enabling [Developer Mode](https://docs.microsoft.com/en-us/windows/uwp/get-started/enable-your-device-for-development) on Windows (Only works for Windows 10, version 1703 or newer).
-After enabling the Developer Mode, you should be able to use the following features:
+Some features require Bazel to be able to create file symlinks on Windows,
+either by enabling
+[Developer Mode](https://docs.microsoft.com/en-us/windows/uwp/get-started/enable-your-device-for-development)
+(on Windows 10 version 1703 or newer), or by running Bazel as an administrator.
+This enables the following features:
 
 * [\-\-windows_enable_symlinks](command-line-reference.html#flag--windows_enable_symlinks)
 * [\-\-enable_runfiles](command-line-reference.html#flag--enable_runfiles)
@@ -49,10 +55,10 @@ build --enable_runfiles
 <a name="running-bazel-shells"></a>
 ### Running Bazel: MSYS2 shell vs. command prompt vs. PowerShell
 
-We recommend running Bazel from the command prompt (`cmd.exe`) or from
+**Recommendation:** Run Bazel from the command prompt (`cmd.exe`) or from
 PowerShell.
 
-As of 2020-01-15, we **do not recommend** running Bazel from `bash` -- either
+As of 2020-01-15, **do not** run Bazel from `bash` -- either
 from MSYS2 shell, or Git Bash, or Cygwin, or any other Bash variant. While Bazel
 may work for most use cases, some things are broken, like
 [interrupting the build with Ctrl+C from MSYS2](https://github.com/bazelbuild/bazel/issues/10573)).
@@ -66,7 +72,8 @@ details.
 ### Using Bazel without Bash (MSYS2)
 
 <a name="bazel-build-without-bash"></a>
-#### `bazel build` without Bash
+
+#### Using bazel build without Bash
 
 Bazel versions before 1.0 used to require Bash to build some rules.
 
@@ -77,15 +84,15 @@ Starting with Bazel 1.0, you can build any rule without Bash unless it is a:
 - Starlark rule that uses `ctx.actions.run_shell()` or `ctx.resolve_command()`
 
 However, `genrule` is often used for simple tasks like
-[copying a file](https://github.com/bazelbuild/bazel-skylib/blob/master/rules/copy_file.bzl)
-or [writing a text file](https://github.com/bazelbuild/bazel-skylib/blob/master/rules/write_file.bzl).
+[copying a file](https://github.com/bazelbuild/bazel-skylib/blob/main/rules/copy_file.bzl)
+or [writing a text file](https://github.com/bazelbuild/bazel-skylib/blob/main/rules/write_file.bzl).
 Instead of using `genrule` (and depending on Bash) you may find a suitable rule
 in the
-[bazel-skylib repository](https://github.com/bazelbuild/bazel-skylib/tree/master/rules).
+[bazel-skylib repository](https://github.com/bazelbuild/bazel-skylib/tree/main/rules).
 When built on Windows, **these rules do not require Bash**.
 
 <a name="bazel-test-without-bash"></a>
-#### `bazel test` without Bash
+#### Using bazel test without Bash
 
 Bazel versions before 1.0 used to require Bash to `bazel test` anything.
 
@@ -95,7 +102,7 @@ Starting with Bazel 1.0, you can test any rule without Bash, except when:
 - the test rule itself requires Bash (because its executable is a shell script)
 
 <a name="bazel-run-without-bash"></a>
-#### `bazel run` without Bash
+#### Using bazel run without Bash
 
 Bazel versions before 1.0 used to require Bash to `bazel run` anything.
 
@@ -105,16 +112,16 @@ Starting with Bazel 1.0, you can run any rule without Bash, except when:
 - the test rule itself requires Bash (because its executable is a shell script)
 
 <a name="sh-rules-without-bash"></a>
-#### `sh_binary` and `sh_*` rules, and `ctx.actions.run_shell()` without Bash
+#### Using sh_binary and sh_* rules, and ctx.actions.run_shell() without Bash
 
 You need Bash to build and test `sh_*` rules, and to build and test Starlark
 rules that use `ctx.actions.run_shell()` and `ctx.resolve_command()`. This
 applies not only to rules in your project, but to rules in any of the external
 repositories your project depends on (even transitively).
 
-We may explore the option to use Windows Subsystem for Linux (WSL) to build
-these rules, but as of 2020-01-15 it is not a priority for the Bazel-on-Windows
-subteam.
+In the future, there may be an option to use Windows Subsystem for
+Linux (WSL) to build these rules, but currently it is not a priority for
+the Bazel-on-Windows subteam.
 
 ### Setting environment variables
 
@@ -191,16 +198,34 @@ C:\projects\bazel> bazel build //examples/cpp:hello-world
 C:\projects\bazel> bazel-bin\examples\cpp\hello-world.exe
 ```
 
+By default, the built binaries target x64 architecture. To specify a different
+target architecture, set the `--cpu` build option for your target architecture:
+*  x64 (default):  `--cpu=x64_windows` or no option
+*  x86: `--cpu=x64_x86_windows`
+*  ARM: `--cpu=x64_arm_windows`
+*  ARM64: `--cpu=x64_arm64_windows`
+
+For example, to build targets for ARM architecture, run:
+
+```
+C:\projects\bazel> bazel build //examples/cpp:hello-world --cpu=x64_arm_windows
+```
+
 To build and use Dynamically Linked Libraries (DLL files), see [this
 example](https://github.com/bazelbuild/bazel/tree/master/examples/windows/dll).
+
+**Command Line Length Limit**: To prevent the
+[Windows command line length limit issue](https://github.com/bazelbuild/bazel/issues/5163),
+enable compiler parameter file feature via `--features=compiler_param_file`.
 
 ### Build C++ with Clang
 
 From 0.29.0, Bazel supports building with LLVM's MSVC-compatible compiler driver (`clang-cl.exe`).
 
 **Requirement**: To build with Clang, you have to install **both**
-[LLVM](http://releases.llvm.org/download.html) and Visual C++ Build tools, because although we use
-`clang-cl.exe` as compiler, we still need to link to Visual C++ libraries.
+[LLVM](http://releases.llvm.org/download.html) and Visual C++ Build tools,
+because although you use `clang-cl.exe` as compiler, you still need to link to
+Visual C++ libraries.
 
 Bazel can automatically detect LLVM installation on your system, or you can explicitly tell
 Bazel where LLVM is installed by `BAZEL_LLVM`.
@@ -219,7 +244,7 @@ To enable the Clang toolchain for building C++, there are several situations.
   You can enable the Clang toolchain by a build flag `--compiler=clang-cl`.
 
 * With `--incompatible_enable_cc_toolchain_resolution`:
-  You have to add a platform target to your BUILD file (eg. the top level BUILD file):
+  You have to add a platform target to your `BUILD file` (eg. the top level `BUILD` file):
     ```
     platform(
         name = "x64_windows-clang-cl",
@@ -237,7 +262,7 @@ To enable the Clang toolchain for building C++, there are several situations.
     --extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows-clang-cl --extra_execution_platforms=//:x64_windows-clang-cl
     ```
 
-    * Register the platform and toolchain in your WORKSPACE file:
+    * Register the platform and toolchain in your `WORKSPACE` file:
 
     ```
     register_execution_platforms(

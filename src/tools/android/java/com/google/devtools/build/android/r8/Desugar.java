@@ -14,19 +14,22 @@
 package com.google.devtools.build.android.r8;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static java.lang.Math.max;
+import static java.util.stream.Collectors.joining;
 
 import com.android.tools.r8.ArchiveClassFileProvider;
+import com.android.tools.r8.ArchiveProgramResourceProvider;
 import com.android.tools.r8.ClassFileResourceProvider;
 import com.android.tools.r8.CompilationFailedException;
 import com.android.tools.r8.D8;
 import com.android.tools.r8.D8Command;
 import com.android.tools.r8.Diagnostic;
 import com.android.tools.r8.DiagnosticsHandler;
+import com.android.tools.r8.StringResource;
 import com.android.tools.r8.errors.InterfaceDesugarMissingTypeDiagnostic;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.android.Converters.ExistingPathConverter;
 import com.google.devtools.build.android.Converters.PathConverter;
-import com.google.devtools.build.android.desugar.DependencyCollector;
 import com.google.devtools.build.android.r8.desugar.OrderedClassFileResourceProvider;
 import com.google.devtools.build.android.r8.desugar.OutputConsumer;
 import com.google.devtools.common.options.Option;
@@ -46,6 +49,8 @@ import java.util.List;
 public class Desugar {
 
   public static final String DESUGAR_DEPS_FILENAME = "META-INF/desugar_deps";
+  // We shard the compilation if we have more than this number of entries to avoid timing out.
+  private static final int NUMBER_OF_ENTRIES_PER_SHARD = 100000;
 
   /** Commandline options for {@link com.google.devtools.build.android.r8.Desugar}. */
   public static class DesugarOptions extends OptionsBase {
@@ -60,7 +65,7 @@ public class Desugar {
         converter = ExistingPathConverter.class,
         abbrev = 'i',
         help =
-            "Input Jar or directory with classes to desugar (required, the n-th input is paired"
+            "Input jars with classes to desugar (required, the n-th input is paired"
                 + " with the n-th output).")
     public List<Path> inputJars;
 
@@ -73,7 +78,7 @@ public class Desugar {
         effectTags = {OptionEffectTag.UNKNOWN},
         converter = ExistingPathConverter.class,
         help =
-            "Ordered classpath (Jar or directory) to resolve symbols in the --input Jar, like "
+            "Ordered classpath jars to resolve symbols in the --input jars, like "
                 + "javac's -cp flag.")
     public List<Path> classpath;
 
@@ -86,7 +91,7 @@ public class Desugar {
         effectTags = {OptionEffectTag.UNKNOWN},
         converter = ExistingPathConverter.class,
         help =
-            "Bootclasspath that was used to compile the --input Jar with, like javac's "
+            "Bootclasspath that was used to compile the --input jars with, like javac's "
                 + "-bootclasspath flag (required).")
     public List<Path> bootclasspath;
 
@@ -338,6 +343,19 @@ public class Desugar {
         metadataTags = {OptionMetadataTag.HIDDEN},
         help = "Run as a Bazel persistent worker.")
     public boolean persistentWorker;
+
+    @Option(
+        name = "desugared_lib_config",
+        defaultValue = "null",
+        allowMultiple = true,
+        category = "input",
+        documentationCategory = OptionDocumentationCategory.UNCATEGORIZED,
+        effectTags = {OptionEffectTag.UNKNOWN},
+        converter = ExistingPathConverter.class,
+        help =
+            "Specify desugared library configuration. "
+                + "The input file is a desugared library configuration (json)")
+    public List<Path> desugaredLibConfig;
   }
 
   private final DesugarOptions options;
@@ -411,19 +429,53 @@ public class Desugar {
       List<ClassFileResourceProvider> bootclasspathProviders,
       ClassFileResourceProvider classpath,
       Path input,
-      Path output)
-      throws CompilationFailedException {
+      Path output,
+      Path desugaredLibConfig)
+      throws CompilationFailedException, IOException {
     checkArgument(!Files.isDirectory(input), "Input must be a jar (%s is a directory)", input);
     DependencyCollector dependencyCollector = createDependencyCollector();
-    OutputConsumer consumer = new OutputConsumer(output, dependencyCollector);
-    D8Command.Builder builder =
-        D8Command.builder(new DesugarDiagnosticsHandler(consumer))
-            .addClasspathResourceProvider(classpath)
-            .addProgramFiles(input)
-            .setMinApiLevel(options.minSdkVersion)
-            .setProgramConsumer(consumer);
-    bootclasspathProviders.forEach(builder::addLibraryResourceProvider);
-    D8.run(builder.build());
+    OutputConsumer consumer = new OutputConsumer(output, dependencyCollector, input);
+    final int numberOfShards = getShardCount(input);
+    // Don't finish consumers until after we have written all shards.
+    consumer.setFinish(false);
+    for (int i = 0; i < numberOfShards; i++) {
+      if (i == numberOfShards - 1) {
+        // When we are are writing the last shard we should signal consumers.
+        consumer.setFinish(true);
+      }
+      final int currentShard = i;
+      ImmutableList.Builder<ClassFileResourceProvider> classpathProvidersBuilder =
+          ImmutableList.builder();
+      classpathProvidersBuilder
+          .add(classpath)
+          .add(
+              new ArchiveClassFileProvider(
+                  input,
+                  p ->
+                      ArchiveProgramResourceProvider.includeClassFileOrDexEntries(p)
+                          && !isProgramClassForShard(numberOfShards, currentShard, p)));
+      OrderedClassFileResourceProvider orderedClassFileResourceProvider =
+          new OrderedClassFileResourceProvider(
+              ImmutableList.copyOf(bootclasspathProviders), classpathProvidersBuilder.build());
+      ArchiveProgramResourceProvider programProvider =
+          ArchiveProgramResourceProvider.fromArchive(
+              input,
+              p ->
+                  ArchiveProgramResourceProvider.includeClassFileOrDexEntries(p)
+                      && isProgramClassForShard(numberOfShards, currentShard, p));
+      D8Command.Builder builder =
+          D8Command.builder(new DesugarDiagnosticsHandler(consumer))
+              .addClasspathResourceProvider(orderedClassFileResourceProvider)
+              .addProgramResourceProvider(programProvider)
+              .setIntermediate(true)
+              .setMinApiLevel(options.minSdkVersion)
+              .setProgramConsumer(consumer);
+      bootclasspathProviders.forEach(builder::addLibraryResourceProvider);
+      if (desugaredLibConfig != null) {
+        builder.addDesugaredLibraryConfiguration(StringResource.fromFile(desugaredLibConfig));
+      }
+      D8.run(builder.build());
+    }
   }
 
   private void desugar() throws CompilationFailedException, IOException {
@@ -457,8 +509,26 @@ public class Desugar {
           bootclasspathProviders,
           classpathProvider,
           options.inputJars.get(i),
-          options.outputJars.get(i));
+          options.outputJars.get(i),
+          options.desugarCoreLibs ? options.desugaredLibConfig.get(0) : null);
     }
+  }
+
+  private boolean isProgramClassForShard(int numberOfShards, int currentShard, String name) {
+    return getShardNumberForString(numberOfShards, name) == currentShard;
+  }
+
+  private int getShardCount(Path input) throws IOException {
+    return max(1, ZipUtils.getNumberOfEntries(input) / NUMBER_OF_ENTRIES_PER_SHARD);
+  }
+
+  private int getShardNumberForString(int numberOfShards, String string) {
+    // We group classes and inner classes to ensure that inner class annotations and nests are
+    // correctly handled.
+    if (string.contains("$")) {
+      string = string.substring(0, string.indexOf("$"));
+    }
+    return Math.floorMod(string.hashCode(), numberOfShards);
   }
 
   private static boolean isPlatform(ClassFileResourceProvider provider) {
@@ -488,11 +558,17 @@ public class Desugar {
     if (options.alwaysRewriteLongCompare) {
       throw new AssertionError("--rewrite_calls_to_long_compare has no effect");
     }
-    if (!options.tolerateMissingDependencies) {
-      throw new AssertionError("--best_effort_tolerate_missing_deps must be enabled");
-    }
     if (options.desugarCoreLibs) {
-      throw new AssertionError("--desugar_supported_core_libs is not supported");
+      if (options.desugaredLibConfig.isEmpty()) {
+        throw new AssertionError(
+            "If --desugar_supported_core_libs is set --desugared_lib_config "
+                + " must also be set.");
+      }
+      if (options.desugaredLibConfig.size() > 1) {
+        throw new AssertionError(
+            "Only one --desugared_lib_config options must be passed. Configurations passed: "
+                + options.desugaredLibConfig.stream().map(Path::toString).collect(joining(", ")));
+      }
     }
     if (!options.desugarInterfaceMethodBodiesIfNeeded) {
       throw new AssertionError("--desugar_interface_method_bodies_if_needed must be enabled");

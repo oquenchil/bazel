@@ -33,7 +33,9 @@ import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.FileProvider;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.configuredtargets.OutputFileConfiguredTarget;
+import com.google.devtools.build.lib.analysis.util.AnalysisTestUtil;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
@@ -43,6 +45,7 @@ import com.google.devtools.build.lib.rules.java.JavaCompileActionTestHelper;
 import com.google.devtools.build.lib.rules.java.JavaInfo;
 import com.google.devtools.build.lib.rules.java.JavaRuleOutputJarsProvider;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetAndData;
+import com.google.devtools.build.lib.testutil.TestConstants;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -52,9 +55,68 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import javax.annotation.Nullable;
+import org.junit.Before;
 
 /** Common methods shared between Android related {@link BuildViewTestCase}s. */
 public abstract class AndroidBuildViewTestCase extends BuildViewTestCase {
+
+  @Before
+  public void setupStarlarkJavaLibrary() throws Exception {
+    setBuildLanguageOptions("--experimental_google_legacy_api");
+  }
+
+  /** Override this to trigger platform-based Android toolchain resolution. */
+  protected boolean platformBasedToolchains() {
+    return false;
+  }
+
+  protected String defaultPlatformFlag() {
+    return String.format("--platforms=%s/android:armeabi-v7a", TestConstants.PLATFORM_PACKAGE_ROOT);
+  }
+
+  @Override
+  protected void useConfiguration(ImmutableMap<String, Object> starlarkOptions, String... args)
+      throws Exception {
+
+    if (!platformBasedToolchains()) {
+      super.useConfiguration(starlarkOptions, args);
+      return;
+    }
+
+    // Platform-based toolchain resolution:
+    ImmutableList.Builder<String> fullArgs = ImmutableList.builder();
+    fullArgs.add("--incompatible_enable_android_toolchain_resolution");
+    // Uncomment the below to get more info when tests fail because of toolchain resolution.
+    //  fullArgs.add("--toolchain_resolution_debug=tools/android:.*toolchain_type");
+    boolean hasPlatform = false;
+    for (String arg : args) {
+      if (arg.startsWith("--android_sdk=")) {
+        // --android_sdk is a legacy toolchain resolution flag. Remap it to the platform-equivalent:
+        // wrap a toolchain definition around the SDK with no constraint requirements and register
+        // it with --extra_toolchains. --extra_toolchains guarantees this SDK will be chosen before
+        // anything registered in the WORKSPACE.
+        String sdkLabel = arg.substring("--android_sdk=".length());
+        scratch.file(
+            "legacy_to_platform_sdk/BUILD",
+            "toolchain(",
+            "    name = 'custom_sdk_toolchain',",
+            String.format("    toolchain_type = '%s',", TestConstants.ANDROID_TOOLCHAIN_TYPE_LABEL),
+            String.format("    toolchain = '%s',", sdkLabel),
+            ")");
+        fullArgs.add("--extra_toolchains=//legacy_to_platform_sdk:custom_sdk_toolchain");
+      } else {
+        fullArgs.add(arg);
+      }
+
+      if (arg.startsWith("--platforms=") || arg.startsWith("--android_platforms=")) {
+        hasPlatform = true;
+      }
+    }
+    if (!hasPlatform) {
+      fullArgs.add(defaultPlatformFlag());
+    }
+    super.useConfiguration(starlarkOptions, fullArgs.build().toArray(new String[0]));
+  }
 
   protected Iterable<Artifact> getNativeLibrariesInApk(ConfiguredTarget target) {
     return Iterables.filter(
@@ -68,14 +130,18 @@ public abstract class AndroidBuildViewTestCase extends BuildViewTestCase {
   }
 
   protected void assertNativeLibrariesCopiedNotLinked(
-      ConfiguredTarget target, String... expectedLibNames) {
+      ConfiguredTarget target,
+      BuildConfigurationValue targetConfiguration,
+      String... expectedLibNames) {
     Iterable<Artifact> copiedLibs = getNativeLibrariesInApk(target);
     for (Artifact copiedLib : copiedLibs) {
       assertWithMessage("Native libraries were linked to produce " + copiedLib)
           .that(getGeneratingLabelForArtifact(copiedLib))
           .isNotEqualTo(target.getLabel());
     }
-    assertThat(artifactsToStrings(copiedLibs))
+    assertThat(
+            AnalysisTestUtil.artifactsToStrings(
+                targetConfiguration, getHostConfiguration(), copiedLibs))
         .containsAtLeastElementsIn(ImmutableSet.copyOf(Arrays.asList(expectedLibNames)));
   }
 
@@ -118,7 +184,7 @@ public abstract class AndroidBuildViewTestCase extends BuildViewTestCase {
   }
 
   protected List<String> resourceArguments(ValidatedAndroidResources resource)
-      throws CommandLineExpansionException {
+      throws CommandLineExpansionException, InterruptedException {
     return getGeneratingSpawnActionArgs(resource.getApk());
   }
 
@@ -145,11 +211,11 @@ public abstract class AndroidBuildViewTestCase extends BuildViewTestCase {
         JavaInfo.getProvider(JavaRuleOutputJarsProvider.class, target.getConfiguredTarget());
     assertThat(jarProvider).isNotNull();
     return Iterables.find(
-            jarProvider.getOutputJars(),
-            outputJar -> {
-              assertThat(outputJar).isNotNull();
-              assertThat(outputJar.getClassJar()).isNotNull();
-              return outputJar
+            jarProvider.getJavaOutputs(),
+            javaOutput -> {
+              assertThat(javaOutput).isNotNull();
+              assertThat(javaOutput.getClassJar()).isNotNull();
+              return javaOutput
                   .getClassJar()
                   .getFilename()
                   .equals(target.getTarget().getName() + "_resources.jar");
@@ -300,43 +366,8 @@ public abstract class AndroidBuildViewTestCase extends BuildViewTestCase {
     return Sets.difference(action.getInputs().toSet(), action.getTools().toSet());
   }
 
-  protected void checkDebugKey(String debugKeyFile, boolean hasDebugKeyTarget) throws Exception {
-    ConfiguredTarget binary = getConfiguredTarget("//java/com/google/android/hello:b");
-    Label defaultKeyStoreFile =
-        Label.parseAbsoluteUnchecked(
-            ruleClassProvider.getToolsRepository() + "//tools/android:debug_keystore");
-    Label debugKeyFileLabel = Label.parseAbsolute(debugKeyFile, ImmutableMap.of());
-
-    if (hasDebugKeyTarget) {
-      assertWithMessage("Debug key file target missing.")
-          .that(checkKeyPresence(binary, debugKeyFileLabel, defaultKeyStoreFile))
-          .isTrue();
-    } else {
-      assertWithMessage("Debug key file is default, although different target specified.")
-          .that(checkKeyPresence(binary, defaultKeyStoreFile, debugKeyFileLabel))
-          .isTrue();
-    }
-  }
-
-  private boolean checkKeyPresence(
-      ConfiguredTarget binary, Label shouldHaveKey, Label shouldNotHaveKey) throws Exception {
-    boolean hasKey = false;
-    boolean doesNotHaveKey = false;
-
-    for (ConfiguredTarget debugKeyTarget : getDirectPrerequisites(binary)) {
-      if (debugKeyTarget.getLabel().equals(shouldHaveKey)) {
-        hasKey = true;
-      }
-      if (debugKeyTarget.getLabel().equals(shouldNotHaveKey)) {
-        doesNotHaveKey = true;
-      }
-    }
-
-    return hasKey && !doesNotHaveKey;
-  }
-
   protected String getAndroidJarPath() throws Exception {
-    return getAndroidSdk().getAndroidJar().getRootRelativePathString();
+    return getAndroidSdk().getAndroidJar().getExecPathString();
   }
 
   protected String getAndroidJarFilename() throws Exception {
@@ -348,7 +379,7 @@ public abstract class AndroidBuildViewTestCase extends BuildViewTestCase {
   }
 
   protected String getMainDexClassesPath() throws Exception {
-    return getAndroidSdk().getMainDexClasses().getRootRelativePathString();
+    return getAndroidSdk().getMainDexClasses().getExecPathString();
   }
 
   protected String getMainDexClassesFilename() throws Exception {
@@ -361,13 +392,13 @@ public abstract class AndroidBuildViewTestCase extends BuildViewTestCase {
   }
 
   protected void checkProguardUse(
-      String target,
+      ConfiguredTarget binary,
       String artifact,
       boolean expectMapping,
       @Nullable Integer passes,
+      boolean splitOptimizationPass,
       String... expectedlibraryJars)
       throws Exception {
-    ConfiguredTarget binary = getConfiguredTarget(target);
     assertProguardUsed(binary);
     assertProguardGenerated(binary);
 
@@ -408,16 +439,36 @@ public abstract class AndroidBuildViewTestCase extends BuildViewTestCase {
       SpawnAction lastStageAction = proguardAction;
       // Verify Obfuscation config.
       for (int pass = passes; pass > 0; pass--) {
-        Artifact lastStageOutput =
-            ActionsTestUtil.getFirstArtifactEndingWith(
-                lastStageAction.getInputs(), "Proguard_optimization_" + pass + ".jar");
-        assertWithMessage("Proguard_optimization_" + pass + ".jar is not in rule output")
-            .that(lastStageOutput)
-            .isNotNull();
-        lastStageAction = getGeneratingSpawnAction(lastStageOutput);
+        if (splitOptimizationPass) {
+          Artifact lastStageOutput =
+              ActionsTestUtil.getFirstArtifactEndingWith(
+                  lastStageAction.getInputs(), "_optimization_final_" + pass + ".jar");
+          assertWithMessage("optimization_final_" + pass + ".jar is not in rule output")
+              .that(lastStageOutput)
+              .isNotNull();
+          lastStageAction = getGeneratingSpawnAction(lastStageOutput);
+          assertThat(lastStageAction.getArguments()).contains("-runtype OPTIMIZATION_FINAL");
 
-        // Verify Optimization pass config.
-        assertThat(lastStageAction.getArguments()).contains("-runtype OPTIMIZATION");
+          lastStageOutput =
+              ActionsTestUtil.getFirstArtifactEndingWith(
+                  lastStageAction.getInputs(), "_optimization_initial_" + pass + ".jar");
+          assertWithMessage("optimization_initial_" + pass + ".jar is not in rule output")
+              .that(lastStageOutput)
+              .isNotNull();
+          lastStageAction = getGeneratingSpawnAction(lastStageOutput);
+          assertThat(lastStageAction.getArguments()).contains("-runtype OPTIMIZATION_INITIAL");
+        } else {
+          Artifact lastStageOutput =
+              ActionsTestUtil.getFirstArtifactEndingWith(
+                  lastStageAction.getInputs(), "_optimization_" + pass + ".jar");
+          assertWithMessage("Proguard_optimization_" + pass + ".jar is not in rule output")
+              .that(lastStageOutput)
+              .isNotNull();
+          lastStageAction = getGeneratingSpawnAction(lastStageOutput);
+
+          // Verify Optimization pass config.
+          assertThat(lastStageAction.getArguments()).contains("-runtype OPTIMIZATION");
+        }
         checkProguardLibJars(lastStageAction, expectedlibraryJars);
       }
 

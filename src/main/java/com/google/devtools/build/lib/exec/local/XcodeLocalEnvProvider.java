@@ -66,7 +66,9 @@ public final class XcodeLocalEnvProvider implements LocalEnvProvider {
 
   @Override
   public ImmutableMap<String, String> rewriteLocalEnv(
-      Map<String, String> env, BinTools binTools, String fallbackTmpDir) throws IOException {
+      Map<String, String> env, BinTools binTools, String fallbackTmpDir)
+      throws IOException, InterruptedException {
+    boolean containsDeveloperDir = env.containsKey(AppleConfiguration.DEVELOPER_DIR_ENV_NAME);
     boolean containsXcodeVersion = env.containsKey(AppleConfiguration.XCODE_VERSION_ENV_NAME);
     boolean containsAppleSdkVersion =
         env.containsKey(AppleConfiguration.APPLE_SDK_VERSION_ENV_NAME);
@@ -91,7 +93,7 @@ public final class XcodeLocalEnvProvider implements LocalEnvProvider {
     // TODO(bazel-team): Bazel's view of the xcode version and developer dir should be explicitly
     // set for build hermeticity.
     String developerDir = "";
-    if (containsXcodeVersion) {
+    if (containsXcodeVersion && !containsDeveloperDir) {
       String version = env.get(AppleConfiguration.XCODE_VERSION_ENV_NAME);
       developerDir = getDeveloperDir(binTools, DottedVersion.fromStringUnchecked(version));
       newEnvBuilder.put("DEVELOPER_DIR", developerDir);
@@ -125,10 +127,8 @@ public final class XcodeLocalEnvProvider implements LocalEnvProvider {
    *     issue finding or running the tool
    */
   private static String querySdkRoot(
-      String developerDir,
-      String sdkVersion,
-      String appleSdkPlatform)
-      throws IOException {
+      String developerDir, String sdkVersion, String appleSdkPlatform)
+      throws IOException, InterruptedException {
     try {
       String sdkString = appleSdkPlatform.toLowerCase() + sdkVersion;
       Map<String, String> env =
@@ -190,7 +190,7 @@ public final class XcodeLocalEnvProvider implements LocalEnvProvider {
    *     issue finding or running the tool
    */
   private static String getSdkRoot(String developerDir, String sdkVersion, String appleSdkPlatform)
-      throws IOException {
+      throws IOException, InterruptedException {
     try {
       return sdkRootCache.computeIfAbsent(
           developerDir + ":" + appleSdkPlatform.toLowerCase() + ":" + sdkVersion,
@@ -201,10 +201,25 @@ public final class XcodeLocalEnvProvider implements LocalEnvProvider {
               return sdkRoot;
             } catch (IOException e) {
               throw new UncheckedIOException(e);
+            } catch (InterruptedException e) {
+              throw new UncheckedInterruptedException(e);
             }
           });
     } catch (UncheckedIOException e) {
       throw e.getCause();
+    } catch (UncheckedInterruptedException e) {
+      throw e.getCause();
+    }
+  }
+
+  private static final class UncheckedInterruptedException extends RuntimeException {
+    UncheckedInterruptedException(InterruptedException e) {
+      super(e);
+    }
+
+    @Override
+    public synchronized InterruptedException getCause() {
+      return (InterruptedException) super.getCause();
     }
   }
 
@@ -224,7 +239,7 @@ public final class XcodeLocalEnvProvider implements LocalEnvProvider {
    *     unexpected issue finding or running the tool
    */
   private static String queryDeveloperDir(BinTools binTools, DottedVersion version)
-      throws IOException {
+      throws IOException, InterruptedException {
     String xcodeLocatorPath = binTools.getEmbeddedPath("xcode-locator").getPathString();
     try {
       CommandResult xcodeLocatorResult =
@@ -283,7 +298,7 @@ public final class XcodeLocalEnvProvider implements LocalEnvProvider {
    *     unexpected issue finding or running the tool
    */
   private static String getDeveloperDir(BinTools binTools, DottedVersion version)
-      throws IOException {
+      throws IOException, InterruptedException {
     try {
       return developerDirCache.computeIfAbsent(
           version.toString(),
@@ -295,9 +310,13 @@ public final class XcodeLocalEnvProvider implements LocalEnvProvider {
               return developerDir;
             } catch (IOException e) {
               throw new UncheckedIOException(e);
+            } catch (InterruptedException e) {
+              throw new UncheckedInterruptedException(e);
             }
           });
     } catch (UncheckedIOException e) {
+      throw e.getCause();
+    } catch (UncheckedInterruptedException e) {
       throw e.getCause();
     }
   }

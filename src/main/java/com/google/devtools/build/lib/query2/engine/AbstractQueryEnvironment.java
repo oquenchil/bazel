@@ -129,12 +129,9 @@ public abstract class AbstractQueryEnvironment<T> implements QueryEnvironment<T>
     QueryTaskFuture<Void> evalAllFuture = expr.eval(this, context, aggregateAllCallback);
     return whenSucceedsCall(
         evalAllFuture,
-        new QueryTaskCallable<Void>() {
-          @Override
-          public Void call() throws QueryException, InterruptedException {
-            callback.process(aggregateAllCallback.getResult());
-            return null;
-          }
+        () -> {
+          callback.process(aggregateAllCallback.getResult());
+          return null;
         });
   }
 
@@ -185,8 +182,7 @@ public abstract class AbstractQueryEnvironment<T> implements QueryEnvironment<T>
 
   @Override
   public <T1, T2> QueryTaskFuture<T2> transformAsync(
-      QueryTaskFuture<T1> future,
-      final Function<T1, QueryTaskFuture<T2>> function) {
+      QueryTaskFuture<T1> future, Function<T1, QueryTaskFuture<T2>> function) {
     return QueryTaskFutureImpl.ofDelegate(
         Futures.transformAsync(
             (QueryTaskFutureImpl<T1>) future,
@@ -196,6 +192,6 @@ public abstract class AbstractQueryEnvironment<T> implements QueryEnvironment<T>
 
   protected static Iterable<QueryTaskFutureImpl<?>> cast(
       Iterable<? extends QueryTaskFuture<?>> futures) {
-    return Iterables.transform(futures, future -> (QueryTaskFutureImpl<?>) future);
+    return Iterables.transform(futures, QueryTaskFutureImpl.class::cast);
   }
 }

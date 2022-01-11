@@ -20,6 +20,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Maps;
 import com.google.common.collect.Streams;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.cmdline.LabelConstants;
@@ -32,40 +33,40 @@ import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.EventKind;
 import com.google.devtools.build.lib.packages.BuildType;
+import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
-import com.google.devtools.build.lib.skylarkbuildapi.RunfilesApi;
-import com.google.devtools.build.lib.skylarkbuildapi.SymlinkEntryApi;
-import com.google.devtools.build.lib.syntax.Location;
-import com.google.devtools.build.lib.syntax.Printer;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
+import com.google.devtools.build.lib.starlarkbuildapi.RunfilesApi;
+import com.google.devtools.build.lib.starlarkbuildapi.SymlinkEntryApi;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.EvalException;
+import net.starlark.java.eval.Printer;
+import net.starlark.java.eval.Sequence;
+import net.starlark.java.eval.Starlark;
+import net.starlark.java.eval.StarlarkSemantics;
+import net.starlark.java.eval.StarlarkThread;
+import net.starlark.java.syntax.Location;
 
 /**
  * An object that encapsulates runfiles. Conceptually, the runfiles are a map of paths to files,
  * forming a symlink tree.
  *
  * <p>In order to reduce memory consumption, this map is not explicitly stored here, but instead as
- * a combination of three parts: artifacts placed at their root-relative paths, source tree symlinks
- * and root symlinks (outside of the source tree).
+ * a combination of three parts: artifacts placed at their output-dir-relative paths, source tree
+ * symlinks and root symlinks (outside of the source tree).
  */
 @Immutable
-@AutoCodec
 public final class Runfiles implements RunfilesApi {
-  private static final Function<SymlinkEntry, Artifact> TO_ARTIFACT =
-      new Function<SymlinkEntry, Artifact>() {
-        @Override
-        public Artifact apply(SymlinkEntry input) {
-          return input.getArtifact();
-        }
-      };
 
   private static class DummyEmptyFilesSupplier implements EmptyFilesSupplier {
     private DummyEmptyFilesSupplier() {}
@@ -76,7 +77,7 @@ public final class Runfiles implements RunfilesApi {
     }
   }
 
-  @AutoCodec @AutoCodec.VisibleForSerialization
+  @SerializationConstant @AutoCodec.VisibleForSerialization
   static final EmptyFilesSupplier DUMMY_EMPTY_FILES_SUPPLIER = new DummyEmptyFilesSupplier();
 
   /**
@@ -105,19 +106,16 @@ public final class Runfiles implements RunfilesApi {
   // first one prevents the last one from appearing on the iterator.
   //
   // The lack of a .equals() method prevents this by making the first entry in the above case not
-  // equals to the third one if they are not the same instance (which they almost never are)
+  // equal to the third one if they are not the same instance (which they almost never are).
   //
   // Goodnight, prince(ss)?, and sweet dreams.
-  @AutoCodec
-  @VisibleForSerialization
-  static final class SymlinkEntry implements SymlinkEntryApi {
+  public static final class SymlinkEntry implements SymlinkEntryApi {
 
     static final Depset.ElementType TYPE = Depset.ElementType.of(SymlinkEntry.class);
 
     private final PathFragment path;
     private final Artifact artifact;
 
-    @VisibleForSerialization
     SymlinkEntry(PathFragment path, Artifact artifact) {
       this.path = Preconditions.checkNotNull(path);
       this.artifact = Preconditions.checkNotNull(artifact);
@@ -125,7 +123,7 @@ public final class Runfiles implements RunfilesApi {
 
     @Override
     public String getPathString() {
-      return getPath().getPathString();
+      return path.getPathString();
     }
 
     public PathFragment getPath() {
@@ -147,7 +145,7 @@ public final class Runfiles implements RunfilesApi {
       printer.append("SymlinkEntry(path = ");
       printer.repr(getPathString());
       printer.append(", target_file = ");
-      getArtifact().repr(printer);
+      artifact.repr(printer);
       printer.append(")");
     }
   }
@@ -168,15 +166,15 @@ public final class Runfiles implements RunfilesApi {
    * The artifacts that should be present in the runfiles directory.
    *
    * <p>This collection may not include any middlemen. These artifacts will be placed at a location
-   * that corresponds to the root-relative path of each artifact. It's possible for several
-   * artifacts to have the same root-relative path, in which case the last one will win.
+   * that corresponds to the output-dir-relative path of each artifact. It's possible for several
+   * artifacts to have the same output-dir-relative path, in which case the last one will win.
    */
   private final NestedSet<Artifact> artifacts;
 
   /**
    * A map of symlinks that should be present in the runfiles directory. In general, the symlink can
-   * be determined from the artifact by using the root-relative path, so this should only be used
-   * for cases where that isn't possible.
+   * be determined from the artifact by using the output-dir-relative path, so this should only be
+   * used for cases where that isn't possible.
    *
    * <p>This may include runfiles symlinks from the root of the runfiles tree.
    */
@@ -225,7 +223,7 @@ public final class Runfiles implements RunfilesApi {
   }
 
   /** Policy for this Runfiles tree */
-  private ConflictPolicy conflictPolicy = ConflictPolicy.IGNORE;
+  private ConflictPolicy conflictPolicy;
 
   /**
    * If external runfiles should be created under .runfiles/wsname/external/repo as well as
@@ -233,9 +231,7 @@ public final class Runfiles implements RunfilesApi {
    */
   private final boolean legacyExternalRunfiles;
 
-  @AutoCodec.Instantiator
-  @VisibleForSerialization
-  Runfiles(
+  private Runfiles(
       PathFragment suffix,
       NestedSet<Artifact> artifacts,
       NestedSet<SymlinkEntry> symlinks,
@@ -273,7 +269,7 @@ public final class Runfiles implements RunfilesApi {
   /** Returns the collection of runfiles as artifacts. */
   @Override
   public Depset /*<Artifact>*/ getArtifactsForStarlark() {
-    return Depset.of(Artifact.TYPE, getArtifacts());
+    return Depset.of(Artifact.TYPE, artifacts);
   }
 
   public NestedSet<Artifact> getArtifacts() {
@@ -299,7 +295,12 @@ public final class Runfiles implements RunfilesApi {
     Set<PathFragment> manifestKeys =
         Streams.concat(
                 symlinks.toList().stream().map(SymlinkEntry::getPath),
-                getArtifacts().toList().stream().map(Artifact::getRootRelativePath))
+                artifacts.toList().stream()
+                    .map(
+                        artifact ->
+                            legacyExternalRunfiles
+                                ? artifact.getOutputDirRelativePath(false)
+                                : artifact.getRunfilesPath()))
             .collect(ImmutableSet.toImmutableSet());
     Iterable<PathFragment> emptyKeys = emptyFilesSupplier.getExtraPaths(manifestKeys);
     return NestedSetBuilder.<String>stableOrder()
@@ -329,7 +330,9 @@ public final class Runfiles implements RunfilesApi {
   @VisibleForTesting
   static Map<PathFragment, Artifact> filterListForObscuringSymlinks(
       EventHandler eventHandler, Location location, Map<PathFragment, Artifact> workingManifest) {
-    Map<PathFragment, Artifact> newManifest = new HashMap<>();
+    Map<PathFragment, Artifact> newManifest =
+        Maps.newHashMapWithExpectedSize(workingManifest.size());
+    Set<PathFragment> noFurtherObstructions = new HashSet<>();
 
     outer:
     for (Map.Entry<PathFragment, Artifact> entry : workingManifest.entrySet()) {
@@ -337,8 +340,13 @@ public final class Runfiles implements RunfilesApi {
       Artifact symlink = entry.getValue();
       // drop nested entries; warn if this changes anything
       int n = source.segmentCount();
+      ArrayList<PathFragment> parents = new ArrayList<>(n);
       for (int j = 1; j < n; ++j) {
         PathFragment prefix = source.subFragment(0, n - j);
+        if (noFurtherObstructions.contains(prefix)) {
+          break;
+        }
+        parents.add(prefix);
         Artifact ancestor = workingManifest.get(prefix);
         if (ancestor != null) {
           // This is an obscuring symlink, so just drop it and move on if there's no reporter.
@@ -364,6 +372,7 @@ public final class Runfiles implements RunfilesApi {
           continue outer;
         }
       }
+      noFurtherObstructions.addAll(parents);
       newManifest.put(entry.getKey(), entry.getValue());
     }
     return newManifest;
@@ -384,8 +393,8 @@ public final class Runfiles implements RunfilesApi {
     ConflictChecker checker = new ConflictChecker(conflictPolicy, eventHandler, location);
     Map<PathFragment, Artifact> manifest = getSymlinksAsMap(checker);
     // Add artifacts (committed to inclusion on construction of runfiles).
-    for (Artifact artifact : getArtifacts().toList()) {
-      checker.put(manifest, artifact.getRootRelativePath(), artifact);
+    for (Artifact artifact : artifacts.toList()) {
+      checker.put(manifest, artifact.getRunfilesPath(), artifact);
     }
 
     manifest = filterListForObscuringSymlinks(eventHandler, location, manifest);
@@ -432,11 +441,8 @@ public final class Runfiles implements RunfilesApi {
       this.sawWorkspaceName = legacyExternalRunfiles;
     }
 
-    /**
-     * Adds a map under the workspaceName.
-     */
-    public void addUnderWorkspace(
-        Map<PathFragment, Artifact> inputManifest, ConflictChecker checker) {
+    /** Adds a map under the workspaceName. */
+    void addUnderWorkspace(Map<PathFragment, Artifact> inputManifest, ConflictChecker checker) {
       for (Map.Entry<PathFragment, Artifact> entry : inputManifest.entrySet()) {
         PathFragment path = entry.getKey();
         if (isUnderWorkspace(path)) {
@@ -444,7 +450,7 @@ public final class Runfiles implements RunfilesApi {
           checker.put(manifest, workspaceName.getRelative(path), entry.getValue());
         } else {
           if (legacyExternalRunfiles) {
-            checker.put(manifest, workspaceName.getRelative(path), entry.getValue());
+            checker.put(manifest, getLegacyExternalPath(path), entry.getValue());
           }
           // Always add the non-legacy .runfiles/repo/whatever path.
           checker.put(manifest, getExternalPath(path), entry.getValue());
@@ -476,7 +482,13 @@ public final class Runfiles implements RunfilesApi {
     }
 
     private PathFragment getExternalPath(PathFragment path) {
-      return checkForWorkspace(path.relativeTo(LabelConstants.EXTERNAL_PACKAGE_NAME));
+      return checkForWorkspace(path.subFragment(1));
+    }
+
+    private PathFragment getLegacyExternalPath(PathFragment path) {
+      return workspaceName
+          .getRelative(LabelConstants.EXTERNAL_PATH_PREFIX)
+          .getRelative(checkForWorkspace(path.subFragment(1)));
     }
 
     private PathFragment checkForWorkspace(PathFragment path) {
@@ -486,12 +498,8 @@ public final class Runfiles implements RunfilesApi {
     }
 
     private static boolean isUnderWorkspace(PathFragment path) {
-      return !path.startsWith(LabelConstants.EXTERNAL_PACKAGE_NAME);
+      return !path.startsWith(LabelConstants.EXTERNAL_RUNFILES_PATH_PREFIX);
     }
-  }
-
-  boolean getLegacyExternalRunfiles() {
-    return legacyExternalRunfiles;
   }
 
   /** Returns the root symlinks. */
@@ -519,11 +527,11 @@ public final class Runfiles implements RunfilesApi {
    */
   public Map<PathFragment, Artifact> asMapWithoutRootSymlinks() {
     Map<PathFragment, Artifact> result = entriesToMap(symlinks, null);
-    // If multiple artifacts have the same root-relative path, the last one in the list will win.
-    // That is because the runfiles tree cannot contain the same artifact for different
-    // configurations, because it only uses root-relative paths.
+    // If multiple artifacts have the same output-dir-relative path, the last one in the list will
+    // win. That is because the runfiles tree cannot contain the same artifact for different
+    // configurations, because it only uses output-dir-relative paths.
     for (Artifact artifact : artifacts.toList()) {
-      result.put(artifact.getRootRelativePath(), artifact);
+      result.put(artifact.getOutputDirRelativePath(true), artifact);
     }
     return result;
   }
@@ -547,8 +555,8 @@ public final class Runfiles implements RunfilesApi {
     NestedSetBuilder<Artifact> allArtifacts = NestedSetBuilder.stableOrder();
     allArtifacts
         .addTransitive(artifacts)
-        .addAll(Iterables.transform(symlinks.toList(), TO_ARTIFACT))
-        .addAll(Iterables.transform(rootSymlinks.toList(), TO_ARTIFACT));
+        .addAll(Iterables.transform(symlinks.toList(), SymlinkEntry::getArtifact))
+        .addAll(Iterables.transform(rootSymlinks.toList(), SymlinkEntry::getArtifact));
     return allArtifacts.build();
   }
 
@@ -660,19 +668,18 @@ public final class Runfiles implements RunfilesApi {
   public static final class Builder {
 
     /** This is set to the workspace name */
-    private PathFragment suffix;
+    private final PathFragment suffix;
 
     /**
      * This must be COMPILE_ORDER because {@link #asMapWithoutRootSymlinks} overwrites earlier
      * entries with later ones, so we want a post-order iteration.
      */
-    private NestedSetBuilder<Artifact> artifactsBuilder =
-        NestedSetBuilder.compileOrder();
-    private NestedSetBuilder<SymlinkEntry> symlinksBuilder =
+    private final NestedSetBuilder<Artifact> artifactsBuilder = NestedSetBuilder.compileOrder();
+
+    private final NestedSetBuilder<SymlinkEntry> symlinksBuilder = NestedSetBuilder.stableOrder();
+    private final NestedSetBuilder<SymlinkEntry> rootSymlinksBuilder =
         NestedSetBuilder.stableOrder();
-    private NestedSetBuilder<SymlinkEntry> rootSymlinksBuilder =
-        NestedSetBuilder.stableOrder();
-    private NestedSetBuilder<Artifact> extraMiddlemenBuilder = NestedSetBuilder.stableOrder();
+    private final NestedSetBuilder<Artifact> extraMiddlemenBuilder = NestedSetBuilder.stableOrder();
     private EmptyFilesSupplier emptyFilesSupplier = DUMMY_EMPTY_FILES_SUPPLIER;
 
     /** Build the Runfiles object with this policy */
@@ -753,18 +760,6 @@ public final class Runfiles implements RunfilesApi {
       for (Artifact artifact : artifacts) {
         addArtifact(artifact);
       }
-      return this;
-    }
-
-    /**
-     * @deprecated Use {@link #addTransitiveArtifacts} instead, to prevent increased memory use.
-     *     <p>See also {@link Builder#addTransitiveArtifactsWrappedInStableOrder}
-     */
-    @Deprecated
-    public Builder addArtifacts(NestedSet<Artifact> artifacts) {
-      // Do not delete this method, or else addArtifacts(Iterable) calls with a NestedSet argument
-      // will not be flagged.
-      addArtifacts(artifacts.toList());
       return this;
     }
 
@@ -895,9 +890,7 @@ public final class Runfiles implements RunfilesApi {
      * Collects runfiles from data dependencies of a target.
      */
     public Builder addDataDeps(RuleContext ruleContext) {
-      addTargets(
-          getPrerequisites(ruleContext, "data", TransitionMode.DONT_CHECK),
-          RunfilesProvider.DATA_RUNFILES);
+      addTargets(getPrerequisites(ruleContext, "data"), RunfilesProvider.DATA_RUNFILES);
       return this;
     }
 
@@ -953,7 +946,7 @@ public final class Runfiles implements RunfilesApi {
 
     /** Adds symlinks to given artifacts at their exec paths. */
     public Builder addSymlinksToArtifacts(NestedSet<Artifact> artifacts) {
-      // These are symlinks using the exec path, not the root-relative path, which currently
+      // These are symlinks using the exec path, not the output-dir-relative path, which currently
       // requires flattening.
       return addSymlinksToArtifacts(artifacts.toList());
     }
@@ -1022,8 +1015,7 @@ public final class Runfiles implements RunfilesApi {
           // dependent rules in srcs (except for filegroups and such), but always in deps.
           // TODO(bazel-team): DONT_CHECK is not optimal here. Rules that use split configs need to
           // be changed not to call into here.
-          getPrerequisites(ruleContext, "srcs", TransitionMode.DONT_CHECK),
-          getPrerequisites(ruleContext, "deps", TransitionMode.DONT_CHECK));
+          getPrerequisites(ruleContext, "srcs"), getPrerequisites(ruleContext, "deps"));
     }
 
     /**
@@ -1034,17 +1026,43 @@ public final class Runfiles implements RunfilesApi {
      * <p>If the rule does not have the specified attribute, returns the empty list.
      */
     private static Iterable<? extends TransitiveInfoCollection> getPrerequisites(
-        RuleContext ruleContext, String attributeName, TransitionMode mode) {
+        RuleContext ruleContext, String attributeName) {
       if (ruleContext.getRule().isAttrDefined(attributeName, BuildType.LABEL_LIST)) {
-        return ruleContext.getPrerequisites(attributeName, mode);
+        return ruleContext.getPrerequisites(attributeName);
       } else {
         return Collections.emptyList();
       }
     }
   }
 
+  private static void verifyNestedSetDepthLimitHelper(
+      NestedSet<?> nestedSet, String name, int limit) throws EvalException {
+    if (nestedSet.getApproxDepth() > limit) {
+      throw Starlark.errorf(
+          "%s depset depth %d exceeds limit (%d)", name, nestedSet.getApproxDepth(), limit);
+    }
+  }
+
+  /**
+   * Checks that the depth of a Runfiles object's nested sets (artifacts, symlinks, root symlinks,
+   * extra middlemen) does not exceed Starlark's depset depth limit, as specified by {@code
+   * --nested_set_depth_limit}.
+   *
+   * @param semantics Starlark semantics providing {@code --nested_set_depth_limit}
+   * @return this object, in the fluent style
+   * @throws EvalException if a nested set in the Runfiles object exceeds the depth limit
+   */
+  private Runfiles verifyNestedSetDepthLimit(StarlarkSemantics semantics) throws EvalException {
+    int limit = semantics.get(BuildLanguageOptions.NESTED_SET_DEPTH_LIMIT);
+    verifyNestedSetDepthLimitHelper(artifacts, "artifacts", limit);
+    verifyNestedSetDepthLimitHelper(symlinks, "symlinks", limit);
+    verifyNestedSetDepthLimitHelper(rootSymlinks, "root symlinks", limit);
+    verifyNestedSetDepthLimitHelper(extraMiddlemen, "extra middlemen", limit);
+    return this;
+  }
+
   @Override
-  public Runfiles merge(RunfilesApi other) {
+  public Runfiles merge(RunfilesApi other, StarlarkThread thread) throws EvalException {
     Runfiles o = (Runfiles) other;
     if (isEmpty()) {
       // This is not just a memory / performance optimization. The Builder requires a valid suffix,
@@ -1054,15 +1072,56 @@ public final class Runfiles implements RunfilesApi {
     } else if (o.isEmpty()) {
       return this;
     }
-    return new Runfiles.Builder(suffix, false).merge(this).merge(o).build();
+    return new Runfiles.Builder(suffix, false)
+        .merge(this)
+        .merge(o)
+        .build()
+        .verifyNestedSetDepthLimit(thread.getSemantics());
+  }
+
+  @Override
+  public Runfiles mergeAll(Sequence<?> sequence, StarlarkThread thread) throws EvalException {
+    // The delayed initialization of the Builder is not just a memory / performance optimization.
+    // The Builder requires a valid suffix, but the {@code Runfiles.EMPTY} singleton has an invalid
+    // one, which must not be used to construct a Runfiles.Builder.
+    Builder builder = null;
+    // When merging exactly one non-empty Runfiles object, we want to return that object and avoid a
+    // Builder. This is a memory optimization and provides identical behavior for `x.merge_all([y])`
+    // and `x.merge(y)` in Starlark.
+    Runfiles uniqueNonEmptyMergee = null;
+    if (!this.isEmpty()) {
+      builder = new Builder(suffix, false).merge(this);
+      uniqueNonEmptyMergee = this;
+    }
+
+    Sequence<Runfiles> runfilesSequence = Sequence.cast(sequence, Runfiles.class, "param");
+    for (Runfiles runfiles : runfilesSequence) {
+      if (!runfiles.isEmpty()) {
+        if (builder == null) {
+          builder = new Builder(runfiles.suffix, /* legacyExternalRunfiles = */ false);
+          uniqueNonEmptyMergee = runfiles;
+        } else {
+          uniqueNonEmptyMergee = null;
+        }
+        builder.merge(runfiles);
+      }
+    }
+
+    if (uniqueNonEmptyMergee != null) {
+      return uniqueNonEmptyMergee;
+    } else if (builder != null) {
+      return builder.build().verifyNestedSetDepthLimit(thread.getSemantics());
+    } else {
+      return EMPTY;
+    }
   }
 
   /**
    * Fingerprint this {@link Runfiles} tree.
    */
   public void fingerprint(Fingerprint fp) {
-    fp.addBoolean(getLegacyExternalRunfiles());
-    fp.addPath(getSuffix());
+    fp.addBoolean(legacyExternalRunfiles);
+    fp.addPath(suffix);
     Map<PathFragment, Artifact> symlinks = getSymlinksAsMap(null);
     fp.addInt(symlinks.size());
     for (Map.Entry<PathFragment, Artifact> symlink : symlinks.entrySet()) {
@@ -1076,8 +1135,8 @@ public final class Runfiles implements RunfilesApi {
       fp.addPath(rootSymlink.getValue().getExecPath());
     }
 
-    for (Artifact artifact : getArtifacts().toList()) {
-      fp.addPath(artifact.getRootRelativePath());
+    for (Artifact artifact : artifacts.toList()) {
+      fp.addPath(artifact.getRunfilesPath());
       fp.addPath(artifact.getExecPath());
     }
 

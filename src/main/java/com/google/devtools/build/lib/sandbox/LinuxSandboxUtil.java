@@ -18,9 +18,11 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.devtools.build.lib.actions.ExecutionRequirements;
 import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.util.OsUtils;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -45,9 +47,7 @@ public final class LinuxSandboxUtil {
   /** Returns a new command line builder for the {@code linux-sandbox} tool. */
   public static CommandLineBuilder commandLineBuilder(
       Path linuxSandboxPath, List<String> commandArguments) {
-    return new CommandLineBuilder()
-        .setLinuxSandboxPath(linuxSandboxPath)
-        .setCommandArguments(commandArguments);
+    return new CommandLineBuilder(linuxSandboxPath, commandArguments);
   }
 
   /**
@@ -55,14 +55,16 @@ public final class LinuxSandboxUtil {
    * linux-sandbox} tool.
    */
   public static class CommandLineBuilder {
-    private Path linuxSandboxPath;
+    private final Path linuxSandboxPath;
+    private final List<String> commandArguments;
+    private Path hermeticSandboxPath;
     private Path workingDirectory;
     private Duration timeout;
     private Duration killDelay;
     private Path stdoutPath;
     private Path stderrPath;
     private Set<Path> writableFilesAndDirectories = ImmutableSet.of();
-    private Set<Path> tmpfsDirectories = ImmutableSet.of();
+    private ImmutableSet<PathFragment> tmpfsDirectories = ImmutableSet.of();
     private Map<Path, Path> bindMounts = ImmutableMap.of();
     private Path statisticsPath;
     private boolean useFakeHostname = false;
@@ -70,15 +72,19 @@ public final class LinuxSandboxUtil {
     private boolean useFakeRoot = false;
     private boolean useFakeUsername = false;
     private boolean useDebugMode = false;
-    private List<String> commandArguments = ImmutableList.of();
+    private boolean sigintSendsSigterm = false;
 
-    private CommandLineBuilder() {
-      // Prevent external construction via "new".
+    private CommandLineBuilder(Path linuxSandboxPath, List<String> commandArguments) {
+      this.linuxSandboxPath = linuxSandboxPath;
+      this.commandArguments = commandArguments;
     }
 
-    /** Sets the path of the {@code linux-sandbox} tool. */
-    public CommandLineBuilder setLinuxSandboxPath(Path linuxSandboxPath) {
-      this.linuxSandboxPath = linuxSandboxPath;
+    /**
+     * Sets the sandbox path to chroot to, required for the hermetic linux sandbox to figure out
+     * where the working directory is.
+     */
+    public CommandLineBuilder setHermeticSandboxPath(Path sandboxPath) {
+      this.hermeticSandboxPath = sandboxPath;
       return this;
     }
 
@@ -123,7 +129,7 @@ public final class LinuxSandboxUtil {
     }
 
     /** Sets the directories where to mount an empty tmpfs, if any. */
-    public CommandLineBuilder setTmpfsDirectories(Set<Path> tmpfsDirectories) {
+    public CommandLineBuilder setTmpfsDirectories(ImmutableSet<PathFragment> tmpfsDirectories) {
       this.tmpfsDirectories = tmpfsDirectories;
       return this;
     }
@@ -173,9 +179,11 @@ public final class LinuxSandboxUtil {
       return this;
     }
 
-    /** Sets the command (and its arguments) to run using the {@code linux-sandbox} tool. */
-    public CommandLineBuilder setCommandArguments(List<String> commandArguments) {
-      this.commandArguments = commandArguments;
+    /** Incorporates settings from a spawn's execution info. */
+    public CommandLineBuilder addExecutionInfo(Map<String, String> executionInfo) {
+      if (executionInfo.containsKey(ExecutionRequirements.GRACEFUL_TERMINATION)) {
+        sigintSendsSigterm = true;
+      }
       return this;
     }
 
@@ -183,8 +191,6 @@ public final class LinuxSandboxUtil {
      * Builds the command line to invoke a specific command using the {@code linux-sandbox} tool.
      */
     public ImmutableList<String> build() {
-      Preconditions.checkNotNull(this.linuxSandboxPath, "linuxSandboxPath is required");
-      Preconditions.checkState(!this.commandArguments.isEmpty(), "commandArguments are required");
       Preconditions.checkState(
           !(this.useFakeUsername && this.useFakeRoot),
           "useFakeUsername and useFakeRoot are exclusive");
@@ -210,7 +216,7 @@ public final class LinuxSandboxUtil {
       for (Path writablePath : writableFilesAndDirectories) {
         commandLineBuilder.add("-w", writablePath.getPathString());
       }
-      for (Path tmpfsPath : tmpfsDirectories) {
+      for (PathFragment tmpfsPath : tmpfsDirectories) {
         commandLineBuilder.add("-e", tmpfsPath.getPathString());
       }
       for (Path bindMountTarget : bindMounts.keySet()) {
@@ -223,6 +229,9 @@ public final class LinuxSandboxUtil {
       }
       if (statisticsPath != null) {
         commandLineBuilder.add("-S", statisticsPath.getPathString());
+      }
+      if (hermeticSandboxPath != null) {
+        commandLineBuilder.add("-h", hermeticSandboxPath.getPathString());
       }
       if (useFakeHostname) {
         commandLineBuilder.add("-H");
@@ -238,6 +247,9 @@ public final class LinuxSandboxUtil {
       }
       if (useDebugMode) {
         commandLineBuilder.add("-D");
+      }
+      if (sigintSendsSigterm) {
+        commandLineBuilder.add("-i");
       }
       commandLineBuilder.add("--");
       commandLineBuilder.addAll(commandArguments);

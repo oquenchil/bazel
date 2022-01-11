@@ -41,7 +41,7 @@ message ModuleInfo {
 
 // Representation of a Starlark rule attribute type. These generally
 // have a one-to-one correspondence with functions defined at
-// https://docs.bazel.build/versions/master/skylark/lib/attr.html.
+// https://docs.bazel.build/versions/main/skylark/lib/attr.html.
 enum AttributeType {
   UNKNOWN = 0;
   // A special case of STRING; all rules have exactly one implicit
@@ -76,7 +76,7 @@ message RuleInfo {
 // Representation of a Starlark rule attribute definition, comprised of an
 // attribute name, and a schema defined by a call to one of the 'attr' module
 // methods enumerated at
-// https://docs.bazel.build/versions/master/skylark/lib/attr.html
+// https://docs.bazel.build/versions/main/skylark/lib/attr.html
 message AttributeInfo {
   // The name of the attribute.
   string name = 1;
@@ -123,6 +123,12 @@ message StarlarkFunctionInfo {
   // The documented description of the function (if specified in the function's
   // docstring).
   string doc_string = 3;
+
+  // The return value for the function.
+  FunctionReturnInfo return = 4;
+
+  // The deprecation for the function.
+  FunctionDeprecationInfo deprecated = 5;
 }
 
 // Representation of a Starlark function parameter definition.
@@ -142,6 +148,18 @@ message FunctionParamInfo {
   // parameter. This might be false even if defaultValue is empty in the case of
   // special parameter such as *args and **kwargs"
   bool mandatory = 4;
+}
+
+message FunctionReturnInfo {
+  // The documented return value of the function (if specified in the function's
+  // docstring).
+  string doc_string = 1;
+}
+
+message FunctionDeprecationInfo {
+  // The documented deprecation of the function (if specified in the function's
+  // docstring).
+  string doc_string = 1;
 }
 
 // Representation of a Starlark provider field definition, comprised of

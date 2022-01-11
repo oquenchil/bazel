@@ -14,6 +14,9 @@
 
 package com.google.devtools.build.lib.packages;
 
+import com.google.common.base.Strings;
+import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
+import com.google.devtools.build.lib.server.FailureDetails.PackageLoading;
 import com.google.devtools.build.lib.skyframe.DetailedException;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import javax.annotation.Nullable;
@@ -30,23 +33,42 @@ public class NoSuchThingException extends Exception implements DetailedException
     this.detailedExitCode = null;
   }
 
-  public NoSuchThingException(String message, Throwable cause) {
+  NoSuchThingException(String message, Throwable cause) {
     super(message, cause);
     this.detailedExitCode = null;
   }
 
-  public NoSuchThingException(String message, DetailedExitCode detailedExitCode) {
+  NoSuchThingException(String message, DetailedExitCode detailedExitCode) {
     super(message);
     this.detailedExitCode = detailedExitCode;
   }
 
-  public NoSuchThingException(String message, Throwable cause, DetailedExitCode detailedExitCode) {
+  NoSuchThingException(String message, Throwable cause, DetailedExitCode detailedExitCode) {
     super(message, cause);
     this.detailedExitCode = detailedExitCode;
   }
 
+  /**
+   * Returns the detail exit code if it exists. If it does not exist, then return the default
+   * detailed exit code.
+   */
   @Override
   public DetailedExitCode getDetailedExitCode() {
+    return detailedExitCode != null ? detailedExitCode : defaultDetailedExitCode();
+  }
+
+  /** Returns the detailed exit code but does not check if it is null. */
+  @Nullable
+  DetailedExitCode getUncheckedDetailedExitCode() {
     return detailedExitCode;
+  }
+
+  private DetailedExitCode defaultDetailedExitCode() {
+    return DetailedExitCode.of(
+        FailureDetail.newBuilder()
+            .setMessage(Strings.nullToEmpty(getMessage()))
+            .setPackageLoading(
+                PackageLoading.newBuilder().setCode(PackageLoading.Code.NO_SUCH_THING).build())
+            .build());
   }
 }

@@ -170,7 +170,7 @@ EOF
     expect_log "dir/l is a symbolic link"
 }
 
-function set_directory_artifact_skylark_testfixtures() {
+function set_directory_artifact_starlark_testfixtures() {
   mkdir -p a
   cat > a/rule.bzl <<'EOF'
 def _gen_output_dir_impl(ctx):
@@ -242,8 +242,8 @@ Shuffle, duffle, muzzle, muff
 EOF
 }
 
-function test_directory_artifact_skylark_local() {
-  set_directory_artifact_skylark_testfixtures
+function test_directory_artifact_starlark_local() {
+  set_directory_artifact_starlark_testfixtures
 
   bazel build //a:test >& $TEST_log \
     || fail "Failed to build //a:test without remote execution"
@@ -251,8 +251,8 @@ function test_directory_artifact_skylark_local() {
       || fail "Local execution generated different result"
 }
 
-function test_directory_artifact_skylark() {
-  set_directory_artifact_skylark_testfixtures
+function test_directory_artifact_starlark() {
+  set_directory_artifact_starlark_testfixtures
 
   bazel build \
       --spawn_strategy=remote \
@@ -272,8 +272,8 @@ function test_directory_artifact_skylark() {
       || fail "Remote cache hit generated different result"
 }
 
-function test_directory_artifact_skylark_grpc_cache() {
-  set_directory_artifact_skylark_testfixtures
+function test_directory_artifact_starlark_grpc_cache() {
+  set_directory_artifact_starlark_testfixtures
 
   bazel build \
       --remote_cache=grpc://localhost:${worker_port} \
@@ -291,8 +291,8 @@ function test_directory_artifact_skylark_grpc_cache() {
       || fail "Remote cache hit generated different result"
 }
 
-function test_directory_artifact_skylark_http_cache() {
-  set_directory_artifact_skylark_testfixtures
+function test_directory_artifact_starlark_http_cache() {
+  set_directory_artifact_starlark_testfixtures
 
   bazel build \
       --remote_cache=http://localhost:${http_port} \
@@ -310,8 +310,8 @@ function test_directory_artifact_skylark_http_cache() {
       || fail "Remote cache hit generated different result"
 }
 
-function test_directory_artifact_in_runfiles_skylark_http_cache() {
-  set_directory_artifact_skylark_testfixtures
+function test_directory_artifact_in_runfiles_starlark_http_cache() {
+  set_directory_artifact_starlark_testfixtures
 
   bazel build \
       --remote_cache=http://localhost:${http_port} \
@@ -389,7 +389,7 @@ EOF
   bazel clean
   bazel build $disk_flags //a:test --incompatible_remote_results_ignore_disk=true --noremote_upload_local_results &> $TEST_log \
     || fail "Failed to fetch //a:test from disk cache"
-  expect_log "1 remote cache hit" "Fetch from disk cache failed"
+  expect_log "1 disk cache hit" "Fetch from disk cache failed"
   diff bazel-genfiles/a/test.txt ${TEST_TMPDIR}/test_expected \
     || fail "Disk cache generated different result"
 
@@ -427,7 +427,7 @@ EOF
   bazel clean
   bazel build $disk_flags $http_flags //a:test --incompatible_remote_results_ignore_disk=true --noremote_accept_cached &> $TEST_log \
     || fail "Failed to build //a:test"
-  expect_log "1 remote cache hit" "Fetch from disk cache failed"
+  expect_log "1 disk cache hit" "Fetch from disk cache failed"
   diff bazel-genfiles/a/test.txt ${TEST_TMPDIR}/test_expected \
     || fail "Disk cache generated different result"
 
@@ -445,7 +445,7 @@ EOF
   bazel clean
   bazel build $disk_flags //a:test &> $TEST_log \
     || fail "Failed to fetch //a:test from disk cache"
-  expect_log "1 remote cache hit" "Fetch from disk cache failed"
+  expect_log "1 disk cache hit" "Fetch from disk cache failed"
   diff bazel-genfiles/a/test.txt ${TEST_TMPDIR}/test_expected \
     || fail "Disk cache generated different result"
 
@@ -472,7 +472,7 @@ EOF
   bazel clean
   bazel build $disk_flags //a:test &> $TEST_log \
     || fail "Failed to fetch //a:test from disk cache"
-  expect_log "1 remote cache hit" "Fetch from disk cache after copy from http cache failed"
+  expect_log "1 disk cache hit" "Fetch from disk cache after copy from http cache failed"
   diff bazel-genfiles/a/test.txt ${TEST_TMPDIR}/test_expected \
     || fail "Disk cache generated different result"
 
@@ -507,6 +507,65 @@ EOF
 
   expect_log "1 local"
   expect_not_log "remote cache hit"
+}
+
+function test_remote_http_cache_with_bad_netrc_content() {
+  mkdir -p a
+  cat > a/BUILD <<EOF
+genrule(
+  name = 'foo',
+  outs = ["foo.txt"],
+  cmd = "echo \"foo bar\" > \$@",
+)
+EOF
+  cat > a/.netrc <<EOF
+this is bad netrc content
+EOF
+
+  NETRC="${PWD}/a/.netrc" bazel build \
+      --remote_cache=http://localhost:${http_port} \
+      //a:foo \
+      || fail "Failed to build //a:foo with bad netrc content"
+}
+
+function test_remote_http_cache_with_unused_netrc_no_warning() {
+  mkdir -p a
+  cat > a/BUILD <<EOF
+genrule(
+  name = 'foo',
+  outs = ["foo.txt"],
+  cmd = "echo \"foo bar\" > \$@",
+)
+EOF
+  cat > a/.netrc <<EOF
+machine foo.example.org login foouser password foopass
+EOF
+
+  NETRC="${PWD}/a/.netrc" bazel build \
+      --remote_cache=http://localhost:${http_port} \
+      //a:foo &> $TEST_log \
+      || fail "Failed to build //a:foo"
+  expect_not_log "WARNING: Username and password from .netrc is transmitted in plaintext" "Should not print warning"
+}
+
+function test_remote_http_cache_with_netrc_warning() {
+  mkdir -p a
+  cat > a/BUILD <<EOF
+genrule(
+  name = 'foo',
+  outs = ["foo.txt"],
+  cmd = "echo \"foo bar\" > \$@",
+)
+EOF
+  cat > a/.netrc <<EOF
+machine localhost login foouser password foopass
+EOF
+
+  NETRC="${PWD}/a/.netrc" bazel build \
+      --remote_cache=http://localhost:${http_port} \
+      //a:foo &> $TEST_log \
+      || fail "Failed to build //a:foo"
+  expect_log "WARNING: Username and password from .netrc is transmitted in plaintext"
 }
 
 run_suite "Remote execution and remote cache tests"

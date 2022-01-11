@@ -18,12 +18,9 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
-import com.google.devtools.build.lib.vfs.DigestHashFunction.DefaultHashFunctionNotSetException;
 import com.google.devtools.build.lib.vfs.FileStatus;
 import com.google.devtools.build.lib.vfs.JavaIoFileSystem;
-import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.build.lib.windows.jni.WindowsFileOperations;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -40,24 +37,20 @@ public class WindowsFileSystem extends JavaIoFileSystem {
 
   private final boolean createSymbolicLinks;
 
-  public WindowsFileSystem(boolean createSymbolicLinks) throws DefaultHashFunctionNotSetException {
-    this.createSymbolicLinks = createSymbolicLinks;
-  }
-
   public WindowsFileSystem(DigestHashFunction hashFunction, boolean createSymbolicLinks) {
     super(hashFunction);
     this.createSymbolicLinks = createSymbolicLinks;
   }
 
   @Override
-  public String getFileSystemType(Path path) {
+  public String getFileSystemType(PathFragment path) {
     // TODO(laszlocsomor): implement this properly, i.e. actually query this information from
     // somewhere (java.nio.Filesystem? System.getProperty? implement JNI method and use WinAPI?).
     return "ntfs";
   }
 
   @Override
-  public boolean delete(Path path) throws IOException {
+  protected boolean delete(PathFragment path) throws IOException {
     long startTime = Profiler.nanoTimeMaybe();
     try {
       return WindowsFileOperations.deletePath(path.getPathString());
@@ -71,17 +64,24 @@ public class WindowsFileSystem extends JavaIoFileSystem {
   }
 
   @Override
-  public void renameTo(Path sourcePath, Path targetPath) throws IOException {
+  protected boolean createWritableDirectory(PathFragment path) throws IOException {
+    // All directories are writable on Windows.
+    return createDirectory(path);
+  }
+
+  @Override
+  public void renameTo(PathFragment sourcePath, PathFragment targetPath) throws IOException {
     // Make sure the target path doesn't exist to avoid permission denied error on Windows.
-    targetPath.delete();
+    delete(targetPath);
     super.renameTo(sourcePath, targetPath);
   }
 
   @Override
-  protected void createSymbolicLink(Path linkPath, PathFragment targetFragment) throws IOException {
-    Path targetPath =
+  protected void createSymbolicLink(PathFragment linkPath, PathFragment targetFragment)
+      throws IOException {
+    PathFragment targetPath =
         targetFragment.isAbsolute()
-            ? getPath(targetFragment)
+            ? targetFragment
             : linkPath.getParentDirectory().getRelative(targetFragment);
     try {
       java.nio.file.Path link = getIoFile(linkPath).toPath();
@@ -106,7 +106,7 @@ public class WindowsFileSystem extends JavaIoFileSystem {
   }
 
   @Override
-  protected PathFragment readSymbolicLink(Path path) throws IOException {
+  protected PathFragment readSymbolicLink(PathFragment path) throws IOException {
     java.nio.file.Path nioPath = getNioPath(path);
     WindowsFileOperations.ReadSymlinkOrJunctionResult result =
         WindowsFileOperations.readSymlinkOrJunction(nioPath.toString());
@@ -120,7 +120,7 @@ public class WindowsFileSystem extends JavaIoFileSystem {
   }
 
   @Override
-  public boolean supportsSymbolicLinksNatively(Path path) {
+  public boolean supportsSymbolicLinksNatively(PathFragment path) {
     return false;
   }
 
@@ -146,7 +146,7 @@ public class WindowsFileSystem extends JavaIoFileSystem {
   }
 
   @Override
-  protected FileStatus stat(Path path, boolean followSymlinks) throws IOException {
+  protected FileStatus stat(PathFragment path, boolean followSymlinks) throws IOException {
     File file = getIoFile(path);
     final DosFileAttributes attributes;
     try {
@@ -208,7 +208,7 @@ public class WindowsFileSystem extends JavaIoFileSystem {
   }
 
   @Override
-  protected boolean isDirectory(Path path, boolean followSymlinks) {
+  protected boolean isDirectory(PathFragment path, boolean followSymlinks) {
     if (!followSymlinks) {
       try {
         if (isSymlinkOrJunction(getIoFile(path))) {

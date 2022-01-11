@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.runtime;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ArrayListMultimap;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ListMultimap;
 import com.google.common.flogger.GoogleLogger;
@@ -26,9 +27,11 @@ import com.google.devtools.build.lib.runtime.proto.InvocationPolicyOuterClass.In
 import com.google.devtools.build.lib.server.FailureDetails;
 import com.google.devtools.build.lib.server.FailureDetails.Command.Code;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
+import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.common.options.Converters;
 import com.google.devtools.common.options.InvocationPolicyEnforcer;
 import com.google.devtools.common.options.OptionDefinition;
 import com.google.devtools.common.options.OptionPriority.PriorityCategory;
@@ -37,7 +40,9 @@ import com.google.devtools.common.options.OptionsParsingException;
 import com.google.devtools.common.options.OptionsParsingResult;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.logging.Level;
@@ -117,7 +122,7 @@ public final class BlazeOptionHandler {
               + "' command is only supported from within a workspace"
               + " (below a directory having a WORKSPACE file).\n"
               + "See documentation at"
-              + " https://docs.bazel.build/versions/master/build-ref.html#workspace";
+              + " https://docs.bazel.build/versions/main/build-ref.html#workspace";
       eventHandler.handle(Event.error(message));
       return createDetailedExitCode(message, Code.NOT_IN_WORKSPACE);
     }
@@ -163,7 +168,7 @@ public final class BlazeOptionHandler {
    * specific commands should have priority over the broader commands (say a "build" option that
    * conflicts with a "common" option should override the common one regardless of order.)
    *
-   * <p>For each command, the options are parsed in rc order. This uses the master rc file first,
+   * <p>For each command, the options are parsed in rc order. This uses the primary rc file first,
    * and follows import statements. This is the order in which they were passed by the client.
    */
   void parseRcOptions(
@@ -191,7 +196,7 @@ public final class BlazeOptionHandler {
   }
 
   private void parseArgsAndConfigs(List<String> args, ExtendedEventHandler eventHandler)
-      throws OptionsParsingException {
+      throws OptionsParsingException, InterruptedException, AbruptExitException {
     Path workspaceDirectory = workspace.getWorkspace();
     // TODO(ulfjack): The working directory is passed by the client as part of CommonCommandOptions,
     // and we can't know it until after we've parsed the options, so use the workspace for now.
@@ -208,8 +213,20 @@ public final class BlazeOptionHandler {
 
     // Explicit command-line options:
     List<String> cmdLineAfterCommand = args.subList(1, args.size());
+
+    // Before parsing any rcfiles we need to first parse --rc_source so the parser can reference the
+    // proper rcfiles. The --default_override options should be parsed with the --rc_source since
+    // {@link #parseRcOptions} depends on the list populated by the {@link
+    // ClientOptions#OptionOverrideConverter}.
+    ImmutableList.Builder<String> defaultOverridesAndRcSources = new ImmutableList.Builder<>();
+    ImmutableList.Builder<String> remainingCmdLine = new ImmutableList.Builder<>();
+    partitionCommandLineArgs(cmdLineAfterCommand, defaultOverridesAndRcSources, remainingCmdLine);
+
+    // Parses options needed to parse rcfiles properly.
     optionsParser.parseWithSourceFunction(
-        PriorityCategory.COMMAND_LINE, commandOptionSourceFunction, cmdLineAfterCommand);
+        PriorityCategory.COMMAND_LINE,
+        commandOptionSourceFunction,
+        defaultOverridesAndRcSources.build());
 
     // Command-specific options from .blazerc passed in via --default_override and --rc_source.
     ClientOptions rcFileOptions = optionsParser.getOptions(ClientOptions.class);
@@ -221,12 +238,16 @@ public final class BlazeOptionHandler {
             runtime.getCommandMap().keySet());
     parseRcOptions(eventHandler, commandToRcArgs);
 
+    // Parses the remaining command-line options.
+    optionsParser.parseWithSourceFunction(
+        PriorityCategory.COMMAND_LINE, commandOptionSourceFunction, remainingCmdLine.build());
+
     if (commandAnnotation.builds()) {
       // splits project files from targets in the traditional sense
       ProjectFileSupport.handleProjectFiles(
           eventHandler,
           runtime.getProjectFileProvider(),
-          workspaceDirectory,
+          workspaceDirectory.asFragment(),
           workingDirectory,
           optionsParser,
           commandAnnotation.name());
@@ -253,7 +274,7 @@ public final class BlazeOptionHandler {
       StarlarkOptionsParser.newStarlarkOptionsParser(env, optionsParser).parse(eventHandler);
     } catch (OptionsParsingException e) {
       String logMessage = "Error parsing Starlark options";
-      logger.atInfo().withCause(e).log(logMessage);
+      logger.atInfo().withCause(e).log("%s", logMessage);
       return processOptionsParsingException(
           eventHandler, e, logMessage, Code.STARLARK_OPTIONS_PARSE_FAILURE);
     }
@@ -283,6 +304,11 @@ public final class BlazeOptionHandler {
       // Migration of --watchfs to a command option.
       // TODO(ulfjack): Get rid of the startup option and drop this code.
       if (runtime.getStartupOptionsProvider().getOptions(BlazeServerStartupOptions.class).watchFS) {
+        eventHandler.handle(
+            Event.error(
+                "--watchfs as startup option is deprecated, replace it with the equivalent command "
+                    + "option. For example, instead of 'bazel --watchfs build //foo', run "
+                    + "'bazel build --watchfs //foo'."));
         try {
           optionsParser.parse("--watchfs");
         } catch (OptionsParsingException e) {
@@ -317,9 +343,18 @@ public final class BlazeOptionHandler {
       }
     } catch (OptionsParsingException e) {
       String logMessage = "Error parsing options";
-      logger.atInfo().withCause(e).log(logMessage);
+      logger.atInfo().withCause(e).log("%s", logMessage);
       return processOptionsParsingException(
           eventHandler, e, logMessage, Code.OPTIONS_PARSE_FAILURE);
+    } catch (InterruptedException e) {
+      return DetailedExitCode.of(
+          FailureDetail.newBuilder()
+              .setInterrupted(
+                  FailureDetails.Interrupted.newBuilder()
+                      .setCode(FailureDetails.Interrupted.Code.INTERRUPTED))
+              .build());
+    } catch (AbruptExitException e) {
+      return e.getDetailedExitCode();
     }
     return DetailedExitCode.success();
   }
@@ -399,7 +434,8 @@ public final class BlazeOptionHandler {
       EventHandler eventHandler,
       List<String> rcFiles,
       List<ClientOptions.OptionOverride> rawOverrides,
-      Set<String> validCommands) {
+      Set<String> validCommands)
+      throws OptionsParsingException {
     ListMultimap<String, RcChunkOfArgs> commandToRcArgs = ArrayListMultimap.create();
 
     String lastRcFile = null;
@@ -411,6 +447,21 @@ public final class BlazeOptionHandler {
         continue;
       }
       String rcFile = rcFiles.get(override.blazeRc);
+      // The canonicalize-flags command only inherits bazelrc "build" commands. Not "test", not
+      // "build:foo". Restrict --flag_alias accordingly to prevent building with flags that
+      // canonicalize-flags can't recognize.
+      if ((override.option.startsWith("--" + Converters.BLAZE_ALIASING_FLAG + "=")
+              || override.option.equals("--" + Converters.BLAZE_ALIASING_FLAG))
+          // In production, "build" is always a valid command, but not necessarily in tests.
+          // Particularly C0Command, which some tests use for low-level options parsing logic. We
+          // don't want to interfere with those.
+          && validCommands.contains("build")
+          && !override.command.equals("build")) {
+        throw new OptionsParsingException(
+            String.format(
+                "%s: \"%s %s\" disallowed. --%s only supports the \"build\" command.",
+                rcFile, override.command, override.option, Converters.BLAZE_ALIASING_FLAG));
+      }
       String command = override.command;
       int index = command.indexOf(':');
       if (index > 0) {
@@ -462,5 +513,29 @@ public final class BlazeOptionHandler {
             .setMessage(message)
             .setCommand(FailureDetails.Command.newBuilder().setCode(detailedCode))
             .build());
+  }
+
+  private static void partitionCommandLineArgs(
+      List<String> cmdLine,
+      ImmutableList.Builder<String> defaultOverridesAndRcSources,
+      ImmutableList.Builder<String> remainingCmdLine) {
+
+    Iterator<String> cmdLineIterator = cmdLine.iterator();
+
+    while (cmdLineIterator.hasNext()) {
+      String option = cmdLineIterator.next();
+      if (option.startsWith("--rc_source=") || option.startsWith("--default_override=")) {
+        defaultOverridesAndRcSources.add(option);
+      } else if (option.equals("--rc_source") || option.equals("--default_override")) {
+        Optional<String> possibleArgument =
+            cmdLineIterator.hasNext() ? Optional.of(cmdLineIterator.next()) : Optional.empty();
+        defaultOverridesAndRcSources.add(option);
+        if (possibleArgument.isPresent()) {
+          defaultOverridesAndRcSources.add(possibleArgument.get());
+        }
+      } else {
+        remainingCmdLine.add(option);
+      }
+    }
   }
 }

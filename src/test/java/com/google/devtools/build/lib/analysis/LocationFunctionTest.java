@@ -21,10 +21,13 @@ import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.ArtifactRoot;
+import com.google.devtools.build.lib.actions.ArtifactRoot.RootType;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.analysis.LocationExpander.LocationFunction;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
@@ -45,23 +48,25 @@ public class LocationFunctionTest {
   public void absoluteAndRelativeLabels() throws Exception {
     LocationFunction func =
         new LocationFunctionBuilder("//foo", false).add("//foo", "/exec/src/bar").build();
-    assertThat(func.apply("//foo", ImmutableMap.of())).isEqualTo("src/bar");
-    assertThat(func.apply(":foo", ImmutableMap.of())).isEqualTo("src/bar");
-    assertThat(func.apply("foo", ImmutableMap.of())).isEqualTo("src/bar");
+    assertThat(func.apply("//foo", RepositoryMapping.ALWAYS_FALLBACK)).isEqualTo("src/bar");
+    assertThat(func.apply(":foo", RepositoryMapping.ALWAYS_FALLBACK)).isEqualTo("src/bar");
+    assertThat(func.apply("foo", RepositoryMapping.ALWAYS_FALLBACK)).isEqualTo("src/bar");
   }
 
   @Test
   public void pathUnderExecRootUsesDotSlash() throws Exception {
     LocationFunction func =
         new LocationFunctionBuilder("//foo", false).add("//foo", "/exec/bar").build();
-    assertThat(func.apply("//foo", ImmutableMap.of())).isEqualTo("./bar");
+    assertThat(func.apply("//foo", RepositoryMapping.ALWAYS_FALLBACK)).isEqualTo("./bar");
   }
 
   @Test
   public void noSuchLabel() throws Exception {
     LocationFunction func = new LocationFunctionBuilder("//foo", false).build();
     IllegalStateException expected =
-        assertThrows(IllegalStateException.class, () -> func.apply("//bar", ImmutableMap.of()));
+        assertThrows(
+            IllegalStateException.class,
+            () -> func.apply("//bar", RepositoryMapping.ALWAYS_FALLBACK));
     assertThat(expected)
         .hasMessageThat()
         .isEqualTo(
@@ -73,7 +78,9 @@ public class LocationFunctionTest {
   public void emptyList() throws Exception {
     LocationFunction func = new LocationFunctionBuilder("//foo", false).add("//foo").build();
     IllegalStateException expected =
-        assertThrows(IllegalStateException.class, () -> func.apply("//foo", ImmutableMap.of()));
+        assertThrows(
+            IllegalStateException.class,
+            () -> func.apply("//foo", RepositoryMapping.ALWAYS_FALLBACK));
     assertThat(expected)
         .hasMessageThat()
         .isEqualTo("label '//foo:foo' in $(location) expression expands to no files");
@@ -84,7 +91,9 @@ public class LocationFunctionTest {
     LocationFunction func =
         new LocationFunctionBuilder("//foo", false).add("//foo", "/exec/1", "/exec/2").build();
     IllegalStateException expected =
-        assertThrows(IllegalStateException.class, () -> func.apply("//foo", ImmutableMap.of()));
+        assertThrows(
+            IllegalStateException.class,
+            () -> func.apply("//foo", RepositoryMapping.ALWAYS_FALLBACK));
     assertThat(expected)
         .hasMessageThat()
         .isEqualTo(
@@ -97,7 +106,9 @@ public class LocationFunctionTest {
   public void noSuchLabelMultiple() throws Exception {
     LocationFunction func = new LocationFunctionBuilder("//foo", true).build();
     IllegalStateException expected =
-        assertThrows(IllegalStateException.class, () -> func.apply("//bar", ImmutableMap.of()));
+        assertThrows(
+            IllegalStateException.class,
+            () -> func.apply("//bar", RepositoryMapping.ALWAYS_FALLBACK));
     assertThat(expected)
         .hasMessageThat()
         .isEqualTo(
@@ -109,7 +120,8 @@ public class LocationFunctionTest {
   public void fileWithSpace() throws Exception {
     LocationFunction func =
         new LocationFunctionBuilder("//foo", false).add("//foo", "/exec/file/with space").build();
-    assertThat(func.apply("//foo", ImmutableMap.of())).isEqualTo("'file/with space'");
+    assertThat(func.apply("//foo", RepositoryMapping.ALWAYS_FALLBACK))
+        .isEqualTo("'file/with space'");
   }
 
   @Test
@@ -117,7 +129,8 @@ public class LocationFunctionTest {
     LocationFunction func = new LocationFunctionBuilder("//foo", true)
         .add("//foo", "/exec/foo/bar", "/exec/out/foo/foobar")
         .build();
-    assertThat(func.apply("//foo", ImmutableMap.of())).isEqualTo("foo/bar foo/foobar");
+    assertThat(func.apply("//foo", RepositoryMapping.ALWAYS_FALLBACK))
+        .isEqualTo("foo/bar foo/foobar");
   }
 
   @Test
@@ -125,7 +138,7 @@ public class LocationFunctionTest {
     LocationFunction func = new LocationFunctionBuilder("//foo", true)
         .add("//foo", "/exec/file/with space", "/exec/file/with spaces ")
         .build();
-    assertThat(func.apply("//foo", ImmutableMap.of()))
+    assertThat(func.apply("//foo", RepositoryMapping.ALWAYS_FALLBACK))
         .isEqualTo("'file/with space' 'file/with spaces '");
   }
 
@@ -135,7 +148,8 @@ public class LocationFunctionTest {
         .setExecPaths(true)
         .add("//foo", "/exec/bar", "/exec/out/foobar")
         .build();
-    assertThat(func.apply("//foo", ImmutableMap.of())).isEqualTo("./bar out/foobar");
+    assertThat(func.apply("//foo", RepositoryMapping.ALWAYS_FALLBACK))
+        .isEqualTo("./bar out/foobar");
   }
 
   @Test
@@ -145,7 +159,8 @@ public class LocationFunctionTest {
     ImmutableMap<RepositoryName, RepositoryName> repositoryMapping = ImmutableMap.of(a, b);
     LocationFunction func =
         new LocationFunctionBuilder("//foo", false).add("@b//foo", "/exec/src/bar").build();
-    assertThat(func.apply("@a//foo", repositoryMapping)).isEqualTo("src/bar");
+    assertThat(func.apply("@a//foo", RepositoryMapping.createAllowingFallback(repositoryMapping)))
+        .isEqualTo("src/bar");
   }
 
   @Test
@@ -155,7 +170,9 @@ public class LocationFunctionTest {
     ImmutableMap<RepositoryName, RepositoryName> repositoryMapping = ImmutableMap.of(a, b);
     LocationFunction func =
         new LocationFunctionBuilder("//foo", false).add("@potato//foo", "/exec/src/bar").build();
-    assertThat(func.apply("@potato//foo", repositoryMapping)).isEqualTo("src/bar");
+    assertThat(
+            func.apply("@potato//foo", RepositoryMapping.createAllowingFallback(repositoryMapping)))
+        .isEqualTo("src/bar");
   }
 }
 
@@ -163,6 +180,7 @@ final class LocationFunctionBuilder {
   private final Label root;
   private final boolean multiple;
   private boolean execPaths;
+  private boolean legacyExternalRunfiles;
   private final Map<Label, Collection<Artifact>> labelMap = new HashMap<>();
 
   LocationFunctionBuilder(String rootLabel, boolean multiple) {
@@ -171,11 +189,17 @@ final class LocationFunctionBuilder {
   }
 
   public LocationFunction build() {
-    return new LocationFunction(root, Suppliers.ofInstance(labelMap), execPaths, multiple);
+    return new LocationFunction(
+        root, Suppliers.ofInstance(labelMap), execPaths, legacyExternalRunfiles, multiple);
   }
 
   public LocationFunctionBuilder setExecPaths(boolean execPaths) {
     this.execPaths = execPaths;
+    return this;
+  }
+
+  public LocationFunctionBuilder setLegacyExternalRunfiles(boolean legacyExternalRunfiles) {
+    this.legacyExternalRunfiles = legacyExternalRunfiles;
     return this;
   }
 
@@ -189,10 +213,11 @@ final class LocationFunctionBuilder {
   }
 
   private static Artifact makeArtifact(String path) {
-    FileSystem fs = new InMemoryFileSystem();
+    FileSystem fs = new InMemoryFileSystem(DigestHashFunction.SHA256);
     if (path.startsWith("/exec/out")) {
       return ActionsTestUtil.createArtifact(
-          ArtifactRoot.asDerivedRoot(fs.getPath("/exec"), "out"), fs.getPath(path));
+          ArtifactRoot.asDerivedRoot(fs.getPath("/exec"), RootType.Output, "out"),
+          fs.getPath(path));
     } else {
       return ActionsTestUtil.createArtifact(
           ArtifactRoot.asSourceRoot(Root.fromPath(fs.getPath("/exec"))), fs.getPath(path));

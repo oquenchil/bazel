@@ -26,7 +26,7 @@ import javax.annotation.Nullable;
 @Parameters(separators = "= ", optionPrefixes = "--")
 class LcovMergerFlags {
   private static final Logger logger = Logger.getLogger(LcovMergerFlags.class.getName());
-  private static final int DEFAULT_PARSE_FILE_PARALLELISM = 8;
+  private static final int DEFAULT_PARSE_FILE_PARALLELISM = 4;
 
   @Parameter(names = "--coverage_dir")
   private String coverageDir;
@@ -45,8 +45,6 @@ class LcovMergerFlags {
    * The path to a source file manifest. This file contains multiple lines that represent file names
    * of the sources that the final coverage report must include. Additionally this file can also
    * contain coverage metadata files (e.g. gcno, .em), which can be ignored.
-   *
-   * @return
    */
   @Nullable
   @Parameter(names = "--source_file_manifest")

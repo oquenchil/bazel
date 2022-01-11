@@ -1,24 +1,33 @@
 ---
 layout: documentation
 title: Installing Bazel on Ubuntu
+category: getting-started
 ---
 
 <h1 id="ubuntu">Installing Bazel on Ubuntu</h1>
+
+This page describes the options for installing Bazel on Ubuntu.
+It also provides links to the Bazel completion scripts and the binary installer,
+if needed as a backup option (for example, if you don't have admin access).
 
 Supported Ubuntu Linux platforms:
 
 *   18.04 (LTS)
 *   16.04 (LTS)
 
-Bazel will probably work fine on other Ubuntu releases and Debian stretch and
-above, but we currently do not test this on Bazel's CI and thus can't promise
-it.
+Bazel should be compatible with other Ubuntu releases and Debian
+"stretch" and above, but is untested and not guaranteed to work.
 
 Install Bazel on Ubuntu using one of the following methods:
 
-*   [Use our custom APT repository (recommended)](#install-on-ubuntu)
+*   [Use Bazelisk (recommended)](install-bazelisk.md)
+*   [Use our custom APT repository](#install-on-ubuntu)
 *   [Use the binary installer](#install-with-installer-ubuntu)
 *   [Compile Bazel from source](install-compile-source.md)
+
+**Note:** For Arm-based systems, the APT repository does not contain an `arm64`
+release, and there is no binary installer available. Either use Bazelisk or
+compile from source.
 
 Bazel comes with two completion scripts. After installing Bazel, you can:
 
@@ -32,17 +41,15 @@ Bazel comes with two completion scripts. After installing Bazel, you can:
 **Note:** This is a one-time setup step.
 
 ```bash
-sudo apt install curl gnupg
-curl https://bazel.build/bazel-release.pub.gpg | sudo apt-key add -
+sudo apt install apt-transport-https curl gnupg
+curl -fsSL https://bazel.build/bazel-release.pub.gpg | gpg --dearmor > bazel.gpg
+sudo mv bazel.gpg /etc/apt/trusted.gpg.d/
 echo "deb [arch=amd64] https://storage.googleapis.com/bazel-apt stable jdk1.8" | sudo tee /etc/apt/sources.list.d/bazel.list
 ```
 
-The component name "jdk1.8" is kept for legacy reasons only and doesn't relate
-to supported or included JDK versions anymore. In the past, when Bazel did not
-yet bundle a private JRE, we had two release versions, one compatible with JDK 7
-and one with JDK 8. However, since we dropped Java 7 support and started
-bundling a private runtime, Bazel releases are Java version agnostic. Changing
-the "jdk1.8" component name would break existing users of the repo though.
+The component name "jdk1.8" is kept only for legacy reasons and doesn't relate
+to supported or included JDK versions. Bazel releases are Java-version agnostic.
+Changing the "jdk1.8" component name would break existing users of the repo.
 
 ### Step 2: Install and update Bazel
 
@@ -56,18 +63,25 @@ Once installed, you can upgrade to a newer version of Bazel as part of your norm
 sudo apt update && sudo apt full-upgrade
 ```
 
-The `bazel` package will always install the latest stable version of Bazel. You
-can install specific, older versions of Bazel in addition to the latest one like
-this:
+The `bazel` package always installs the latest stable version of Bazel. You
+can install specific, older versions of Bazel in addition to the latest one,
+such as this:
 
 ```bash
 sudo apt install bazel-1.0.0
 ```
 
-This will install Bazel 1.0.0 as `/usr/bin/bazel-1.0.0` on your system. This
-can be useful if you need a specific version of Bazel to build a project, e.g.
-because it uses a `.bazelversion` file to explicitly state with which Bazel
-version it should be built.
+This installs Bazel 1.0.0 as `/usr/bin/bazel-1.0.0` on your system. This
+can be useful if you need a specific version of Bazel to build a project, for
+example because it uses a `.bazelversion` file to explicitly state with which
+Bazel version it should be built.
+
+Optionally, you can set `bazel` to a specific version by creating a symlink:
+
+```shell
+sudo ln -s /usr/bin/bazel-1.0.0 /usr/bin/bazel
+bazel --version  # 1.0.0
+```
 
 ### Step 3: Install a JDK (optional)
 
@@ -86,9 +100,9 @@ sudo apt install openjdk-11-jdk
 
 <h2 id="install-with-installer-ubuntu">Using the binary installer</h2>
 
-While we generally recommend to use the apt repository, the binary installer can
-be useful in case you don't have admin permissions on your machine or can't add
-custom repositories.
+Generally, you should use the apt repository, but the binary installer
+can be useful if you don't have admin permissions on your machine or
+can't add custom repositories.
 
 The binary installers can be downloaded from Bazel's [GitHub releases page](https://github.com/bazelbuild/bazel/releases).
 

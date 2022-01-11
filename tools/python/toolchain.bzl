@@ -42,14 +42,24 @@ def _py_runtime_pair_impl(ctx):
 py_runtime_pair = rule(
     implementation = _py_runtime_pair_impl,
     attrs = {
-        "py2_runtime": attr.label(providers = [PyRuntimeInfo], doc = """\
+        # The two runtimes are used by the py_binary at runtime, and so need to
+        # be built for the target platform.
+        "py2_runtime": attr.label(
+            providers = [PyRuntimeInfo],
+            cfg = "target",
+            doc = """\
 The runtime to use for Python 2 targets. Must have `python_version` set to
 `PY2`.
-"""),
-        "py3_runtime": attr.label(providers = [PyRuntimeInfo], doc = """\
+""",
+        ),
+        "py3_runtime": attr.label(
+            providers = [PyRuntimeInfo],
+            cfg = "target",
+            doc = """\
 The runtime to use for Python 3 targets. Must have `python_version` set to
 `PY3`.
-"""),
+""",
+        ),
     },
     doc = """\
 A toolchain rule for Python.
@@ -164,6 +174,7 @@ def define_autodetecting_toolchain(
         name = "_autodetecting_py2_runtime",
         interpreter = ":py2wrapper.sh",
         python_version = "PY2",
+        stub_shebang = "#!/usr/bin/env python2",
         visibility = ["//visibility:private"],
     )
 
@@ -171,6 +182,7 @@ def define_autodetecting_toolchain(
         name = "_autodetecting_py3_runtime",
         interpreter = ":py3wrapper.sh",
         python_version = "PY3",
+        stub_shebang = "#!/usr/bin/env python3",
         visibility = ["//visibility:private"],
     )
 
@@ -178,6 +190,7 @@ def define_autodetecting_toolchain(
         name = "_autodetecting_py2_runtime_nonstrict",
         interpreter = ":py2wrapper_nonstrict.sh",
         python_version = "PY2",
+        stub_shebang = "#!/usr/bin/env python2",
         visibility = ["//visibility:private"],
     )
 
@@ -185,6 +198,7 @@ def define_autodetecting_toolchain(
         name = "_autodetecting_py3_runtime_nonstrict",
         interpreter = ":py3wrapper_nonstrict.sh",
         python_version = "PY3",
+        stub_shebang = "#!/usr/bin/env python3",
         visibility = ["//visibility:private"],
     )
 

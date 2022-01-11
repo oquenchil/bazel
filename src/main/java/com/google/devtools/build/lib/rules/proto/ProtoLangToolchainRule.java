@@ -18,14 +18,12 @@ import static com.google.devtools.build.lib.packages.Attribute.attr;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
 
-import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.analysis.BaseRuleClasses;
-import com.google.devtools.build.lib.analysis.FileProvider;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
-import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
-import com.google.devtools.build.lib.analysis.config.HostTransition;
+import com.google.devtools.build.lib.analysis.config.ExecutionTransitionFactory;
 import com.google.devtools.build.lib.packages.RuleClass;
+import com.google.devtools.build.lib.packages.StarlarkProviderIdentifier;
 import com.google.devtools.build.lib.packages.Type;
 
 /** Implements {code proto_lang_toolchain}. */
@@ -41,18 +39,27 @@ public class ProtoLangToolchainRule implements RuleDefinition {
           <li><code>$(OUT)</code> is LANG_proto_library-specific. The rules are expected to define
               how they interpret this variable. For Java, for example, $(OUT) will be replaced with
               the src-jar filename to create.</li>
-          <li><code>$(PLUGIN_out)</code> will be substituted to work with a
-              `--plugin=protoc-gen-PLUGIN` command line.</li>
         </ul>
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
         .add(attr("command_line", Type.STRING).mandatory())
+
+        /* <!-- #BLAZE_RULE(proto_lang_toolchain).ATTRIBUTE(plugin_format_flag) -->
+        If provided, this value will be passed to proto-compiler to use the plugin. The value must
+        contain a single %s which is replaced with plugin executable.
+        <code>--plugin=protoc-gen-PLUGIN=<executable>.</code>
+        <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
+        .add(attr("plugin_format_flag", Type.STRING))
 
         /* <!-- #BLAZE_RULE(proto_lang_toolchain).ATTRIBUTE(plugin) -->
         If provided, will be made available to the action that calls the proto-compiler, and will be
         passed to the proto-compiler:
         <code>--plugin=protoc-gen-PLUGIN=<executable>.</code>
         <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
-        .add(attr("plugin", LABEL).exec().cfg(HostTransition.createFactory()).allowedFileTypes())
+        .add(
+            attr("plugin", LABEL)
+                .exec()
+                .cfg(ExecutionTransitionFactory.create())
+                .allowedFileTypes())
 
         /* <!-- #BLAZE_RULE(proto_lang_toolchain).ATTRIBUTE(runtime) -->
         A language-specific library that the generated code is compiled against.
@@ -70,8 +77,7 @@ public class ProtoLangToolchainRule implements RuleDefinition {
         .add(
             attr("blacklisted_protos", LABEL_LIST)
                 .allowedFileTypes()
-                .mandatoryNativeProviders(
-                    ImmutableList.<Class<? extends TransitiveInfoProvider>>of(FileProvider.class)))
+                .mandatoryProviders(StarlarkProviderIdentifier.forKey(ProtoInfo.PROVIDER.getKey())))
         .requiresConfigurationFragments(ProtoConfiguration.class)
         .advertiseProvider(ProtoLangToolchainProvider.class)
         .removeAttribute("data")
@@ -83,7 +89,7 @@ public class ProtoLangToolchainRule implements RuleDefinition {
   public Metadata getMetadata() {
     return RuleDefinition.Metadata.builder()
         .name("proto_lang_toolchain")
-        .ancestors(BaseRuleClasses.RuleBase.class)
+        .ancestors(BaseRuleClasses.NativeActionCreatingRule.class)
         .factoryClass(ProtoLangToolchain.class)
         .build();
   }
@@ -121,7 +127,7 @@ It's beneficial to enforce the compiler that LANG_proto_library uses is the same
 <pre class="code">
 proto_lang_toolchain(
     name = "javalite_toolchain",
-    command_line = "--$(PLUGIN_OUT)=shared,immutable:$(OUT)",
+    command_line = "--javalite_out=shared,immutable:$(OUT)",
     plugin = ":javalite_plugin",
     runtime = ":protobuf_lite",
 )

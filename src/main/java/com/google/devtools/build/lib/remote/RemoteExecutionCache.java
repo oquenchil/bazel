@@ -19,43 +19,33 @@ import static java.lang.String.format;
 import build.bazel.remote.execution.v2.Digest;
 import build.bazel.remote.execution.v2.Directory;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
+import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.MoreExecutors;
+import com.google.devtools.build.lib.remote.common.RemoteActionExecutionContext;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient;
 import com.google.devtools.build.lib.remote.merkletree.MerkleTree;
 import com.google.devtools.build.lib.remote.merkletree.MerkleTree.PathOrBytes;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
-import com.google.devtools.build.lib.vfs.Path;
-import com.google.protobuf.ByteString;
+import com.google.devtools.build.lib.remote.util.RxFutures;
 import com.google.protobuf.Message;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.subjects.AsyncSubject;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** A {@link RemoteCache} with additional functionality needed for remote execution. */
 public class RemoteExecutionCache extends RemoteCache {
 
   public RemoteExecutionCache(
-      RemoteCacheClient protocolImpl, RemoteOptions options, DigestUtil digestUtil) {
+      RemoteCacheClient protocolImpl,
+      RemoteOptions options,
+      DigestUtil digestUtil) {
     super(protocolImpl, options, digestUtil);
-  }
-
-  private void uploadMissing(Map<Digest, Path> files, Map<Digest, ByteString> blobs)
-      throws IOException, InterruptedException {
-    List<ListenableFuture<Void>> uploads = new ArrayList<>();
-
-    for (Map.Entry<Digest, Path> entry : files.entrySet()) {
-      uploads.add(cacheProtocol.uploadFile(entry.getKey(), entry.getValue()));
-    }
-
-    for (Map.Entry<Digest, ByteString> entry : blobs.entrySet()) {
-      uploads.add(cacheProtocol.uploadBlob(entry.getKey(), entry.getValue()));
-    }
-
-    waitForBulkTransfer(uploads, /* cancelRemainingOnInterrupt=*/ false);
   }
 
   /**
@@ -70,43 +60,103 @@ public class RemoteExecutionCache extends RemoteCache {
    * However, remote execution uses a cache to store input files, and that may be a separate
    * end-point from the executor itself, so the functionality lives here.
    */
-  public void ensureInputsPresent(MerkleTree merkleTree, Map<Digest, Message> additionalInputs)
+  public void ensureInputsPresent(
+      RemoteActionExecutionContext context,
+      MerkleTree merkleTree,
+      Map<Digest, Message> additionalInputs,
+      boolean force)
       throws IOException, InterruptedException {
-    Iterable<Digest> allDigests =
-        Iterables.concat(merkleTree.getAllDigests(), additionalInputs.keySet());
-    ImmutableSet<Digest> missingDigests =
-        getFromFuture(cacheProtocol.findMissingDigests(allDigests));
-    Map<Digest, Path> filesToUpload = new HashMap<>();
-    Map<Digest, ByteString> blobsToUpload = new HashMap<>();
-    for (Digest missingDigest : missingDigests) {
-      Directory node = merkleTree.getDirectoryByDigest(missingDigest);
-      if (node != null) {
-        blobsToUpload.put(missingDigest, node.toByteString());
-        continue;
-      }
+    ImmutableSet<Digest> allDigests =
+        ImmutableSet.<Digest>builder()
+            .addAll(merkleTree.getAllDigests())
+            .addAll(additionalInputs.keySet())
+            .build();
 
-      PathOrBytes file = merkleTree.getFileByDigest(missingDigest);
-      if (file != null) {
-        if (file.getBytes() != null) {
-          blobsToUpload.put(missingDigest, file.getBytes());
-          continue;
-        }
-        filesToUpload.put(missingDigest, file.getPath());
-        continue;
-      }
+    // Collect digests that are not being or already uploaded
+    ConcurrentHashMap<Digest, AsyncSubject<Boolean>> missingDigestSubjects =
+        new ConcurrentHashMap<>();
 
-      Message message = additionalInputs.get(missingDigest);
-      if (message != null) {
-        blobsToUpload.put(missingDigest, message.toByteString());
-        continue;
-      }
+    List<ListenableFuture<Void>> uploadFutures = new ArrayList<>();
+    for (Digest digest : allDigests) {
+      Completable upload =
+          casUploadCache.execute(
+              digest,
+              Completable.defer(
+                  () -> {
+                    // The digest hasn't been processed, add it to the collection which will be used
+                    // later for findMissingDigests call
+                    AsyncSubject<Boolean> missingDigestSubject = AsyncSubject.create();
+                    missingDigestSubjects.put(digest, missingDigestSubject);
 
-      throw new IOException(
-          format(
-              "findMissingDigests returned a missing digest that has not been requested: %s",
-              missingDigest));
+                    return missingDigestSubject.flatMapCompletable(
+                        missing -> {
+                          if (!missing) {
+                            return Completable.complete();
+                          }
+                          return RxFutures.toCompletable(
+                              () -> uploadBlob(context, digest, merkleTree, additionalInputs),
+                              MoreExecutors.directExecutor());
+                        });
+                  }),
+              force);
+      uploadFutures.add(RxFutures.toListenableFuture(upload));
     }
 
-    uploadMissing(filesToUpload, blobsToUpload);
+    ImmutableSet<Digest> missingDigests;
+    try {
+      missingDigests = getFromFuture(findMissingDigests(context, missingDigestSubjects.keySet()));
+    } catch (IOException | InterruptedException e) {
+      for (Map.Entry<Digest, AsyncSubject<Boolean>> entry : missingDigestSubjects.entrySet()) {
+        entry.getValue().onError(e);
+      }
+
+      if (e instanceof InterruptedException) {
+        Thread.currentThread().interrupt();
+      }
+      throw e;
+    }
+
+    for (Map.Entry<Digest, AsyncSubject<Boolean>> entry : missingDigestSubjects.entrySet()) {
+      AsyncSubject<Boolean> missingSubject = entry.getValue();
+      if (missingDigests.contains(entry.getKey())) {
+        missingSubject.onNext(true);
+      } else {
+        // The digest is already existed in the remote cache, skip the upload.
+        missingSubject.onNext(false);
+      }
+      missingSubject.onComplete();
+    }
+
+    waitForBulkTransfer(uploadFutures, /* cancelRemainingOnInterrupt=*/ false);
+  }
+
+  private ListenableFuture<Void> uploadBlob(
+      RemoteActionExecutionContext context,
+      Digest digest,
+      MerkleTree merkleTree,
+      Map<Digest, Message> additionalInputs) {
+    Directory node = merkleTree.getDirectoryByDigest(digest);
+    if (node != null) {
+      return cacheProtocol.uploadBlob(context, digest, node.toByteString());
+    }
+
+    PathOrBytes file = merkleTree.getFileByDigest(digest);
+    if (file != null) {
+      if (file.getBytes() != null) {
+        return cacheProtocol.uploadBlob(context, digest, file.getBytes());
+      }
+      return cacheProtocol.uploadFile(context, digest, file.getPath());
+    }
+
+    Message message = additionalInputs.get(digest);
+    if (message != null) {
+      return cacheProtocol.uploadBlob(context, digest, message.toByteString());
+    }
+
+    return Futures.immediateFailedFuture(
+        new IOException(
+            format(
+                "findMissingDigests returned a missing digest that has not been requested: %s",
+                digest)));
   }
 }

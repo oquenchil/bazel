@@ -15,7 +15,6 @@ package com.google.devtools.build.lib.packages;
 
 import static com.google.common.truth.Truth.assertThat;
 
-import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
@@ -28,13 +27,14 @@ import com.google.devtools.build.lib.packages.util.PackageLoadingTestCase;
 import com.google.devtools.build.lib.pkgcache.LoadingOptions;
 import com.google.devtools.build.lib.pkgcache.TestFilter;
 import com.google.devtools.build.lib.skyframe.TestsForTargetPatternValue;
-import com.google.devtools.build.lib.syntax.Location;
+import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.skyframe.EvaluationContext;
 import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.SkyKey;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.function.Predicate;
+import net.starlark.java.syntax.Location;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -72,7 +72,7 @@ public class TestTargetUtilsTest extends PackageLoadingTestCase {
         "",
         "py_binary(name = 'notest',",
         "        srcs = ['notest.py'])",
-        "cc_library(name = 'xUnit', data = ['//tools:test_sharding_compliant'])",
+        "cc_library(name = 'xUnit')",
         "",
         "test_suite( name = 'smallTests', tags=['small'])");
 
@@ -116,7 +116,7 @@ public class TestTargetUtilsTest extends PackageLoadingTestCase {
             ruleClass,
             Location.fromFile(""),
             CallStack.EMPTY,
-            new AttributeContainer(ruleClass));
+            AttributeContainer.newMutableInstance(ruleClass));
     Mockito.when(ruleClass.getName()).thenReturn("existent_library");
     assertThat(filter.apply(mockRule)).isTrue();
     Mockito.when(ruleClass.getName()).thenReturn("exist_library");
@@ -155,39 +155,42 @@ public class TestTargetUtilsTest extends PackageLoadingTestCase {
 
   @Test
   public void testSkyframeExpandTestSuites() throws Exception {
+    assertExpandedSuitesSkyframe(Sets.newHashSet(test1, test2), ImmutableSet.of(test1, test2));
+    assertExpandedSuitesSkyframe(Sets.newHashSet(test1, test2), ImmutableSet.of(suite));
     assertExpandedSuitesSkyframe(
-        Sets.newHashSet(test1, test2), ImmutableSet.<Target>of(test1, test2));
-    assertExpandedSuitesSkyframe(Sets.newHashSet(test1, test2), ImmutableSet.<Target>of(suite));
-    assertExpandedSuitesSkyframe(
-        Sets.newHashSet(test1, test2, test1b), ImmutableSet.<Target>of(test1, suite, test1b));
+        Sets.newHashSet(test1, test2, test1b), ImmutableSet.of(test1, suite, test1b));
     // The large test if returned as filtered from the test_suite rule, but should still be in the
     // result set as it's explicitly added.
     assertExpandedSuitesSkyframe(
-        Sets.newHashSet(test1, test2, test1b), ImmutableSet.<Target>of(test1b, suite));
+        Sets.newHashSet(test1, test2, test1b), ImmutableSet.of(test1b, suite));
   }
 
-  private static final Function<Target, Label> TO_LABEL =
-      new Function<Target, Label>() {
-        @Override
-        public Label apply(Target input) {
-          return input.getLabel();
-        }
-      };
+  @Test
+  public void testSortTagsBySenseSeparatesTagsNaively() {
+    // Contrived, but intentional.
+    Pair<Collection<String>, Collection<String>> result =
+        TestTargetUtils.sortTagsBySense(
+            ImmutableList.of("tag1", "tag2", "tag3", "-tag1", "+tag2", "-tag3"));
+
+    assertThat(result.first).containsExactly("tag1", "tag2", "tag3");
+    assertThat(result.second).containsExactly("tag1", "tag3");
+  }
 
   private void assertExpandedSuitesSkyframe(Iterable<Target> expected, Collection<Target> suites)
       throws Exception {
     ImmutableSet<Label> expectedLabels =
-        ImmutableSet.copyOf(Iterables.transform(expected, TO_LABEL));
-    ImmutableSet<Label> suiteLabels = ImmutableSet.copyOf(Iterables.transform(suites, TO_LABEL));
+        ImmutableSet.copyOf(Iterables.transform(expected, Target::getLabel));
+    ImmutableSet<Label> suiteLabels =
+        ImmutableSet.copyOf(Iterables.transform(suites, Target::getLabel));
     SkyKey key = TestsForTargetPatternValue.key(suiteLabels);
     EvaluationContext evaluationContext =
         EvaluationContext.newBuilder()
             .setKeepGoing(false)
             .setNumThreads(1)
-            .setEventHander(reporter)
+            .setEventHandler(reporter)
             .build();
     EvaluationResult<TestsForTargetPatternValue> result =
-        getSkyframeExecutor().getDriver().evaluate(ImmutableList.of(key), evaluationContext);
+        getSkyframeExecutor().getEvaluator().evaluate(ImmutableList.of(key), evaluationContext);
     ResolvedTargets<Label> actual = result.get(key).getLabels();
     assertThat(actual.hasError()).isFalse();
     assertThat(actual.getTargets()).containsExactlyElementsIn(expectedLabels);

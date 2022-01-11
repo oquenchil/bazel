@@ -17,13 +17,12 @@ import com.google.devtools.build.lib.analysis.test.InstrumentedFilesCollector.In
 import com.google.devtools.build.lib.util.FileTypeSet;
 
 /** Common logic for coverage for sh_* rules. */
-final class ShCoverage {
+public final class ShCoverage {
 
   private ShCoverage() {}
 
   public static final InstrumentationSpec INSTRUMENTATION_SPEC =
       new InstrumentationSpec(FileTypeSet.ANY_FILE)
-          .withDeprecatedSourceOrDependencyAttributes("srcs", "deps", "data")
           .withSourceAttributes("srcs")
           .withDependencyAttributes("deps", "data");
 }

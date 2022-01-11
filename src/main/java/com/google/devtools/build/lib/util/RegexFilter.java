@@ -16,12 +16,12 @@ package com.google.devtools.build.lib.util;
 
 import com.google.common.base.Joiner;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.common.options.Converter;
 import com.google.devtools.common.options.OptionsParsingException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 import javax.annotation.Nullable;
@@ -33,9 +33,8 @@ import javax.annotation.Nullable;
  * <p>String is considered to be included into the filter if it does not match any of the excluded
  * regex expressions and if it matches at least one included regex expression.
  */
-@AutoCodec
 @Immutable
-public final class RegexFilter {
+public final class RegexFilter implements Predicate<String> {
   // Null inclusion or exclusion pattern means those patterns are not used.
   @Nullable private final Pattern inclusionPattern;
   @Nullable private final Pattern exclusionPattern;
@@ -88,8 +87,7 @@ public final class RegexFilter {
    * <p>Null {@code inclusionPattern} or {@code exclusionPattern} means that inclusion or exclusion
    * matching will not be applied, respectively.
    */
-  @AutoCodec.Instantiator
-  RegexFilter(@Nullable Pattern inclusionPattern, @Nullable Pattern exclusionPattern) {
+  private RegexFilter(@Nullable Pattern inclusionPattern, @Nullable Pattern exclusionPattern) {
     this.inclusionPattern = inclusionPattern;
     this.exclusionPattern = exclusionPattern;
     this.hashCode =
@@ -128,6 +126,11 @@ public final class RegexFilter {
       return true;
     }
     return inclusionPattern.matcher(value).find();
+  }
+
+  @Override
+  public boolean test(String value) {
+    return isIncluded(value);
   }
 
   @Nullable

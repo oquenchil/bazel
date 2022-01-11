@@ -14,7 +14,6 @@
 package com.google.devtools.build.skyframe;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetVisitor;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadHostile;
@@ -22,6 +21,7 @@ import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.events.ExtendedEventHandler.Postable;
 import java.io.PrintStream;
 import java.util.Map;
+import java.util.function.Predicate;
 import javax.annotation.Nullable;
 
 /**
@@ -31,14 +31,14 @@ import javax.annotation.Nullable;
  * prerequisite {@link SkyValue}s. The {@link MemoizingEvaluator} implementation makes sure that
  * those are created beforehand.
  *
- * <p>The graph caches previously computed value values. Arbitrary values can be invalidated between
- * calls to {@link #evaluate}; they will be recreated the next time they are requested.
+ * <p>The graph caches previously computed values. Arbitrary values can be invalidated between calls
+ * to {@link #evaluate}; they will be recreated the next time they are requested.
  */
 public interface MemoizingEvaluator {
 
   /**
-   * Computes the transitive closure of a given set of values at the given {@link Version}. See
-   * {@link EagerInvalidator#invalidate}.
+   * Computes the transitive closure of a given set of values. See {@link
+   * EagerInvalidator#invalidate}.
    *
    * <p>The returned EvaluationResult is guaranteed to contain a result for at least one root if
    * keepGoing is false. It will contain a result for every root if keepGoing is true, <i>unless</i>
@@ -46,7 +46,7 @@ public interface MemoizingEvaluator {
    * missing.
    */
   <T extends SkyValue> EvaluationResult<T> evaluate(
-      Iterable<? extends SkyKey> roots, Version version, EvaluationContext evaluationContext)
+      Iterable<? extends SkyKey> roots, EvaluationContext evaluationContext)
       throws InterruptedException;
 
   /**
@@ -125,7 +125,6 @@ public interface MemoizingEvaluator {
    * <p>This method should mainly be used by tests that need to verify the presence of a value in
    * the graph after an {@link #evaluate} call.
    */
-  @VisibleForTesting
   @Nullable
   SkyValue getExistingValue(SkyKey key) throws InterruptedException;
 
@@ -139,6 +138,7 @@ public interface MemoizingEvaluator {
    * <p>This method should only be used by tests that need to verify the presence of an error in the
    * graph after an {@link #evaluate} call.
    */
+  @SuppressWarnings("VisibleForTestingMisused") // Only exists for testing.
   @VisibleForTesting
   @Nullable
   ErrorInfo getExistingErrorForTesting(SkyKey key) throws InterruptedException;
@@ -186,7 +186,7 @@ public interface MemoizingEvaluator {
   /** A supplier for creating instances of a particular evaluator implementation. */
   interface EvaluatorSupplier {
     MemoizingEvaluator create(
-        ImmutableMap<SkyFunctionName, ? extends SkyFunction> skyFunctions,
+        ImmutableMap<SkyFunctionName, SkyFunction> skyFunctions,
         Differencer differencer,
         EvaluationProgressReceiver progressReceiver,
         GraphInconsistencyReceiver graphInconsistencyReceiver,

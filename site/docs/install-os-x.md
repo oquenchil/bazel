@@ -1,11 +1,14 @@
 ---
 layout: documentation
 title: Installing Bazel on macOS
+category: getting-started
 ---
 
 <h1 id="mac-os-x">Installing Bazel on macOS</h1>
 
-Install Bazel on macOS using one of the following methods:
+This page describes how to install Bazel on macOS and set up your environment.
+
+You can install Bazel on macOS using one of the following methods:
 
 *   [Use the binary installer (recommended)](#install-with-installer-mac-os-x)
 *   [Use Homebrew](#install-on-mac-os-x-homebrew)
@@ -55,16 +58,16 @@ Next, download the Bazel binary installer named
 [Bazel releases page on GitHub](https://github.com/bazelbuild/bazel/releases).
 
 Note: **on macOS Catalina**, due to Apple's new app notarization requirements,
-you will need to download the installer from the terminal using `curl`:
+you need to download the installer from the terminal using `curl`:
 
 ```shell
 # Example installing version `3.2.0`. Replace the version below as appropriate.
 export BAZEL_VERSION=3.2.0
-curl -LO "https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-installer-darwin-x86_64.sh"
+curl -fLO "https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-installer-darwin-x86_64.sh"
 ```
 
-This is a temporary workaround until we fix notarization in our macOS release
-workflow ([#9304](https://github.com/bazelbuild/bazel/issues/9304)).
+This is a temporary workaround until the macOS release flow supports
+notarization ([#9304](https://github.com/bazelbuild/bazel/issues/9304)).
 
 ### Step 3: Run the installer
 
@@ -80,7 +83,7 @@ sets the `.bazelrc` path to `$HOME/.bazelrc`. Use the `--help` command to see
 additional installation options.
 
 If you are **on macOS Catalina** and get an error that _**“bazel-real” cannot be
-opened because the developer cannot be verified**_, you will need to re-download
+opened because the developer cannot be verified**_, you need to re-download
 the installer from the terminal using `curl` as a workaround; see Step 2 above.
 
 ### Step 4: Set up your environment

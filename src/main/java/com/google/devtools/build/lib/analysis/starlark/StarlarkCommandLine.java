@@ -17,8 +17,8 @@ package com.google.devtools.build.lib.analysis.starlark;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.collect.nestedset.Depset;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
-import com.google.devtools.build.lib.skylarkbuildapi.StarlarkCommandLineApi;
-import com.google.devtools.build.lib.syntax.EvalException;
+import com.google.devtools.build.lib.starlarkbuildapi.StarlarkCommandLineApi;
+import net.starlark.java.eval.EvalException;
 
 /** A Starlark module class to create memory efficient command lines. */
 public class StarlarkCommandLine implements StarlarkCommandLineApi {

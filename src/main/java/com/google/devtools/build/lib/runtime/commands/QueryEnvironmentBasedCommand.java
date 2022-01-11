@@ -21,6 +21,8 @@ import com.google.devtools.build.lib.analysis.NoBuildEvent;
 import com.google.devtools.build.lib.analysis.NoBuildRequestFinishedEvent;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.packages.Target;
+import com.google.devtools.build.lib.profiler.ProfilePhase;
+import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.query2.common.AbstractBlazeQueryEnvironment;
 import com.google.devtools.build.lib.query2.common.UniverseScope;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment;
@@ -40,11 +42,11 @@ import com.google.devtools.build.lib.runtime.QueryRuntimeHelper;
 import com.google.devtools.build.lib.runtime.QueryRuntimeHelper.QueryRuntimeHelperException;
 import com.google.devtools.build.lib.runtime.TargetProviderForQueryEnvironment;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
-import com.google.devtools.build.lib.server.FailureDetails.Interrupted;
 import com.google.devtools.build.lib.server.FailureDetails.Query;
 import com.google.devtools.build.lib.skyframe.LoadingPhaseStartedEvent;
 import com.google.devtools.build.lib.skyframe.PackageProgressReceiver;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutorWrappingWalkableGraph;
+import com.google.devtools.build.lib.skyframe.SkyframeTargetPatternEvaluator;
 import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.Either;
@@ -53,7 +55,6 @@ import com.google.devtools.build.lib.util.InterruptedFailureDetails;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.skyframe.WalkableGraph;
-import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.OptionsParsingResult;
 import com.google.devtools.common.options.TriState;
 import java.io.IOException;
@@ -66,10 +67,6 @@ import java.util.function.Function;
  * requires {@link QueryEnvironment}
  */
 public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
-
-  @Override
-  public void editOptions(OptionsParser optionsParser) { }
-
   /**
    * Exit codes:
    *   0   on successful evaluation.
@@ -89,6 +86,11 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
                 /* showProgress= */ true,
                 /* id= */ null));
     BlazeCommandResult result = execInternal(env, options);
+    try {
+      Profiler.instance().markPhase(ProfilePhase.FINISH);
+    } catch (InterruptedException e) {
+      return reportAndCreateInterruptResult(env, "Profile finish operation interrupted");
+    }
     env.getEventBus()
         .post(
             new NoBuildRequestFinishedEvent(
@@ -103,8 +105,7 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
     try {
       env.syncPackageLoading(options);
     } catch (InterruptedException e) {
-      return reportAndCreateInterruptResult(
-          env, "query interrupted", Interrupted.Code.PACKAGE_LOADING_SYNC);
+      return reportAndCreateInterruptResult(env, "query interrupted");
     } catch (AbruptExitException e) {
       env.getReporter().handle(Event.error(null, "Unknown error: " + e.getMessage()));
       return BlazeCommandResult.detailedExitCode(e.getDetailedExitCode());
@@ -160,8 +161,8 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
       return reportAndCreateFailureResult(
           env,
           String.format(
-              "--experimental_graphless_query requires --order_output=no and an --output"
-                  + " option that supports streaming; valid values are: %s",
+              "--experimental_graphless_query requires --order_output=no or --order_output=auto and"
+                  + " an --output option that supports streaming; valid values are: %s",
               OutputFormatters.streamingFormatterNames(formatters)),
           Query.Code.GRAPHLESS_PREREQ_UNMET);
     }
@@ -174,7 +175,9 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
               env,
               options.getOptions(KeepGoingOption.class).keepGoing,
               !streamResults,
-              getUniverseScope(queryOptions),
+              env.getSkyframeExecutor()
+                  .maybeGetHardcodedUniverseScope()
+                  .orElse(getUniverseScope(queryOptions)),
               options.getOptions(LoadingPhaseThreadsOption.class).threads,
               settings,
               useGraphlessQuery)) {
@@ -194,15 +197,19 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
               env.getReporter().handle(Event.error(e.getMessage()));
               return BlazeCommandResult.detailedExitCode(DetailedExitCode.of(e.getFailureDetail()));
             } catch (InterruptedException e) {
-              return reportAndCreateInterruptResult(
-                  env, "query interrupted", Interrupted.Code.AFTER_QUERY);
+              return reportAndCreateInterruptResult(env, "query interrupted");
             }
             if (queryEvalResult.getSuccess()) {
               return BlazeCommandResult.success();
             }
-            // TODO(b/138456686): query + keep_going partial failures require more refactoring for
-            //  detailed failure representations.
-            return BlazeCommandResult.exitCode(ExitCode.PARTIAL_ANALYSIS_FAILURE);
+            // The numerical exit code expected by query users in this case is always 3
+            // (corresponding to ExitCode.PARTIAL_ANALYSIS_FAILURE), which is why the command
+            // result returned here overrides any numerical code associated with the
+            // detailedExitCode in the eval result.
+            return BlazeCommandResult.detailedExitCode(
+                DetailedExitCode.of(
+                    ExitCode.PARTIAL_ANALYSIS_FAILURE,
+                    queryEvalResult.getDetailedExitCode().getFailureDetail()));
           });
     } catch (QueryRuntimeHelperException e) {
       env.getReporter().handle(Event.error(e.getMessage()));
@@ -253,11 +260,11 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
     return env.getRuntime()
         .getQueryEnvironmentFactory()
         .create(
-            env.getPackageManager().newTransitiveLoader(),
+            env.getPackageManager().transitiveLoader(),
             env.getSkyframeExecutor(),
             targetProviderForQueryEnvironment,
             env.getPackageManager(),
-            env.getPackageManager().newTargetPatternPreloader(),
+            new SkyframeTargetPatternEvaluator(env.getSkyframeExecutor()),
             env.getRelativeWorkingDirectory(),
             keepGoing,
             /*strictScope=*/ true,
@@ -274,10 +281,9 @@ public abstract class QueryEnvironmentBasedCommand implements BlazeCommand {
   }
 
   private static BlazeCommandResult reportAndCreateInterruptResult(
-      CommandEnvironment env, String message, Interrupted.Code detailedCode) {
+      CommandEnvironment env, String message) {
     env.getReporter().handle(Event.error(message));
-    return BlazeCommandResult.detailedExitCode(
-        InterruptedFailureDetails.detailedExitCode(message, detailedCode));
+    return BlazeCommandResult.detailedExitCode(InterruptedFailureDetails.detailedExitCode(message));
   }
 
   private static BlazeCommandResult reportAndCreateFailureResult(

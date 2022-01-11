@@ -14,13 +14,15 @@
 
 package com.google.devtools.build.lib.packages;
 
+import static com.google.common.base.MoreObjects.firstNonNull;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.BiMap;
-import com.google.common.collect.HashBiMap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Interner;
 import com.google.common.collect.Iterables;
@@ -30,24 +32,27 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.LabelConstants;
 import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
+import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
+import com.google.devtools.build.lib.cmdline.TargetPattern;
 import com.google.devtools.build.lib.collect.CollectionUtils;
-import com.google.devtools.build.lib.collect.ImmutableSortedKeyMap;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadCompatible;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
+import com.google.devtools.build.lib.events.EventKind;
 import com.google.devtools.build.lib.events.ExtendedEventHandler.Postable;
 import com.google.devtools.build.lib.packages.License.DistributionType;
 import com.google.devtools.build.lib.packages.Package.Builder.PackageSettings;
 import com.google.devtools.build.lib.packages.RuleClass.Builder.ThirdPartyLicenseExistencePolicy;
+import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
+import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
+import com.google.devtools.build.lib.server.FailureDetails.PackageLoading;
+import com.google.devtools.build.lib.server.FailureDetails.PackageLoading.Code;
 import com.google.devtools.build.lib.skyframe.serialization.DeserializationContext;
 import com.google.devtools.build.lib.skyframe.serialization.ObjectCodec;
 import com.google.devtools.build.lib.skyframe.serialization.SerializationContext;
 import com.google.devtools.build.lib.skyframe.serialization.SerializationException;
-import com.google.devtools.build.lib.syntax.Location;
-import com.google.devtools.build.lib.syntax.Module;
-import com.google.devtools.build.lib.syntax.StarlarkSemantics;
-import com.google.devtools.build.lib.syntax.StarlarkThread;
+import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
@@ -67,7 +72,11 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.Module;
+import net.starlark.java.eval.StarlarkSemantics;
+import net.starlark.java.eval.StarlarkThread;
 import net.starlark.java.spelling.SpellChecker;
+import net.starlark.java.syntax.Location;
 
 /**
  * A package, which is a container of {@link Rule}s, each of which contains a dictionary of named
@@ -98,7 +107,7 @@ public class Package {
    */
   private final PackageIdentifier packageIdentifier;
 
-  private final boolean suggestNoSuchTargetCorrections;
+  private final boolean succinctTargetNotFoundErrors;
 
   /** The filename of this package's BUILD file. */
   private RootedPath filename;
@@ -129,13 +138,31 @@ public class Package {
   private ImmutableMap<String, String> makeEnv;
 
   /** The collection of all targets defined in this package, indexed by name. */
-  private ImmutableSortedKeyMap<String, Target> targets;
+  private ImmutableSortedMap<String, Target> targets;
 
   /**
    * Default visibility for rules that do not specify it.
    */
   private RuleVisibility defaultVisibility;
   private boolean defaultVisibilitySet;
+
+  /**
+   * How to enforce config_setting visibility settings.
+   *
+   * <p>This is a temporary setting in service of https://github.com/bazelbuild/bazel/issues/12669.
+   * After enough depot cleanup, config_setting will have the same visibility enforcement as all
+   * other rules.
+   */
+  public enum ConfigSettingVisibilityPolicy {
+    /** Don't enforce visibility for any config_setting. */
+    LEGACY_OFF,
+    /** Honor explicit visibility settings on config_setting, else  use //visibility:public. */
+    DEFAULT_PUBLIC,
+    /** Enforce config_setting visibility exactly the same as all other rules. */
+    DEFAULT_STANDARD
+  }
+
+  private ConfigSettingVisibilityPolicy configSettingVisibilityPolicy;
 
   /**
    * Default package-level 'testonly' value for rules that do not specify it.
@@ -171,6 +198,12 @@ public class Package {
    */
   private boolean containsErrors;
 
+  /**
+   * The first detailed error encountered during this package's construction and evaluation, or
+   * {@code null} if there were no such errors or all its errors lacked details.
+   */
+  @Nullable private FailureDetail failureDetail;
+
   /** The list of transitive closure of the Starlark file dependencies. */
   private ImmutableList<Label> starlarkFileDependencies;
 
@@ -196,20 +229,18 @@ public class Package {
       externalPackageRepositoryMappings;
 
   /**
-   * The map of repository reassignments for BUILD packages. This will be empty for packages
-   * within the main workspace.
+   * The map of repository reassignments for BUILD packages. This will be empty for packages within
+   * the main workspace.
    */
-  private ImmutableMap<RepositoryName, RepositoryName> repositoryMapping;
+  private RepositoryMapping repositoryMapping;
 
   private Set<Label> defaultCompatibleWith = ImmutableSet.of();
   private Set<Label> defaultRestrictedTo = ImmutableSet.of();
 
   private ImmutableSet<String> features;
 
-  private ImmutableList<Event> events;
-
-  private ImmutableList<String> registeredExecutionPlatforms;
-  private ImmutableList<String> registeredToolchains;
+  private ImmutableList<TargetPattern> registeredExecutionPlatforms;
+  private ImmutableList<TargetPattern> registeredToolchains;
 
   private long computationSteps;
 
@@ -241,10 +272,10 @@ public class Package {
    * <p>{@code name} <b>MUST</b> be a suffix of {@code filename.getParentDirectory())}.
    */
   private Package(
-      PackageIdentifier packageId, String runfilesPrefix, boolean suggestNoSuchTargetCorrections) {
+      PackageIdentifier packageId, String workspaceName, boolean succinctTargetNotFoundErrors) {
     this.packageIdentifier = packageId;
-    this.workspaceName = runfilesPrefix;
-    this.suggestNoSuchTargetCorrections = suggestNoSuchTargetCorrections;
+    this.workspaceName = workspaceName;
+    this.succinctTargetNotFoundErrors = succinctTargetNotFoundErrors;
   }
 
   /** Returns this packages' identifier. */
@@ -277,7 +308,7 @@ public class Package {
   }
 
   /** Get the repository mapping for this package. */
-  public ImmutableMap<RepositoryName, RepositoryName> getRepositoryMapping() {
+  public RepositoryMapping getRepositoryMapping() {
     return repositoryMapping;
   }
 
@@ -321,14 +352,6 @@ public class Package {
    */
   private void setDefaultDeprecation(String deprecation) {
     defaultDeprecation = deprecation;
-  }
-
-  /**
-   * Sets the default 'applicable_licenses" value for this package attribute when not explicitly
-   * specified by the rule.
-   */
-  private void setDefaultApplicableLicenses(Set<Label> licenses) {
-    defaultApplicableLicenses = licenses;
   }
 
   /**
@@ -398,7 +421,7 @@ public class Package {
     this.packageDirectory = filename.asPath().getParentDirectory();
     String baseName = filename.getRootRelativePath().getBaseName();
 
-    if (isWorkspaceFile(baseName)) {
+    if (isWorkspaceFile(baseName) || isModuleDotBazelFile(baseName)) {
       Preconditions.checkState(
           packageIdentifier.equals(LabelConstants.EXTERNAL_PACKAGE_IDENTIFIER));
       this.sourceRoot = Optional.empty();
@@ -423,9 +446,10 @@ public class Package {
     }
 
     this.makeEnv = ImmutableMap.copyOf(builder.makeEnv);
-    this.targets = ImmutableSortedKeyMap.copyOf(builder.targets);
+    this.targets = ImmutableSortedMap.copyOf(builder.targets);
     this.defaultVisibility = builder.defaultVisibility;
     this.defaultVisibilitySet = builder.defaultVisibilitySet;
+    this.configSettingVisibilityPolicy = builder.configSettingVisibilityPolicy;
     if (builder.defaultCopts == null) {
       this.defaultCopts = ImmutableList.of();
     } else {
@@ -433,11 +457,12 @@ public class Package {
     }
     this.buildFile = builder.buildFile;
     this.containsErrors = builder.containsErrors;
+    this.failureDetail = builder.getFailureDetail();
     this.starlarkFileDependencies = builder.starlarkFileDependencies;
     this.defaultLicense = builder.defaultLicense;
     this.defaultDistributionSet = builder.defaultDistributionSet;
+    this.defaultApplicableLicenses = ImmutableSortedSet.copyOf(builder.defaultApplicableLicenses);
     this.features = ImmutableSortedSet.copyOf(builder.features);
-    this.events = ImmutableList.copyOf(builder.events);
     this.registeredExecutionPlatforms = ImmutableList.copyOf(builder.registeredExecutionPlatforms);
     this.registeredToolchains = ImmutableList.copyOf(builder.registeredToolchains);
     this.repositoryMapping = Preconditions.checkNotNull(builder.repositoryMapping);
@@ -459,6 +484,10 @@ public class Package {
   private static boolean isWorkspaceFile(String baseFileName) {
     return baseFileName.equals(LabelConstants.WORKSPACE_DOT_BAZEL_FILE_NAME.getPathString())
         || baseFileName.equals(LabelConstants.WORKSPACE_FILE_NAME.getPathString());
+  }
+
+  private static boolean isModuleDotBazelFile(String baseFileName) {
+    return baseFileName.equals(LabelConstants.MODULE_DOT_BAZEL_FILE_NAME.getPathString());
   }
 
   /** Returns the list of transitive closure of the Starlark file dependencies of this package. */
@@ -532,12 +561,47 @@ public class Package {
     return containsErrors;
   }
 
-  public List<Event> getEvents() {
-    return events;
+  /**
+   * Returns the first {@link FailureDetail} describing one of the package's errors, or {@code null}
+   * if it has no errors or all its errors lack details.
+   */
+  @Nullable
+  public FailureDetail getFailureDetail() {
+    return failureDetail;
+  }
+
+  /**
+   * Returns a {@link FailureDetail} attributing a target error to the package's {@link
+   * FailureDetail}, or a generic {@link Code#TARGET_MISSING} failure detail if the package has
+   * none.
+   *
+   * <p>May only be called when {@link #containsErrors()} is true and with a target whose package is
+   * this one.
+   */
+  public FailureDetail contextualizeFailureDetailForTarget(Target target) {
+    Preconditions.checkState(
+        target.getPackage().packageIdentifier.equals(packageIdentifier),
+        "contextualizeFailureDetailForTarget called for target not in package. target=%s,"
+            + " package=%s",
+        target,
+        this);
+    Preconditions.checkState(
+        containsErrors,
+        "contextualizeFailureDetailForTarget called for package not in error. target=%s",
+        target);
+    String prefix =
+        "Target '" + target.getLabel() + "' contains an error and its package is in error";
+    if (failureDetail == null) {
+      return FailureDetail.newBuilder()
+          .setMessage(prefix)
+          .setPackageLoading(PackageLoading.newBuilder().setCode(Code.TARGET_MISSING))
+          .build();
+    }
+    return failureDetail.toBuilder().setMessage(prefix + ": " + failureDetail.getMessage()).build();
   }
 
   /** Returns an (immutable, ordered) view of all the targets belonging to this package. */
-  public ImmutableSortedKeyMap<String, Target> getTargets() {
+  public ImmutableSortedMap<String, Target> getTargets() {
     return targets;
   }
 
@@ -599,19 +663,24 @@ public class Package {
       return target;
     }
 
-    String alternateTargetSuggestion =
-        suggestNoSuchTargetCorrections ? getAlternateTargetSuggestion(targetName) : "";
     Label label;
     try {
       label = Label.create(packageIdentifier, targetName);
     } catch (LabelSyntaxException e) {
       throw new IllegalArgumentException(targetName);
     }
-    String msg =
-        String.format(
-            "target '%s' not declared in package '%s'%s defined by %s",
-            targetName, getName(), alternateTargetSuggestion, filename.asPath().getPathString());
-    throw new NoSuchTargetException(label, msg);
+
+    if (succinctTargetNotFoundErrors) {
+      throw new NoSuchTargetException(
+          label, String.format("target '%s' not declared in package '%s'", targetName, getName()));
+    } else {
+      String alternateTargetSuggestion = getAlternateTargetSuggestion(targetName);
+      throw new NoSuchTargetException(
+          label,
+          String.format(
+              "target '%s' not declared in package '%s'%s defined by %s",
+              targetName, getName(), alternateTargetSuggestion, filename.asPath().getPathString()));
+    }
   }
 
   private String getAlternateTargetSuggestion(String targetName) {
@@ -619,7 +688,7 @@ public class Package {
     // produce a more informative error.  NOTE! this code path is only executed
     // on failure, which is (relatively) very rare.  In the common case no
     // stat(2) is executed.
-    Path filename = getPackageDirectory().getRelative(targetName);
+    Path filename = packageDirectory.getRelative(targetName);
     if (!PathFragment.isNormalized(targetName) || "*".equals(targetName)) {
       // Don't check for file existence if the target name is not normalized
       // because the error message would be confusing and wrong. If the
@@ -653,6 +722,14 @@ public class Package {
    */
   public RuleVisibility getDefaultVisibility() {
     return defaultVisibility;
+  }
+
+  /**
+   * How to enforce visibility on <code>config_setting</code> See
+   * {@link ConfigSettingVisibilityPolicy} for details.
+   */
+  public ConfigSettingVisibilityPolicy getConfigSettingVisibilityPolicy() {
+    return configSettingVisibilityPolicy;
   }
 
   /**
@@ -725,11 +802,11 @@ public class Package {
     return defaultRestrictedTo;
   }
 
-  public ImmutableList<String> getRegisteredExecutionPlatforms() {
+  public ImmutableList<TargetPattern> getRegisteredExecutionPlatforms() {
     return registeredExecutionPlatforms;
   }
 
-  public ImmutableList<String> getRegisteredToolchains() {
+  public ImmutableList<TargetPattern> getRegisteredToolchains() {
     return registeredToolchains;
   }
 
@@ -746,7 +823,7 @@ public class Package {
    * output.
    */
   public void dump(PrintStream out) {
-    out.println("  Package " + getName() + " (" + getFilename().asPath() + ")");
+    out.println("  Package " + getName() + " (" + filename.asPath() + ")");
 
     // Rules:
     out.println("    Rules");
@@ -775,15 +852,33 @@ public class Package {
   public static Builder newExternalPackageBuilder(
       PackageSettings helper,
       RootedPath workspacePath,
-      String runfilesPrefix,
+      String workspaceName,
       StarlarkSemantics starlarkSemantics) {
     return new Builder(
             helper,
             LabelConstants.EXTERNAL_PACKAGE_IDENTIFIER,
-            runfilesPrefix,
-            starlarkSemantics.incompatibleNoImplicitFileExport(),
-            Builder.EMPTY_REPOSITORY_MAPPING)
+            workspaceName,
+            starlarkSemantics.getBool(BuildLanguageOptions.INCOMPATIBLE_NO_IMPLICIT_FILE_EXPORT),
+            RepositoryMapping.ALWAYS_FALLBACK)
         .setFilename(workspacePath);
+  }
+
+  /**
+   * Returns an error {@link Event} with {@link Location} and {@link DetailedExitCode} properties.
+   */
+  public static Event error(Location location, String message, Code code) {
+    Event error = Event.error(location, message);
+    // The DetailedExitCode's message is the base event's toString because that string nicely
+    // includes the location value.
+    return error.withProperty(DetailedExitCode.class, createDetailedCode(error.toString(), code));
+  }
+
+  private static DetailedExitCode createDetailedCode(String errorMessage, Code code) {
+    return DetailedExitCode.of(
+        FailureDetail.newBuilder()
+            .setMessage(errorMessage)
+            .setPackageLoading(PackageLoading.newBuilder().setCode(code))
+            .build());
   }
 
   /**
@@ -798,11 +893,11 @@ public class Package {
     /** Defines configuration to control the runtime behavior of {@link Package}s. */
     public interface PackageSettings {
       /**
-       * Returns if {@link NoSuchTargetException}s thrown from {@link #getTarget} should attempt to
-       * suggest existing alternatives. The benefit is potentially improved error messaging, while
-       * the drawback is extra I/O and CPU work, which might not be desired in all environments.
+       * Returns whether or not extra detail should be added to {@link NoSuchTargetException}s
+       * thrown from {@link #getTarget}. Useful for toning down verbosity in situations where it can
+       * be less helpful.
        */
-      boolean suggestNoSuchTargetCorrections();
+      boolean succinctTargetNotFoundErrors();
 
       /**
        * Reports whether to record the set of Modules loaded by this package, which enables richer
@@ -818,8 +913,8 @@ public class Package {
       private DefaultPackageSettings() {}
 
       @Override
-      public boolean suggestNoSuchTargetCorrections() {
-        return true;
+      public boolean succinctTargetNotFoundErrors() {
+        return false;
       }
 
       @Override
@@ -837,7 +932,7 @@ public class Package {
     private final Package pkg;
 
     private final boolean noImplicitFileExport;
-    private final CallStack.Builder callStackBuilder = new CallStack.Builder();
+    private static final CallStack.Factory callStackFactory = new CallStack.Factory();
 
     // The map from each repository to that repository's remappings map.
     // This is only used in the //external package, it is an empty map for all other packages.
@@ -848,35 +943,60 @@ public class Package {
      * It contains an entry from "@<main workspace name>" to "@" for packages within the main
      * workspace.
      */
-    private final ImmutableMap<RepositoryName, RepositoryName> repositoryMapping;
+    private final RepositoryMapping repositoryMapping;
 
     private RootedPath filename = null;
     private Label buildFileLabel = null;
     private InputFile buildFile = null;
     // TreeMap so that the iteration order of variables is predictable. This is useful so that the
     // serialized representation is deterministic.
-    private TreeMap<String, String> makeEnv = new TreeMap<>();
+    private final TreeMap<String, String> makeEnv = new TreeMap<>();
     private RuleVisibility defaultVisibility = ConstantRuleVisibility.PRIVATE;
+    private ConfigSettingVisibilityPolicy configSettingVisibilityPolicy;
     private boolean defaultVisibilitySet;
     private List<String> defaultCopts = null;
-    private List<String> features = new ArrayList<>();
-    private List<Event> events = Lists.newArrayList();
-    private List<Postable> posts = Lists.newArrayList();
+    private final List<String> features = new ArrayList<>();
+    private final List<Event> events = Lists.newArrayList();
+    private final List<Postable> posts = Lists.newArrayList();
     @Nullable private String ioExceptionMessage = null;
     @Nullable private IOException ioException = null;
+    @Nullable private DetailedExitCode ioExceptionDetailedExitCode = null;
     private boolean containsErrors = false;
+    // A package's FailureDetail field derives from its Builder's events. During package
+    // deserialization, those events are unavailable, because those events aren't serialized [*].
+    // Its FailureDetail value is serialized, however. During deserialization, that value is
+    // assigned here, so that it can be assigned to the deserialized package.
+    //
+    // Likewise, during workspace part assembly, errors from parent parts should propagate to their
+    // children.
+    //
+    // [*] Not in the context of the package, anyway. Skyframe values containing a package may
+    // serialize events emitted during its construction/evaluation.
+    @Nullable private FailureDetail failureDetailOverride = null;
 
     private ImmutableList<Label> defaultApplicableLicenses = ImmutableList.of();
     private License defaultLicense = License.NO_LICENSE;
     private Set<License.DistributionType> defaultDistributionSet = License.DEFAULT_DISTRIB;
 
-    private BiMap<String, Target> targets = HashBiMap.create();
+    // All targets added to the package. We use SnapshottableBiMap to help track insertion order of
+    // Rule targets, for use by native.existing_rules().
+    private BiMap<String, Target> targets =
+        new SnapshottableBiMap<>(target -> target instanceof Rule);
     private final Map<Label, EnvironmentGroup> environmentGroups = new HashMap<>();
+
+    /**
+     * Stores labels for each rule so that we don't have to call the costly {@link Rule#getLabels}
+     * twice (once for {@link #checkForInputOutputConflicts} and once for {@link #beforeBuild}).
+     *
+     * <p>Remains {@code null} when rules are added via {@link #addRuleUnchecked}, which occurs with
+     * package deserialization. Set back to {@code null} after building.
+     */
+    @Nullable private Map<Rule, List<Label>> ruleLabels = null;
 
     private ImmutableList<Label> starlarkFileDependencies = ImmutableList.of();
 
-    private final List<String> registeredExecutionPlatforms = new ArrayList<>();
-    private final List<String> registeredToolchains = new ArrayList<>();
+    private final List<TargetPattern> registeredExecutionPlatforms = new ArrayList<>();
+    private final List<TargetPattern> registeredToolchains = new ArrayList<>();
 
     private ThirdPartyLicenseExistencePolicy thirdPartyLicenceExistencePolicy =
         ThirdPartyLicenseExistencePolicy.USER_CONTROLLABLE;
@@ -887,41 +1007,59 @@ public class Package {
     private boolean packageFunctionUsed;
 
     /**
-     * The collection of the prefixes of every output file. Maps every prefix
-     * to an output file whose prefix it is.
+     * The collection of the prefixes of every output file. Maps every prefix to an output file
+     * whose prefix it is.
      *
-     * <p>This is needed to make the output file prefix conflict check be
-     * reasonably fast. However, since it can potentially take a lot of memory and
-     * is useless after the package has been loaded, it isn't passed to the
-     * package itself.
+     * <p>This is needed to make the output file prefix conflict check be reasonably fast. However,
+     * since it can potentially take a lot of memory and is useless after the package has been
+     * loaded, it isn't passed to the package itself.
      */
-    private Map<String, OutputFile> outputFilePrefixes = new HashMap<>();
+    private final Map<String, OutputFile> outputFilePrefixes = new HashMap<>();
 
     private final Interner<ImmutableList<?>> listInterner = new ThreadCompatibleInterner<>();
 
-    private final Map<Location, String> generatorNameByLocation = new HashMap<>();
+    private final HashMap<String, Label> convertedLabelsInPackage = new HashMap<>();
 
-    Map<Location, String> getGeneratorNameByLocation() {
-      return generatorNameByLocation;
+    private ImmutableMap<Location, String> generatorMap = ImmutableMap.of();
+
+    private final TestSuiteImplicitTestsAccumulator testSuiteImplicitTestsAccumulator =
+        new TestSuiteImplicitTestsAccumulator();
+
+    /** Returns the "generator_name" to use for a given call site location in a BUILD file. */
+    @Nullable
+    public String getGeneratorNameByLocation(Location loc) {
+      return generatorMap.get(loc);
     }
 
-    // Value of '$implicit_tests' attribute shared by all test_suite rules in the
-    // package that don't specify an explicit 'tests' attribute value.
-    // It contains the label of each non-manual test in the package, in label order.
-    final List<Label> testSuiteImplicitTests = new ArrayList<>();
+    /** Sets the package's map of "generator_name" values keyed by the location of the call site. */
+    public Builder setGeneratorMap(ImmutableMap<Location, String> map) {
+      this.generatorMap = map;
+      return this;
+    }
+
+    /**
+     * Returns the value to use for {@code test_suite}s' {@code $implicit_tests} attribute, as-is,
+     * when the {@code test_suite} doesn't specify an explicit, non-empty {@code tests} value. The
+     * returned list is mutated by the package-building process - it may be observed to be empty or
+     * incomplete before package loading is complete. When package loading is complete it will
+     * contain the label of each non-manual test matching the provided tags in the package, in label
+     * order.
+     *
+     * <p>This method <b>MUST</b> be called before the package is built - otherwise the requested
+     * implicit tests won't be accumulated.
+     */
+    List<Label> getTestSuiteImplicitTestsRef(List<String> tags) {
+      return testSuiteImplicitTestsAccumulator.getTestSuiteImplicitTestsRefForTags(tags);
+    }
 
     @ThreadCompatible
-    private static class ThreadCompatibleInterner<T> implements Interner<T> {
+    private static final class ThreadCompatibleInterner<T> implements Interner<T> {
       private final Map<T, T> interns = new HashMap<>();
 
       @Override
       public T intern(T sample) {
-        T t = interns.get(sample);
-        if (t != null) {
-          return t;
-        }
-        interns.put(sample, sample);
-        return sample;
+        T existing = interns.putIfAbsent(sample, sample);
+        return firstNonNull(existing, sample);
       }
     }
 
@@ -930,10 +1068,10 @@ public class Package {
     Builder(
         PackageSettings packageSettings,
         PackageIdentifier id,
-        String runfilesPrefix,
+        String workspaceName,
         boolean noImplicitFileExport,
-        ImmutableMap<RepositoryName, RepositoryName> repositoryMapping) {
-      this.pkg = new Package(id, runfilesPrefix, packageSettings.suggestNoSuchTargetCorrections());
+        RepositoryMapping repositoryMapping) {
+      this.pkg = new Package(id, workspaceName, packageSettings.succinctTargetNotFoundErrors());
       this.noImplicitFileExport = noImplicitFileExport;
       this.repositoryMapping = repositoryMapping;
       if (pkg.getName().startsWith("javatests/")) {
@@ -990,7 +1128,7 @@ public class Package {
     }
 
     /** Get the repository mapping for this package */
-    ImmutableMap<RepositoryName, RepositoryName> getRepositoryMapping() {
+    RepositoryMapping getRepositoryMapping() {
       return this.repositoryMapping;
     }
 
@@ -998,8 +1136,12 @@ public class Package {
       return listInterner;
     }
 
+    HashMap<String, Label> getConvertedLabelsInPackage() {
+      return convertedLabelsInPackage;
+    }
+
     /** Sets the name of this package's BUILD file. */
-    Builder setFilename(RootedPath filename) {
+    public Builder setFilename(RootedPath filename) {
       this.filename = filename;
       try {
         buildFileLabel = createLabel(filename.getRootRelativePath().getBaseName());
@@ -1021,12 +1163,12 @@ public class Package {
      * are only discovered while constructing the external package (e.g., the mapping of the name of
      * the main workspace to the canonical main name '@').
      */
-    ImmutableMap<RepositoryName, RepositoryName> getRepositoryMappingFor(RepositoryName name) {
+    RepositoryMapping getRepositoryMappingFor(RepositoryName name) {
       Map<RepositoryName, RepositoryName> mapping = externalPackageRepositoryMappings.get(name);
       if (mapping == null) {
-        return ImmutableMap.of();
+        return RepositoryMapping.ALWAYS_FALLBACK;
       } else {
-        return ImmutableMap.copyOf(mapping);
+        return RepositoryMapping.createAllowingFallback(mapping);
       }
     }
 
@@ -1034,10 +1176,22 @@ public class Package {
       return filename;
     }
 
+    /**
+     * Returns {@link Postable}s accumulated while building the package.
+     *
+     * <p>Should retrieved and reported as close to after {@link #build()} or {@link #finishBuild()}
+     * as possible - any earlier and the data may be incomplete.
+     */
     public List<Postable> getPosts() {
       return posts;
     }
 
+    /**
+     * Returns {@link Event}s accumulated while building the package.
+     *
+     * <p>Should retrieved and reported as close to after {@link #build()} or {@link #finishBuild()}
+     * as possible - any earlier and the data may be incomplete.
+     */
     public List<Event> getEvents() {
       return events;
     }
@@ -1048,20 +1202,24 @@ public class Package {
     }
 
     /**
-     * Sets the default visibility for this package. Called at most once per
-     * package from PackageFactory.
+     * Sets the default visibility for this package. Called at most once per package from
+     * PackageFactory.
      */
-    Builder setDefaultVisibility(RuleVisibility visibility) {
+    public Builder setDefaultVisibility(RuleVisibility visibility) {
       this.defaultVisibility = visibility;
       this.defaultVisibilitySet = true;
       return this;
     }
 
-    /**
-     * Sets whether the default visibility is set in the BUILD file.
-     */
-    Builder setDefaultVisibilitySet(boolean defaultVisibilitySet) {
+    /** Sets whether the default visibility is set in the BUILD file. */
+    public Builder setDefaultVisibilitySet(boolean defaultVisibilitySet) {
       this.defaultVisibilitySet = defaultVisibilitySet;
+      return this;
+    }
+
+    /** Sets visibility enforcement policy for <code>config_setting</code>. */
+    public Builder setConfigSettingVisibilityPolicy(ConfigSettingVisibilityPolicy policy) {
+      this.configSettingVisibilityPolicy = policy;
       return this;
     }
 
@@ -1140,9 +1298,10 @@ public class Package {
       return this;
     }
 
-    Builder setIOExceptionAndMessage(IOException e, String message) {
+    Builder setIOException(IOException e, String message, DetailedExitCode detailedExitCode) {
       this.ioException = e;
       this.ioExceptionMessage = message;
+      this.ioExceptionDetailedExitCode = detailedExitCode;
       return setContainsErrors();
     }
 
@@ -1177,6 +1336,28 @@ public class Package {
       return this;
     }
 
+    public void setFailureDetailOverride(FailureDetail failureDetail) {
+      failureDetailOverride = failureDetail;
+    }
+
+    @Nullable
+    FailureDetail getFailureDetail() {
+      if (failureDetailOverride != null) {
+        return failureDetailOverride;
+      }
+
+      for (Event event : this.events) {
+        if (event.getKind() != EventKind.ERROR) {
+          continue;
+        }
+        DetailedExitCode detailedExitCode = event.getProperty(DetailedExitCode.class);
+        if (detailedExitCode != null && detailedExitCode.getFailureDetail() != null) {
+          return detailedExitCode.getFailureDetail();
+        }
+      }
+      return null;
+    }
+
     Builder setStarlarkFileDependencies(ImmutableList<Label> starlarkFileDependencies) {
       this.starlarkFileDependencies = starlarkFileDependencies;
       return this;
@@ -1192,7 +1373,7 @@ public class Package {
           licenses, "package " + pkg.getName(), attrName, location, this::addEvent)) {
         setContainsErrors();
       }
-      pkg.setDefaultApplicableLicenses(ImmutableSet.copyOf(licenses));
+      this.defaultApplicableLicenses = ImmutableList.copyOf(licenses);
     }
 
     ImmutableList<Label> getDefaultApplicableLicenses() {
@@ -1226,8 +1407,8 @@ public class Package {
 
     /**
      * Sets the default value to use for a rule's {@link RuleClass#COMPATIBLE_ENVIRONMENT_ATTR}
-     * attribute when not explicitly specified by the rule. Records a package error if
-     * any labels are duplicated.
+     * attribute when not explicitly specified by the rule. Records a package error if any labels
+     * are duplicated.
      */
     void setDefaultCompatibleWith(List<Label> environments, String attrName, Location location) {
       if (hasDuplicateLabels(
@@ -1265,7 +1446,12 @@ public class Package {
         List<StarlarkThread.CallStackEntry> callstack,
         AttributeContainer attributeContainer) { // required by WorkspaceFactory.setParent hack
       return new Rule(
-          pkg, label, ruleClass, location, callStackBuilder.of(callstack), attributeContainer);
+          pkg,
+          label,
+          ruleClass,
+          location,
+          callStackFactory.createFrom(callstack),
+          attributeContainer);
     }
 
     /**
@@ -1285,8 +1471,8 @@ public class Package {
           label,
           ruleClass,
           location,
-          callStackBuilder.of(callstack),
-          new AttributeContainer(ruleClass),
+          callStackFactory.createFrom(callstack),
+          AttributeContainer.newMutableInstance(ruleClass),
           implicitOutputsFunction);
     }
 
@@ -1296,14 +1482,22 @@ public class Package {
     }
 
     /**
-     * Removes a target from the {@link Package} under construction. Intended to be used only by
-     * {@link com.google.devtools.build.lib.skyframe.PackageFunction} to remove targets whose labels
-     * cross subpackage boundaries.
+     * Replaces a target in the {@link Package} under construction with a new target with the same
+     * name and belonging to the same package.
+     *
+     * <p>A hack needed for {@link WorkspaceFactoryHelper}.
      */
-    void removeTarget(Target target) {
-      if (target.getPackage() == pkg) {
-        this.targets.remove(target.getName());
-      }
+    void replaceTarget(Target newTarget) {
+      Preconditions.checkArgument(
+          targets.containsKey(newTarget.getName()),
+          "No existing target with name '%s' in the targets map",
+          newTarget.getName());
+      Preconditions.checkArgument(
+          newTarget.getPackage() == pkg, // pointer comparison since we're constructing `pkg`
+          "Replacement target belongs to package '%s', expected '%s'",
+          newTarget.getPackage(),
+          pkg);
+      targets.put(newTarget.getName(), newTarget);
     }
 
     public Set<Target> getTargets() {
@@ -1311,11 +1505,29 @@ public class Package {
     }
 
     /**
+     * Returns a lightweight snapshot view of the names of all rule targets belonging to this
+     * package at the time of this call.
+     *
+     * @throws IllegalStateException if this method is called after {@link beforeBuild} has been
+     *     called.
+     */
+    Map<String, Rule> getRulesSnapshotView() {
+      if (targets instanceof SnapshottableBiMap<?, ?>) {
+        return Maps.transformValues(
+            ((SnapshottableBiMap<String, Target>) targets).getTrackedSnapshot(),
+            target -> (Rule) target);
+      } else {
+        throw new IllegalStateException(
+            "getRulesSnapshotView() cannot be used after beforeBuild() has been called");
+      }
+    }
+
+    /**
      * Returns an (immutable, unordered) view of all the targets belonging to this package which are
      * instances of the specified class.
      */
     private Iterable<Rule> getRules() {
-      return Package.getTargets(targets, Rule.class);
+      return ruleLabels != null ? ruleLabels.keySet() : Package.getTargets(targets, Rule.class);
     }
 
     /**
@@ -1373,8 +1585,10 @@ public class Package {
       if (!((InputFile) cacheInstance).isVisibilitySpecified()
           || cacheInstance.getVisibility() != visibility
           || !Objects.equals(cacheInstance.getLicense(), license)) {
-        targets.put(filename, new InputFile(
-            pkg, cacheInstance.getLabel(), cacheInstance.getLocation(), visibility, license));
+        targets.put(
+            filename,
+            new InputFile(
+                pkg, cacheInstance.getLabel(), cacheInstance.getLocation(), visibility, license));
       }
     }
 
@@ -1415,15 +1629,19 @@ public class Package {
      * integrate with RuleClass.checkForDuplicateLabels.
      */
     private static boolean hasDuplicateLabels(
-        Collection<Label> labels,
+        List<Label> labels,
         String owner,
         String attrName,
         Location location,
         EventHandler eventHandler) {
       Set<Label> dupes = CollectionUtils.duplicatedElementsOf(labels);
       for (Label dupe : dupes) {
-        eventHandler.handle(Event.error(location, String.format(
-            "label '%s' is duplicated in the '%s' list of '%s'", dupe, attrName, owner)));
+        eventHandler.handle(
+            error(
+                location,
+                String.format(
+                    "label '%s' is duplicated in the '%s' list of '%s'", dupe, attrName, owner),
+                Code.DUPLICATE_LABEL));
       }
       return !dupes.isEmpty();
     }
@@ -1449,22 +1667,31 @@ public class Package {
       }
 
       targets.put(group.getName(), group);
-      Collection<Event> membershipErrors = group.validateMembership();
-      if (!membershipErrors.isEmpty()) {
-        for (Event error : membershipErrors) {
-          eventHandler.handle(error);
-        }
+      // Invariant: once group is inserted into targets, it must also:
+      // (a) be inserted into environmentGroups, or
+      // (b) have its group.processMemberEnvironments called.
+      // Otherwise it will remain uninitialized,
+      // causing crashes when it is later toString-ed.
+
+      for (Event error : group.validateMembership()) {
+        eventHandler.handle(error);
         setContainsErrors();
-        return;
       }
 
       // For each declared environment, make sure it doesn't also belong to some other group.
       for (Label environment : group.getEnvironments()) {
         EnvironmentGroup otherGroup = environmentGroups.get(environment);
         if (otherGroup != null) {
-          eventHandler.handle(Event.error(location, "environment " + environment + " belongs to"
-              + " both " + group.getLabel() + " and " + otherGroup.getLabel()));
+          eventHandler.handle(
+              error(
+                  location,
+                  String.format(
+                      "environment %s belongs to both %s and %s",
+                      environment, group.getLabel(), otherGroup.getLabel()),
+                  Code.ENVIRONMENT_IN_MULTIPLE_GROUPS));
           setContainsErrors();
+          // Ensure the orphan gets (trivially) initialized.
+          group.processMemberEnvironments(ImmutableMap.of());
         } else {
           environmentGroups.put(environment, group);
         }
@@ -1495,15 +1722,20 @@ public class Package {
     }
 
     void addRule(Rule rule) throws NameConflictException {
-      checkForConflicts(rule);
+      List<Label> labels = rule.getLabels();
+      checkForConflicts(rule, labels);
       addRuleUnchecked(rule);
+      if (ruleLabels == null) {
+        ruleLabels = new HashMap<>();
+      }
+      ruleLabels.put(rule, labels);
     }
 
-    void addRegisteredExecutionPlatforms(List<String> platforms) {
+    void addRegisteredExecutionPlatforms(List<TargetPattern> platforms) {
       this.registeredExecutionPlatforms.addAll(platforms);
     }
 
-    void addRegisteredToolchains(List<String> toolchains) {
+    void addRegisteredToolchains(List<TargetPattern> toolchains) {
       this.registeredToolchains.addAll(toolchains);
     }
 
@@ -1513,7 +1745,19 @@ public class Package {
       Preconditions.checkNotNull(buildFileLabel);
       Preconditions.checkNotNull(makeEnv);
       if (ioException != null) {
-        throw new NoSuchPackageException(getPackageIdentifier(), ioExceptionMessage, ioException);
+        throw new NoSuchPackageException(
+            getPackageIdentifier(), ioExceptionMessage, ioException, ioExceptionDetailedExitCode);
+      }
+
+      // SnapshottableBiMap does not allow removing targets (in order to efficiently track rule
+      // insertion order). However, we *do* need to support removal of targets in
+      // PackageFunction.handleLabelsCrossingSubpackagesAndPropagateInconsistentFilesystemExceptions
+      // which is called *between* calls to beforeBuild and finishBuild. We thus repoint the targets
+      // map to the SnapshottableBiMap's underlying bimap and thus stop tracking insertion order.
+      // After this point, snapshots of targets should no longer be used, and any further
+      // getRulesSnapshotView calls will throw.
+      if (targets instanceof SnapshottableBiMap<?, ?>) {
+        targets = ((SnapshottableBiMap<String, Target>) targets).getUnderlyingBiMap();
       }
 
       // We create the original BUILD InputFile when the package filename is set; however, the
@@ -1521,15 +1765,18 @@ public class Package {
       // current instance here.
       buildFile = (InputFile) Preconditions.checkNotNull(targets.get(buildFileLabel.getName()));
 
-      List<Label> tests = new ArrayList<>();
+      // Clear tests before discovering them again in order to keep this method idempotent -
+      // otherwise we may double-count tests if we're called twice due to a skyframe restart, etc.
+      testSuiteImplicitTestsAccumulator.clearAccumulatedTests();
+
       Map<String, InputFile> newInputFiles = new HashMap<>();
-      for (final Rule rule : getRules()) {
+      for (Rule rule : getRules()) {
         if (discoverAssumedInputFiles) {
-          // All labels mentioned by a rule that refer to an unknown target in the
-          // current package are assumed to be InputFiles, so let's create them.
-          // (We add them to a temporary map while we are iterating over this.targets.)
-          for (AttributeMap.DepEdge edge : AggregatingAttributeMapper.of(rule).visitLabels()) {
-            Label label = edge.getLabel();
+          // All labels mentioned by a rule that refer to an unknown target in the current package
+          // are assumed to be InputFiles, so let's create them. We add them to a temporary map
+          // to avoid concurrent modification to this.targets while iterating (via getRules()).
+          List<Label> labels = ruleLabels != null ? ruleLabels.get(rule) : rule.getLabels();
+          for (Label label : labels) {
             if (label.getPackageIdentifier().equals(pkg.getPackageIdentifier())
                 && !targets.containsKey(label.getName())
                 && !newInputFiles.containsKey(label.getName())) {
@@ -1544,21 +1791,11 @@ public class Package {
           }
         }
 
-        // "test_suite" rules have the idiosyncratic semantics of implicitly
-        // depending on all tests in the package, iff tests=[] and suites=[],
-        // which is about 20% of >1M test_suite instances in Google's corpus.
-        // Note, we implement this here when the Package is fully constructed,
-        // since clearly this information isn't available at Rule construction
-        // time, as forward references are permitted.
-        if (TargetUtils.isTestRule(rule) && !TargetUtils.hasManualTag(rule)) {
-          // Update the testSuiteImplicitTests list shared
-          // by all test_suite.$implicit_test attributes.
-          tests.add(rule.getLabel());
-        }
+        testSuiteImplicitTestsAccumulator.processRule(rule);
       }
 
-      Collections.sort(tests); // (for determinism)
-      this.testSuiteImplicitTests.addAll(tests);
+      // Make sure all accumulated values are sorted for determinism.
+      testSuiteImplicitTestsAccumulator.sortTests();
 
       for (InputFile file : newInputFiles.values()) {
         addInputFile(file);
@@ -1582,6 +1819,10 @@ public class Package {
       }
 
       // Freeze targets and distributions.
+      for (Rule rule : getRules()) {
+        rule.freeze();
+      }
+      ruleLabels = null;
       targets = Maps.unmodifiableBiMap(targets);
       defaultDistributionSet =
           Collections.unmodifiableSet(defaultDistributionSet);
@@ -1631,44 +1872,46 @@ public class Package {
      * Precondition check for addRule. We must maintain these invariants of the package:
      *
      * <ul>
-     * <li>Each name refers to at most one target.
-     * <li>No rule with errors is inserted into the package.
-     * <li>The generating rule of every output file in the package must itself be in the package.
+     *   <li>Each name refers to at most one target.
+     *   <li>No rule with errors is inserted into the package.
+     *   <li>The generating rule of every output file in the package must itself be in the package.
      * </ul>
      */
-    private void checkForConflicts(Rule rule) throws NameConflictException {
+    private void checkForConflicts(Rule rule, List<Label> labels) throws NameConflictException {
       String name = rule.getName();
       Target existing = targets.get(name);
       if (existing != null) {
         throw nameConflict(rule, existing);
       }
-      Map<String, OutputFile> outputFiles = new HashMap<>();
 
-      for (OutputFile outputFile : rule.getOutputFiles()) {
+      List<OutputFile> outputFiles = rule.getOutputFiles();
+      Map<String, OutputFile> outputFilesByName =
+          Maps.newHashMapWithExpectedSize(outputFiles.size());
+
+      for (OutputFile outputFile : outputFiles) {
         String outputFileName = outputFile.getName();
-        if (outputFiles.put(outputFileName, outputFile) != null) { // dups within a single rule:
-          throw duplicateOutputFile(outputFile, outputFile);
+        if (outputFilesByName.put(outputFileName, outputFile) != null) {
+          throw duplicateOutputFile(outputFile, outputFile); // Duplicate within a single rule.
         }
         existing = targets.get(outputFileName);
         if (existing != null) {
           throw duplicateOutputFile(outputFile, existing);
         }
 
-        // Check if this output file is the prefix of an already existing one
+        // Check if this output file is the prefix of an already existing one.
         if (outputFilePrefixes.containsKey(outputFileName)) {
           throw conflictingOutputFile(outputFile, outputFilePrefixes.get(outputFileName));
         }
 
-        // Check if a prefix of this output file matches an already existing one
+        // Check if a prefix of this output file matches an already existing one.
         PathFragment outputFileFragment = PathFragment.create(outputFileName);
         int segmentCount = outputFileFragment.segmentCount();
         for (int i = 1; i < segmentCount; i++) {
           String prefix = outputFileFragment.subFragment(0, i).toString();
-          if (outputFiles.containsKey(prefix)) {
-            throw conflictingOutputFile(outputFile, outputFiles.get(prefix));
+          if (outputFilesByName.containsKey(prefix)) {
+            throw conflictingOutputFile(outputFile, outputFilesByName.get(prefix));
           }
-          if (targets.containsKey(prefix)
-              && targets.get(prefix) instanceof OutputFile) {
+          if (targets.get(prefix) instanceof OutputFile) {
             throw conflictingOutputFile(outputFile, (OutputFile) targets.get(prefix));
           }
 
@@ -1676,7 +1919,7 @@ public class Package {
         }
       }
 
-      checkForInputOutputConflicts(rule, outputFiles.keySet());
+      checkForInputOutputConflicts(rule, labels, outputFilesByName.keySet());
     }
 
     /**
@@ -1684,13 +1927,14 @@ public class Package {
      * a rule from a build file.
      *
      * @param rule the rule whose inputs and outputs are to be checked for conflicts.
+     * @param labels the rules {@linkplain Rule#getLabels labels}.
      * @param outputFiles a set containing the names of output files to be generated by the rule.
      * @throws NameConflictException if a conflict is found.
      */
-    private void checkForInputOutputConflicts(Rule rule, Set<String> outputFiles)
-        throws NameConflictException {
+    private static void checkForInputOutputConflicts(
+        Rule rule, List<Label> labels, Set<String> outputFiles) throws NameConflictException {
       PackageIdentifier packageIdentifier = rule.getLabel().getPackageIdentifier();
-      for (Label inputLabel : rule.getLabels()) {
+      for (Label inputLabel : labels) {
         if (packageIdentifier.equals(inputLabel.getPackageIdentifier())
             && outputFiles.contains(inputLabel.getName())) {
           throw inputOutputNameConflict(rule, inputLabel.getName());
@@ -1699,21 +1943,23 @@ public class Package {
     }
 
     /** An output file conflicts with another output file or the BUILD file. */
-    private NameConflictException duplicateOutputFile(OutputFile duplicate, Target existing) {
+    private static NameConflictException duplicateOutputFile(
+        OutputFile duplicate, Target existing) {
       return new NameConflictException(duplicate.getTargetKind() + " '" + duplicate.getName()
           + "' in rule '" + duplicate.getGeneratingRule().getName() + "' "
           + conflictsWith(existing));
     }
 
     /** The package contains two targets with the same name. */
-    private NameConflictException nameConflict(Target duplicate, Target existing) {
+    private static NameConflictException nameConflict(Target duplicate, Target existing) {
       return new NameConflictException(duplicate.getTargetKind() + " '" + duplicate.getName()
           + "' in package '" + duplicate.getLabel().getPackageName() + "' "
           + conflictsWith(existing));
     }
 
     /** A a rule has a input/output name conflict. */
-    private NameConflictException inputOutputNameConflict(Rule rule, String conflictingName) {
+    private static NameConflictException inputOutputNameConflict(
+        Rule rule, String conflictingName) {
       return new NameConflictException("rule '" + rule.getName() + "' has file '"
           + conflictingName + "' as both an input and an output");
     }

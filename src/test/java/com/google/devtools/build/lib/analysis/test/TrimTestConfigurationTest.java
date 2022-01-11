@@ -20,9 +20,12 @@ import static com.google.devtools.build.lib.packages.Attribute.attr;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
 import static org.junit.Assert.assertThrows;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultiset;
+import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.ArtifactOwner;
 import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.BaseRuleClasses;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
@@ -39,14 +42,18 @@ import com.google.devtools.build.lib.analysis.config.HostTransition;
 import com.google.devtools.build.lib.analysis.util.AnalysisTestCase;
 import com.google.devtools.build.lib.analysis.util.MockRule;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.collect.nestedset.Depset;
+import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
 import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
-import com.google.devtools.build.skyframe.SkyKey;
 import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
+import net.starlark.java.eval.Starlark;
+import net.starlark.java.eval.StarlarkSemantics;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -59,14 +66,15 @@ public final class TrimTestConfigurationTest extends AnalysisTestCase {
   /** Simple native test rule. */
   public static final class NativeTest implements RuleConfiguredTargetFactory {
     @Override
-    public ConfiguredTarget create(RuleContext context) throws ActionConflictException {
+    public ConfiguredTarget create(RuleContext context)
+        throws ActionConflictException, InterruptedException {
       Artifact executable = context.getBinArtifact(context.getLabel().getName());
       context.registerAction(FileWriteAction.create(context, executable, "#!/bin/true", true));
       Runfiles runfiles =
           new Runfiles.Builder(context.getWorkspaceName()).addArtifact(executable).build();
       return new RuleConfiguredTargetBuilder(context)
           .setFilesToBuild(NestedSetBuilder.create(Order.STABLE_ORDER, executable))
-          .add(RunfilesProvider.class, RunfilesProvider.simple(runfiles))
+          .addProvider(RunfilesProvider.class, RunfilesProvider.simple(runfiles))
           .setRunfilesSupport(
               RunfilesSupport.withExecutable(context, runfiles, executable), executable)
           .build();
@@ -76,7 +84,8 @@ public final class TrimTestConfigurationTest extends AnalysisTestCase {
   private static final RuleDefinition NATIVE_TEST_RULE =
       (MockRule)
           () ->
-              MockRule.ancestor(BaseRuleClasses.TestBaseRule.class, BaseRuleClasses.BaseRule.class)
+              MockRule.ancestor(
+                      BaseRuleClasses.TestBaseRule.class, BaseRuleClasses.NativeBuildRule.class)
                   .factory(NativeTest.class)
                   .type(RuleClassType.TEST)
                   .define(
@@ -89,7 +98,7 @@ public final class TrimTestConfigurationTest extends AnalysisTestCase {
   private static final RuleDefinition NATIVE_LIB_RULE =
       (MockRule)
           () ->
-              MockRule.ancestor(BaseRuleClasses.BaseRule.class)
+              MockRule.ancestor(BaseRuleClasses.NativeBuildRule.class)
                   .define(
                       "native_lib",
                       attr("deps", LABEL_LIST).allowedFileTypes(),
@@ -130,26 +139,20 @@ public final class TrimTestConfigurationTest extends AnalysisTestCase {
         ")");
   }
 
-  private void assertNumberOfConfigurationsOfTargets(
-      Set<SkyKey> keys, Map<String, Integer> targetsWithCounts) {
+  private static void assertNumberOfConfigurationsOfTargets(
+      Set<ActionLookupKey> keys, Map<String, Integer> targetsWithCounts) {
     ImmutableMultiset<Label> actualSet =
         keys.stream()
             .filter(key -> key instanceof ConfiguredTargetKey)
-            .map(key -> ((ConfiguredTargetKey) key).getLabel())
+            .map(ArtifactOwner::getLabel)
             .collect(toImmutableMultiset());
     ImmutableMap<Label, Integer> expected =
-        targetsWithCounts
-            .entrySet()
-            .stream()
+        targetsWithCounts.entrySet().stream()
             .collect(
                 toImmutableMap(
-                    entry -> Label.parseAbsoluteUnchecked(entry.getKey()),
-                    entry -> entry.getValue()));
+                    entry -> Label.parseAbsoluteUnchecked(entry.getKey()), Entry::getValue));
     ImmutableMap<Label, Integer> actual =
-        expected
-            .keySet()
-            .stream()
-            .collect(toImmutableMap(label -> label, label -> actualSet.count(label)));
+        expected.keySet().stream().collect(toImmutableMap(label -> label, actualSet::count));
     assertThat(actual).containsExactlyEntriesIn(expected);
   }
 
@@ -194,7 +197,8 @@ public final class TrimTestConfigurationTest extends AnalysisTestCase {
         "//test:starlark_dep",
         "//test:native_shared_dep",
         "//test:starlark_shared_dep");
-    LinkedHashSet<SkyKey> visitedTargets = new LinkedHashSet<>(getSkyframeEvaluatedTargetKeys());
+    LinkedHashSet<ActionLookupKey> visitedTargets =
+        new LinkedHashSet<>(getSkyframeEvaluatedTargetKeys());
     // asserting that the top-level targets are the same as the ones in the diamond starting at
     // //test:suite
     assertNumberOfConfigurationsOfTargets(
@@ -328,7 +332,8 @@ public final class TrimTestConfigurationTest extends AnalysisTestCase {
         "//test:starlark_dep",
         "//test:native_shared_dep",
         "//test:starlark_shared_dep");
-    LinkedHashSet<SkyKey> visitedTargets = new LinkedHashSet<>(getSkyframeEvaluatedTargetKeys());
+    LinkedHashSet<ActionLookupKey> visitedTargets =
+        new LinkedHashSet<>(getSkyframeEvaluatedTargetKeys());
     // asserting that the top-level targets are the same as the ones in the diamond starting at
     // //test:suite
     assertNumberOfConfigurationsOfTargets(
@@ -623,7 +628,7 @@ public final class TrimTestConfigurationTest extends AnalysisTestCase {
         "starlark_lib(",
         "    name = 'starlark_shared_dep',",
         ")");
-    useConfiguration("--trim_test_configuration", "--experimental_dynamic_configs=notrim");
+    useConfiguration("--trim_test_configuration");
     update(
         "//test:native_outer_test",
         "//test:starlark_outer_test",
@@ -633,7 +638,8 @@ public final class TrimTestConfigurationTest extends AnalysisTestCase {
         "//test:starlark_dep",
         "//test:native_shared_dep",
         "//test:starlark_shared_dep");
-    LinkedHashSet<SkyKey> visitedTargets = new LinkedHashSet<>(getSkyframeEvaluatedTargetKeys());
+    LinkedHashSet<ActionLookupKey> visitedTargets =
+        new LinkedHashSet<>(getSkyframeEvaluatedTargetKeys());
     assertNumberOfConfigurationsOfTargets(
         visitedTargets,
         new ImmutableMap.Builder<String, Integer>()
@@ -726,7 +732,7 @@ public final class TrimTestConfigurationTest extends AnalysisTestCase {
   }
 
   @Test
-  public void flagOnNonTestTargetWithTestDependencies_FailsAnalysis() throws Exception {
+  public void flagOnNonTestTargetWithTestDependencies_IsPermitted() throws Exception {
     reporter.removeHandler(failFastHandler);
     scratch.file(
         "test/BUILD",
@@ -741,10 +747,53 @@ public final class TrimTestConfigurationTest extends AnalysisTestCase {
         "    name = 'starlark_test',",
         ")");
     useConfiguration("--trim_test_configuration", "--noexpand_test_suites", "--test_arg=TypeA");
-    assertThrows(ViewCreationFailedException.class, () -> update("//test:starlark_dep"));
-    assertContainsEvent(
-        "all rules of type starlark_test require the presence of all of "
-            + "[TestConfiguration], but these were all disabled");
+    update("//test:starlark_dep");
+    assertThat(getAnalysisResult().getTargetsToBuild()).isNotEmpty();
+  }
+
+  @Test
+  public void flagOnNonTestTargetWithTestSuiteDependencies_IsPermitted() throws Exception {
+    // reporter.removeHandler(failFastHandler);
+    scratch.file(
+        "test/BUILD",
+        "load(':test.bzl', 'starlark_test')",
+        "load(':lib.bzl', 'starlark_lib')",
+        "starlark_lib(",
+        "    name = 'starlark_dep',",
+        "    deps = [':a_test_suite'],",
+        "    testonly = 1,",
+        ")",
+        "starlark_test(",
+        "    name = 'starlark_test',",
+        ")",
+        "test_suite(",
+        "    name = 'a_test_suite',",
+        "    tests = [':starlark_test'],",
+        ")");
+    useConfiguration("--trim_test_configuration", "--noexpand_test_suites", "--test_arg=TypeA");
+    update("//test:starlark_dep");
+    assertThat(getAnalysisResult().getTargetsToBuild()).isNotEmpty();
+  }
+
+  @Test
+  public void flagOnNonTestTargetWithJavaTestDependencies_IsPermitted() throws Exception {
+    // reporter.removeHandler(failFastHandler);
+    scratch.file(
+        "test/BUILD",
+        "load(':lib.bzl', 'starlark_lib')",
+        "starlark_lib(",
+        "    name = 'starlark_dep',",
+        "    deps = [':JavaTest'],",
+        "    testonly = 1,",
+        ")",
+        "java_test(",
+        "    name = 'JavaTest',",
+        "    srcs = ['JavaTest.java'],",
+        "    test_class = 'test.JavaTest',",
+        ")");
+    useConfiguration("--trim_test_configuration", "--noexpand_test_suites", "--test_arg=TypeA");
+    update("//test:starlark_dep");
+    assertThat(getAnalysisResult().getTargetsToBuild()).isNotEmpty();
   }
 
   @Test
@@ -773,5 +822,67 @@ public final class TrimTestConfigurationTest extends AnalysisTestCase {
     useConfiguration("--trim_test_configuration", "--noexpand_test_suites", "--test_arg=TypeA");
     update("//test:suite", "//test:suite_2");
     assertThat(getAnalysisResult().getTargetsToBuild()).hasSize(2);
+  }
+
+  @Test
+  public void flagOnNonTestTargetWithTestDependencies_isTrimmed() throws Exception {
+    scratch.file(
+        "test/BUILD",
+        "load(':test.bzl', 'starlark_test')",
+        "load(':lib.bzl', 'starlark_lib')",
+        "starlark_lib(",
+        "    name = 'starlark_dep',",
+        "    deps = [':starlark_test'],",
+        "    testonly = 1,",
+        ")",
+        "starlark_test(",
+        "    name = 'starlark_test',",
+        ")");
+    useConfiguration(
+        "--trim_test_configuration", "--noexperimental_retain_test_configuration_across_testonly");
+    update("//test:starlark_dep");
+    ConfiguredTarget top = getConfiguredTarget("//test:starlark_dep");
+    assertThat(getConfiguration(top).hasFragment(TestConfiguration.class)).isFalse();
+  }
+
+  @Test
+  public void flagOnNonTestTargetWithTestDependencies_isNotTrimmedWithExperimentalFlag()
+      throws Exception {
+    scratch.file(
+        "test/BUILD",
+        "load(':test.bzl', 'starlark_test')",
+        "load(':lib.bzl', 'starlark_lib')",
+        "starlark_lib(",
+        "    name = 'starlark_dep',",
+        "    deps = [':starlark_test'],",
+        "    testonly = 1,",
+        ")",
+        "starlark_test(",
+        "    name = 'starlark_test',",
+        ")");
+    useConfiguration(
+        "--trim_test_configuration", "--experimental_retain_test_configuration_across_testonly");
+    update("//test:starlark_dep");
+    ConfiguredTarget top = getConfiguredTarget("//test:starlark_dep");
+    assertThat(getConfiguration(top).hasFragment(TestConfiguration.class)).isTrue();
+  }
+
+  // Test Starlark API of AnalysisFailure{,Info}.
+  @Test
+  public void testAnalysisFailureInfo() throws Exception {
+    Label label = Label.create("test", "test");
+    AnalysisFailure failure = new AnalysisFailure(label, "ErrorMessage");
+    assertThat(getattr(failure, "label")).isSameInstanceAs(label);
+    assertThat(getattr(failure, "message")).isEqualTo("ErrorMessage");
+
+    AnalysisFailureInfo info = AnalysisFailureInfo.forAnalysisFailures(ImmutableList.of(failure));
+    // info.causes.to_list()[0] == failure
+    NestedSet<AnalysisFailure> causes =
+        Depset.cast(getattr(info, "causes"), AnalysisFailure.class, "causes");
+    assertThat(causes.toList().get(0)).isSameInstanceAs(failure);
+  }
+
+  private static Object getattr(Object x, String name) throws Exception {
+    return Starlark.getattr(/*mu=*/ null, StarlarkSemantics.DEFAULT, x, name, null);
   }
 }

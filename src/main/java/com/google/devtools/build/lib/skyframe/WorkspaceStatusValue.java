@@ -13,12 +13,15 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
+import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.Actions;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.BasicActionLookupValue;
 import com.google.devtools.build.lib.analysis.WorkspaceStatusAction;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
 import com.google.devtools.build.skyframe.SkyFunctionName;
+import javax.annotation.Nullable;
 
 /**
  * Value that stores the workspace status artifacts and their generating action. There should be
@@ -31,7 +34,7 @@ public class WorkspaceStatusValue extends BasicActionLookupValue {
   private final Artifact volatileArtifact;
 
   // There should only ever be one BuildInfo value in the graph.
-  @AutoCodec public static final BuildInfoKey BUILD_INFO_KEY = new BuildInfoKey();
+  @SerializationConstant public static final BuildInfoKey BUILD_INFO_KEY = new BuildInfoKey();
 
   WorkspaceStatusValue(
       Artifact stableArtifact,
@@ -51,12 +54,24 @@ public class WorkspaceStatusValue extends BasicActionLookupValue {
   }
 
   /** {@link com.google.devtools.build.skyframe.SkyKey} for {@link WorkspaceStatusValue}. */
-  public static class BuildInfoKey extends ActionLookupKey {
+  public static final class BuildInfoKey implements ActionLookupKey {
     private BuildInfoKey() {}
 
     @Override
     public SkyFunctionName functionName() {
       return SkyFunctions.BUILD_INFO;
+    }
+
+    @Nullable
+    @Override
+    public Label getLabel() {
+      return null;
+    }
+
+    @Nullable
+    @Override
+    public BuildConfigurationKey getConfigurationKey() {
+      return null;
     }
   }
 }

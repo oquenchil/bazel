@@ -25,6 +25,7 @@ import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.LinkedListMultimap;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Lists;
+import com.google.common.flogger.GoogleLogger;
 import com.google.devtools.build.lib.actions.ActionContext;
 import com.google.devtools.build.lib.actions.DynamicStrategyRegistry;
 import com.google.devtools.build.lib.actions.SandboxedSpawnStrategy;
@@ -55,6 +56,7 @@ import javax.annotation.Nullable;
  */
 public final class SpawnStrategyRegistry
     implements DynamicStrategyRegistry, ActionContext, RemoteLocalFallbackRegistry {
+  private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
 
   private final ImmutableListMultimap<String, SpawnStrategy> mnemonicToStrategies;
   private final ImmutableListMultimap<RegexFilter, SpawnStrategy> filterToStrategies;
@@ -76,6 +78,12 @@ public final class SpawnStrategyRegistry
     this.mnemonicToRemoteDynamicStrategies = mnemonicToRemoteDynamicStrategies;
     this.mnemonicToLocalDynamicStrategies = mnemonicToLocalDynamicStrategies;
     this.remoteLocalFallbackStrategy = remoteLocalFallbackStrategy;
+    logger.atInfo().log("Default strategies: %s", defaultStrategies);
+    logger.atInfo().log("Filter strategies: %s", filterToStrategies);
+    logger.atInfo().log("Mnemonic strategies: %s", mnemonicToStrategies);
+    logger.atInfo().log("Remote strategies: %s", mnemonicToRemoteDynamicStrategies);
+    logger.atInfo().log("Local strategies: %s", mnemonicToLocalDynamicStrategies);
+    logger.atInfo().log("Fallback strategies: %s", remoteLocalFallbackStrategy);
   }
 
   /**
@@ -253,7 +261,6 @@ public final class SpawnStrategyRegistry
     private final HashMap<String, List<String>> mnemonicToIdentifiers = new HashMap<>();
     private final HashMap<String, List<String>> mnemonicToRemoteIdentifiers = new HashMap<>();
     private final HashMap<String, List<String>> mnemonicToLocalIdentifiers = new HashMap<>();
-    private boolean legacyFilterIterationOrder = false;
     @Nullable private String remoteLocalFallbackStrategyIdentifier;
 
     /**
@@ -262,9 +269,8 @@ public final class SpawnStrategyRegistry
      * progress message} matches the regular expression to only use strategies with the given
      * command-line identifiers, in order.
      *
-     * <p>If multiple filters match the same spawn (including an identical filter) the order of
-     * precedence of calls to this method is determined by {@link
-     * #useLegacyDescriptionFilterPrecedence()}.
+     * <p>If multiple filters match the same spawn (including an identical filter) the order of last
+     * applicable filter registered by this method will be used.
      */
     public Builder addDescriptionFilter(RegexFilter filter, List<String> identifiers) {
       filterAndIdentifiers.add(
@@ -311,18 +317,6 @@ public final class SpawnStrategyRegistry
     }
 
     /**
-     * Instructs this collector to use the legacy description filter precedence, i.e. to prefer the
-     * first regular expression filter that matches a spawn over any later registered filters.
-     *
-     * <p>The default behavior of this collector is to prefer the last registered description filter
-     * over any previously registered matching filters.
-     */
-    public Builder useLegacyDescriptionFilterPrecedence() {
-      legacyFilterIterationOrder = true;
-      return this;
-    }
-
-    /**
      * Explicitly sets the identifiers of default strategies to use if a spawn matches no filters.
      *
      * <p>Note that if this method is not called on the builder, all registered strategies are
@@ -348,28 +342,28 @@ public final class SpawnStrategyRegistry
     }
 
     /**
-     * Sets the strategy names to use in the remote branch of dynamic execution for a given action
-     * mnemonic.
+     * Sets the strategy names to use in the remote branch of dynamic execution for a set of action
+     * mnemonics.
      *
      * <p>During execution, each strategy is {@linkplain SpawnStrategy#canExec(Spawn,
      * ActionContextRegistry) asked} whether it can execute a given Spawn. The first strategy in the
      * list that says so will get the job.
      */
-    public Builder addDynamicRemoteStrategiesByMnemonic(String mnemonic, List<String> strategies) {
-      mnemonicToRemoteIdentifiers.put(mnemonic, strategies);
+    public Builder addDynamicRemoteStrategies(Map<String, List<String>> strategies) {
+      mnemonicToRemoteIdentifiers.putAll(strategies);
       return this;
     }
 
     /**
-     * Sets the strategy names to use in the local branch of dynamic execution for a given action
-     * mnemonic.
+     * Sets the strategy names to use in the local branch of dynamic execution for a number of
+     * action mnemonics.
      *
      * <p>During execution, each strategy is {@linkplain SpawnStrategy#canExec(Spawn,
      * ActionContextRegistry) asked} whether it can execute a given Spawn. The first strategy in the
      * list that says so will get the job.
      */
-    public Builder addDynamicLocalStrategiesByMnemonic(String mnemonic, List<String> strategies) {
-      mnemonicToLocalIdentifiers.put(mnemonic, strategies);
+    public Builder addDynamicLocalStrategies(Map<String, List<String>> strategies) {
+      mnemonicToLocalIdentifiers.putAll(strategies);
       return this;
     }
 
@@ -394,16 +388,15 @@ public final class SpawnStrategyRegistry
      *     default strategies but no strategy for that identifier was registered
      */
     public SpawnStrategyRegistry build() throws AbruptExitException {
-      List<FilterAndIdentifiers> orderedFilterAndIdentifiers = filterAndIdentifiers;
-
-      if (!legacyFilterIterationOrder) {
-        orderedFilterAndIdentifiers = Lists.reverse(filterAndIdentifiers);
-      }
+      List<FilterAndIdentifiers> orderedFilterAndIdentifiers = Lists.reverse(filterAndIdentifiers);
 
       ListMultimap<RegexFilter, SpawnStrategy> filterToStrategies = LinkedListMultimap.create();
       for (FilterAndIdentifiers filterAndIdentifier : orderedFilterAndIdentifiers) {
         RegexFilter filter = filterAndIdentifier.filter();
-        filterToStrategies.putAll(filter, toStrategies(filterAndIdentifier.identifiers(), filter));
+        if (!filterToStrategies.containsKey(filter)) {
+          filterToStrategies.putAll(
+              filter, toStrategies(filterAndIdentifier.identifiers(), filter));
+        }
       }
 
       ImmutableListMultimap.Builder<String, SpawnStrategy> mnemonicToStrategies =

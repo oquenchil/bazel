@@ -14,6 +14,8 @@
 
 package com.google.devtools.build.lib.rules.genrule;
 
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
+
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
@@ -35,9 +37,10 @@ import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.Runfiles;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
 import com.google.devtools.build.lib.analysis.ShToolchain;
-import com.google.devtools.build.lib.analysis.TransitionMode;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.stringtemplate.ExpansionException;
+import com.google.devtools.build.lib.analysis.test.InstrumentedFilesCollector;
+import com.google.devtools.build.lib.analysis.test.InstrumentedFilesCollector.InstrumentationSpec;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
@@ -45,8 +48,9 @@ import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.packages.AttributeMap;
 import com.google.devtools.build.lib.packages.TargetUtils;
 import com.google.devtools.build.lib.packages.Type;
-import com.google.devtools.build.lib.util.LazyString;
+import com.google.devtools.build.lib.util.FileTypeSet;
 import com.google.devtools.build.lib.util.OS;
+import com.google.devtools.build.lib.util.OnDemandString;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.List;
@@ -66,17 +70,17 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
    */
   protected abstract boolean isStampingEnabled(RuleContext ruleContext);
 
-  /**
-   * Updates the {@link RuleConfiguredTargetBuilder} that is used for this rule.
-   *
-   * <p>GenRule implementations can override this method to enhance and update the builder without
-   * needing to entirely override the {@link com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory#create} method.
-   */
-  protected RuleConfiguredTargetBuilder updateBuilder(
-      RuleConfiguredTargetBuilder builder,
-      RuleContext ruleContext,
-      NestedSet<Artifact> filesToBuild) {
-    return builder;
+  /** Collects sources from src attribute. */
+  protected ImmutableMap<Label, NestedSet<Artifact>> collectSources(
+      List<? extends TransitiveInfoCollection> srcs) {
+    ImmutableMap.Builder<Label, NestedSet<Artifact>> labelMap = ImmutableMap.builder();
+
+    for (TransitiveInfoCollection dep : srcs) {
+      NestedSet<Artifact> files = dep.getProvider(FileProvider.class).getFilesToBuild();
+      labelMap.put(AliasProvider.getDependencyLabel(dep), files);
+    }
+
+    return labelMap.build();
   }
 
   enum CommandType {
@@ -115,7 +119,6 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
       throws InterruptedException, RuleErrorException, ActionConflictException {
     NestedSet<Artifact> filesToBuild =
         NestedSetBuilder.wrap(Order.STABLE_ORDER, ruleContext.getOutputArtifacts());
-    NestedSetBuilder<Artifact> resolvedSrcsBuilder = NestedSetBuilder.stableOrder();
 
     if (filesToBuild.isEmpty()) {
       ruleContext.attributeError("outs", "Genrules without outputs don't make sense");
@@ -132,23 +135,18 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
 
     Pair<CommandType, String> cmdTypeAndAttr = determineCommandTypeAndAttribute(ruleContext);
 
-    ImmutableMap.Builder<Label, Iterable<Artifact>> labelMap = ImmutableMap.builder();
-    for (TransitiveInfoCollection dep :
-        ruleContext.getPrerequisites("srcs", TransitionMode.TARGET)) {
-      // This target provides specific types of files for genrules.
-      GenRuleSourcesProvider provider = dep.getProvider(GenRuleSourcesProvider.class);
-      NestedSet<Artifact> files = (provider != null)
-          ? provider.getGenruleFiles()
-          : dep.getProvider(FileProvider.class).getFilesToBuild();
-      resolvedSrcsBuilder.addTransitive(files);
-      // The CommandHelper class makes an explicit copy of this in the constructor, so flattening
-      // here should be benign.
-      labelMap.put(AliasProvider.getDependencyLabel(dep), files.toList());
-    }
-    NestedSet<Artifact> resolvedSrcs = resolvedSrcsBuilder.build();
+    ImmutableMap<Label, NestedSet<Artifact>> labelMap =
+        collectSources(ruleContext.getPrerequisites("srcs"));
+    NestedSet<Artifact> resolvedSrcs = NestedSetBuilder.fromNestedSets(labelMap.values()).build();
 
+    // The CommandHelper class makes an explicit copy of this in the constructor, so flattening
+    // here should be benign.
     CommandHelper commandHelper =
-        commandHelperBuilder(ruleContext).addLabelMap(labelMap.build()).build();
+        commandHelperBuilder(ruleContext)
+            .addLabelMap(
+                labelMap.entrySet().stream()
+                    .collect(toImmutableMap(Map.Entry::getKey, e -> e.getValue().toList())))
+            .build();
 
     if (ruleContext.hasErrors()) {
       return null;
@@ -186,17 +184,14 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
       command =
           String.format(
               "source %s; %s",
-              ruleContext
-                  .getPrerequisiteArtifact("$genrule_setup", TransitionMode.HOST)
-                  .getExecPath(),
-              command);
+              ruleContext.getPrerequisiteArtifact("$genrule_setup").getExecPath(), command);
     }
 
     String messageAttr = ruleContext.attributes().get("message", Type.STRING);
     String message = messageAttr.isEmpty() ? "Executing genrule" : messageAttr;
     Label label = ruleContext.getLabel();
-    LazyString progressMessage =
-        new LazyString() {
+    OnDemandString progressMessage =
+        new OnDemandString() {
           @Override
           public String toString() {
             return message + " " + label;
@@ -217,8 +212,7 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
     inputs.addTransitive(commandHelper.getResolvedTools());
     if (cmdType == CommandType.BASH) {
       FilesToRunProvider genruleSetup =
-          ruleContext.getPrerequisite(
-              "$genrule_setup", TransitionMode.HOST, FilesToRunProvider.class);
+          ruleContext.getPrerequisite("$genrule_setup", FilesToRunProvider.class);
       inputs.addTransitive(genruleSetup.getFilesToRun());
     }
     if (ruleContext.hasErrors()) {
@@ -272,13 +266,15 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
             .addTransitiveArtifacts(filesToBuild)
             .build());
 
-    RuleConfiguredTargetBuilder builder = new RuleConfiguredTargetBuilder(ruleContext)
+    return new RuleConfiguredTargetBuilder(ruleContext)
         .setFilesToBuild(filesToBuild)
         .setRunfilesSupport(null, getExecutable(ruleContext, filesToBuild))
-        .addProvider(RunfilesProvider.class, runfilesProvider);
-
-    builder = updateBuilder(builder, ruleContext, filesToBuild);
-    return builder.build();
+        .addProvider(RunfilesProvider.class, runfilesProvider)
+        .addNativeDeclaredProvider(
+            InstrumentedFilesCollector.collect(
+                ruleContext,
+                new InstrumentationSpec(FileTypeSet.ANY_FILE).withSourceAttributes("srcs")))
+        .build();
   }
 
   protected CommandHelper.Builder commandHelperBuilder(RuleContext ruleContext) {
@@ -357,13 +353,9 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
         return expandSingletonArtifact(filesToBuild, "$@", "output file");
       }
 
-      PathFragment ruleDirRootRelativePath =
-          ruleContext.getRule().getLabel().getPackageIdentifier().getSourceRoot();
+      PathFragment ruleDirPackagePath = ruleContext.getPackageDirectory();
       PathFragment ruleDirExecPath =
-          ruleContext
-              .getBinOrGenfilesDirectory()
-              .getExecPath()
-              .getRelative(ruleDirRootRelativePath);
+          ruleContext.getBinOrGenfilesDirectory().getExecPath().getRelative(ruleDirPackagePath);
 
       if (variableName.equals("RULEDIR")) {
         // The output root directory. This variable expands to the package's root directory
@@ -380,7 +372,7 @@ public abstract class GenRuleBase implements RuleConfiguredTargetFactory {
         if (filesToBuild.isSingleton()) {
           Artifact outputFile = filesToBuild.getSingleton();
           PathFragment relativeOutputFile = outputFile.getExecPath();
-          if (relativeOutputFile.segmentCount() <= 1) {
+          if (!relativeOutputFile.isMultiSegment()) {
             // This should never happen, since the path should contain at
             // least a package name and a file name.
             throw new IllegalStateException(

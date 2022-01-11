@@ -13,14 +13,16 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Objects;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
+import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.Artifact.ArchivedTreeArtifact;
 import com.google.devtools.build.lib.actions.Artifact.DerivedArtifact;
 import com.google.devtools.build.lib.actions.Artifact.OwnerlessArtifactWrapper;
 import com.google.devtools.build.lib.actions.Artifact.SpecialArtifact;
@@ -30,15 +32,18 @@ import com.google.devtools.build.lib.actions.FilesetOutputSymlink;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
+import com.google.devtools.build.lib.rules.cpp.IncludeScannable;
+import com.google.devtools.build.lib.skyframe.TreeArtifactValue.ArchivedRepresentation;
 import com.google.devtools.build.skyframe.SkyValue;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.function.BiFunction;
 import javax.annotation.Nullable;
 
 /** A value representing an executed action. */
 @Immutable
 @ThreadSafe
-public class ActionExecutionValue implements SkyValue {
+public final class ActionExecutionValue implements SkyValue {
 
   /** A map from each output artifact of this action to their {@link FileArtifactValue}s. */
   private final ImmutableMap<Artifact, FileArtifactValue> artifactData;
@@ -57,8 +62,8 @@ public class ActionExecutionValue implements SkyValue {
    * @param discoveredModules cpp modules discovered
    */
   private ActionExecutionValue(
-      Map<Artifact, FileArtifactValue> artifactData,
-      Map<Artifact, TreeArtifactValue> treeArtifactData,
+      ImmutableMap<Artifact, FileArtifactValue> artifactData,
+      ImmutableMap<Artifact, TreeArtifactValue> treeArtifactData,
       @Nullable ImmutableList<FilesetOutputSymlink> outputSymlinks,
       @Nullable NestedSet<Artifact> discoveredModules) {
     for (Map.Entry<Artifact, FileArtifactValue> entry : artifactData.entrySet()) {
@@ -79,9 +84,7 @@ public class ActionExecutionValue implements SkyValue {
       }
       for (Map.Entry<TreeFileArtifact, FileArtifactValue> file :
           treeArtifact.getChildValues().entrySet()) {
-        // We should only have RegularFileValue instances in here, but apparently tree artifacts
-        // sometimes store their own root directory in here. Sad.
-        // https://github.com/bazelbuild/bazel/issues/9058
+        // Tree artifacts can contain symlinks to directories, which don't have a digest.
         if (file.getValue().getType().isFile()) {
           Preconditions.checkNotNull(
               file.getValue().getDigest(),
@@ -92,8 +95,8 @@ public class ActionExecutionValue implements SkyValue {
       }
     }
 
-    this.artifactData = ImmutableMap.copyOf(artifactData);
-    this.treeArtifactData = ImmutableMap.copyOf(treeArtifactData);
+    this.artifactData = artifactData;
+    this.treeArtifactData = treeArtifactData;
     this.outputSymlinks = outputSymlinks;
     this.discoveredModules = discoveredModules;
   }
@@ -101,27 +104,23 @@ public class ActionExecutionValue implements SkyValue {
   static ActionExecutionValue createFromOutputStore(
       OutputStore outputStore,
       @Nullable ImmutableList<FilesetOutputSymlink> outputSymlinks,
-      @Nullable NestedSet<Artifact> discoveredModules,
-      boolean actionDependsOnBuildId) {
-    return create(
+      Action action) {
+    return new ActionExecutionValue(
         outputStore.getAllArtifactData(),
         outputStore.getAllTreeArtifactData(),
         outputSymlinks,
-        discoveredModules,
-        actionDependsOnBuildId);
+        action instanceof IncludeScannable
+            ? ((IncludeScannable) action).getDiscoveredModules()
+            : null);
   }
 
-  static ActionExecutionValue create(
-      Map<Artifact, FileArtifactValue> artifactData,
-      Map<Artifact, TreeArtifactValue> treeArtifactData,
-      @Nullable ImmutableList<FilesetOutputSymlink> outputSymlinks,
-      @Nullable NestedSet<Artifact> discoveredModules,
-      boolean actionDependsOnBuildId) {
-    return actionDependsOnBuildId
-        ? new CrossServerUnshareableActionExecutionValue(
-            artifactData, treeArtifactData, outputSymlinks, discoveredModules)
-        : new ActionExecutionValue(
-            artifactData, treeArtifactData, outputSymlinks, discoveredModules);
+  @VisibleForTesting
+  public static ActionExecutionValue createForTesting(
+      ImmutableMap<Artifact, FileArtifactValue> artifactData,
+      ImmutableMap<Artifact, TreeArtifactValue> treeArtifactData,
+      @Nullable ImmutableList<FilesetOutputSymlink> outputSymlinks) {
+    return new ActionExecutionValue(
+        artifactData, treeArtifactData, outputSymlinks, /*discoveredModules=*/ null);
   }
 
   /**
@@ -141,6 +140,17 @@ public class ActionExecutionValue implements SkyValue {
     if (artifact.isChildOfDeclaredDirectory()) {
       TreeArtifactValue tree = treeArtifactData.get(artifact.getParent());
       result = tree == null ? null : tree.getChildValues().get(artifact);
+    } else if (artifact instanceof ArchivedTreeArtifact) {
+      TreeArtifactValue tree = treeArtifactData.get(artifact.getParent());
+      ArchivedRepresentation archivedRepresentation =
+          tree.getArchivedRepresentation()
+              .orElseThrow(
+                  () -> new NoSuchElementException("Missing archived representation in: " + tree));
+      Preconditions.checkArgument(
+          archivedRepresentation.archivedTreeFileArtifact().equals(artifact),
+          "Multiple archived tree artifacts for: %s",
+          artifact.getParent());
+      result = archivedRepresentation.archivedFileValue();
     } else {
       result = artifactData.get(artifact);
     }
@@ -203,46 +213,24 @@ public class ActionExecutionValue implements SkyValue {
     if (this == obj) {
       return true;
     }
-    if (obj == null) {
-      return false;
-    }
-    if (!obj.getClass().equals(getClass())) {
+    if (!(obj instanceof ActionExecutionValue)) {
       return false;
     }
     ActionExecutionValue o = (ActionExecutionValue) obj;
     return artifactData.equals(o.artifactData)
         && treeArtifactData.equals(o.treeArtifactData)
-        && (outputSymlinks == null || outputSymlinks.equals(o.outputSymlinks));
+        && Objects.equal(outputSymlinks, o.outputSymlinks);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hashCode(artifactData, treeArtifactData);
-  }
-
-  /**
-   * Subclass that reports this value cannot be shared across servers. Note that this is unrelated
-   * to the concept of shared actions.
-   */
-  private static final class CrossServerUnshareableActionExecutionValue
-      extends ActionExecutionValue {
-    CrossServerUnshareableActionExecutionValue(
-        Map<Artifact, FileArtifactValue> artifactData,
-        Map<Artifact, TreeArtifactValue> treeArtifactData,
-        @Nullable ImmutableList<FilesetOutputSymlink> outputSymlinks,
-        @Nullable NestedSet<Artifact> discoveredModules) {
-      super(artifactData, treeArtifactData, outputSymlinks, discoveredModules);
-    }
-
-    @Override
-    public boolean dataIsShareable() {
-      return false;
-    }
+    return Objects.hashCode(artifactData, treeArtifactData, outputSymlinks);
   }
 
   private static <V> ImmutableMap<Artifact, V> transformMap(
       ImmutableMap<Artifact, V> data,
       Map<OwnerlessArtifactWrapper, Artifact> newArtifactMap,
+      Action action,
       BiFunction<Artifact, V, V> transform) {
     if (data.isEmpty()) {
       return data;
@@ -254,9 +242,9 @@ public class ActionExecutionValue implements SkyValue {
       Artifact newArtifact =
           Preconditions.checkNotNull(
               newArtifactMap.get(new OwnerlessArtifactWrapper(artifact)),
-              "Output artifact %s from one shared action not present in another's outputs (%s)",
+              "No output matching %s, cannot share with %s",
               artifact,
-              newArtifactMap);
+              action);
       result.put(newArtifact, transform.apply(newArtifact, entry.getValue()));
     }
     return result.build();
@@ -273,29 +261,46 @@ public class ActionExecutionValue implements SkyValue {
     }
 
     SpecialArtifact newParent = (SpecialArtifact) newArtifact;
+    TreeArtifactValue.Builder newTree = TreeArtifactValue.newBuilder(newParent);
 
-    Map<TreeFileArtifact, FileArtifactValue> newChildren =
-        Maps.newHashMapWithExpectedSize(tree.getChildValues().size());
     for (Map.Entry<TreeFileArtifact, FileArtifactValue> child : tree.getChildValues().entrySet()) {
-      newChildren.put(
+      newTree.putChild(
           TreeFileArtifact.createTreeOutput(newParent, child.getKey().getParentRelativePath()),
           child.getValue());
     }
 
-    return TreeArtifactValue.create(newChildren);
+    tree.getArchivedRepresentation()
+        .ifPresent(
+            archivedRepresentation ->
+                newTree.setArchivedRepresentation(
+                    ArchivedTreeArtifact.createForTree(newParent),
+                    archivedRepresentation.archivedFileValue()));
+
+    return newTree.build();
   }
 
-  ActionExecutionValue transformForSharedAction(ImmutableSet<Artifact> outputs) {
+  /**
+   * Creates a new {@code ActionExecutionValue} by transforming this one's outputs so that artifact
+   * owners match the given action's outputs.
+   *
+   * <p>The given action must be {@linkplain
+   * com.google.devtools.build.lib.actions.Actions#canBeShared shareable} with the action that
+   * originally produced this {@code ActionExecutionValue}.
+   */
+  public ActionExecutionValue transformForSharedAction(Action action) {
+    Preconditions.checkArgument(
+        action.getOutputs().size() == artifactData.size() + treeArtifactData.size(),
+        "Cannot share %s with %s",
+        this,
+        action);
     Map<OwnerlessArtifactWrapper, Artifact> newArtifactMap =
-        Maps.uniqueIndex(outputs, OwnerlessArtifactWrapper::new);
-    // This is only called for shared actions, so we'll almost certainly have to transform all keys
-    // in all sets.
-    // Discovered modules come from the action's inputs, and so don't need to be transformed.
-    return create(
-        transformMap(artifactData, newArtifactMap, (newArtifact, value) -> value),
-        transformMap(treeArtifactData, newArtifactMap, ActionExecutionValue::transformSharedTree),
+        Maps.uniqueIndex(action.getOutputs(), OwnerlessArtifactWrapper::new);
+    return new ActionExecutionValue(
+        transformMap(artifactData, newArtifactMap, action, (newArtifact, value) -> value),
+        transformMap(
+            treeArtifactData, newArtifactMap, action, ActionExecutionValue::transformSharedTree),
         outputSymlinks,
-        discoveredModules,
-        this instanceof CrossServerUnshareableActionExecutionValue);
+        // Discovered modules come from the action's inputs, and so don't need to be transformed.
+        discoveredModules);
   }
 }

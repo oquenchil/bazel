@@ -14,14 +14,14 @@
 
 package com.google.devtools.build.lib.rules.cpp;
 
+import com.github.benmanes.caffeine.cache.CacheLoader;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.LoadingCache;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.base.Throwables;
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
@@ -37,9 +37,6 @@ import com.google.devtools.build.lib.rules.cpp.CcToolchainVariables.StringChunk;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainVariables.StringValueParser;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
-import com.google.devtools.build.lib.syntax.EvalException;
-import com.google.devtools.build.lib.syntax.Location;
-import com.google.devtools.build.lib.syntax.Starlark;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.StringUtil;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -52,8 +49,10 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.CompletionException;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.EvalException;
+import net.starlark.java.eval.Starlark;
 
 /**
  * Provides access to features supported by a specific toolchain.
@@ -82,7 +81,7 @@ public class CcToolchainFeatures {
    */
   public static class ExpansionException extends EvalException {
     ExpansionException(String message) {
-      super(Location.BUILTIN, message);
+      super(message);
     }
   }
 
@@ -103,8 +102,6 @@ public class CcToolchainFeatures {
 
   /** A single flag to be expanded under a set of variables. */
   @Immutable
-  @AutoCodec
-  @VisibleForSerialization
   public static class Flag implements Expandable {
     private final ImmutableList<StringChunk> chunks;
 
@@ -161,8 +158,6 @@ public class CcToolchainFeatures {
 
     /** Optimization for single-chunk case */
     @Immutable
-    @AutoCodec
-    @VisibleForSerialization
     static class SingleChunkFlag implements Expandable {
       private final StringChunk chunk;
 
@@ -267,8 +262,7 @@ public class CcToolchainFeatures {
 
   /** Used for equality check between a variable and a specific value. */
   @Immutable
-  @AutoCodec
-  public static class VariableWithValue {
+  static class VariableWithValue {
     public final String variable;
     public final String value;
 
@@ -499,14 +493,8 @@ public class CcToolchainFeatures {
       return true;
     }
     for (WithFeatureSet featureSet : withFeatureSets) {
-      boolean negativeMatch =
-          featureSet
-              .getNotFeatures()
-              .stream()
-              .anyMatch(notFeature -> enabledFeatureNames.contains(notFeature));
-      boolean positiveMatch = enabledFeatureNames.containsAll(featureSet.getFeatures());
-
-      if (!negativeMatch && positiveMatch) {
+      if (enabledFeatureNames.containsAll(featureSet.getFeatures())
+          && featureSet.getNotFeatures().stream().noneMatch(enabledFeatureNames::contains)) {
         return true;
       }
     }
@@ -1073,8 +1061,7 @@ public class CcToolchainFeatures {
       ImmutableList.Builder<FlagSet> flagSetBuilder = ImmutableList.builder();
       for (CToolchain.FlagSet flagSet : actionConfig.getFlagSetList()) {
         if (!flagSet.getActionList().isEmpty()) {
-          throw new EvalException(
-              Location.BUILTIN, String.format(FLAG_SET_WITH_ACTION_ERROR, configName));
+          throw Starlark.errorf(FLAG_SET_WITH_ACTION_ERROR, configName);
         }
 
         flagSetBuilder.add(new FlagSet(flagSet, ImmutableSet.of(actionName)));
@@ -1216,23 +1203,19 @@ public class CcToolchainFeatures {
         }
       }
       if (foundCategory == null) {
-        throw new EvalException(
-            Location.BUILTIN,
-            String.format(
-                "Invalid toolchain configuration: Artifact category %s not recognized",
-                artifactNamePattern.getCategoryName()));
+        throw Starlark.errorf(
+            "Invalid toolchain configuration: Artifact category %s not recognized",
+            artifactNamePattern.getCategoryName());
       }
 
       String extension = artifactNamePattern.getExtension();
       if (!foundCategory.getAllowedExtensions().contains(extension)) {
-        throw new EvalException(
-            Location.BUILTIN,
-            String.format(
-                "Unrecognized file extension '%s', allowed extensions are %s,"
-                    + " please check artifact_name_pattern configuration for %s in your CROSSTOOL.",
-                extension,
-                StringUtil.joinEnglishList(foundCategory.getAllowedExtensions(), "or", "'"),
-                foundCategory.getCategoryName()));
+        throw Starlark.errorf(
+            "Unrecognized file extension '%s', allowed extensions are %s,"
+                + " please check artifact_name_pattern configuration for %s in your CROSSTOOL.",
+            extension,
+            StringUtil.joinEnglishList(foundCategory.getAllowedExtensions(), "or", "'"),
+            foundCategory.getCategoryName());
       }
       this.artifactCategory = foundCategory;
       this.prefix = artifactNamePattern.getPrefix();
@@ -1639,12 +1622,10 @@ public class CcToolchainFeatures {
     Collection<String> names = new HashSet<>();
     for (CrosstoolSelectable selectable : selectables) {
       if (!names.add(selectable.getName())) {
-        throw new EvalException(
-            Location.BUILTIN,
-            "Invalid toolchain configuration: feature or "
-                + "action config '"
-                + selectable.getName()
-                + "' was specified multiple times.");
+        throw Starlark.errorf(
+            "Invalid toolchain configuration: feature or action config '%s' was specified multiple"
+                + " times.",
+            selectable.getName());
       }
     }
   }
@@ -1654,19 +1635,16 @@ public class CcToolchainFeatures {
     Collection<String> actionNames = new HashSet<>();
     for (ActionConfig actionConfig : actionConfigs) {
       if (!actionNames.add(actionConfig.getActionName())) {
-        throw new EvalException(
-            Location.BUILTIN,
-            "Invalid toolchain configuration: multiple action "
-                + "configs for action '"
-                + actionConfig.getActionName()
-                + "'");
+        throw Starlark.errorf(
+            "Invalid toolchain configuration: multiple action configs for action '%s'",
+            actionConfig.getActionName());
       }
     }
   }
 
   /** @return an empty {@code FeatureConfiguration} cache. */
   private LoadingCache<ImmutableSet<String>, FeatureConfiguration> buildConfigurationCache() {
-    return CacheBuilder.newBuilder()
+    return Caffeine.newBuilder()
         // TODO(klimek): Benchmark and tweak once we support a larger configuration.
         .maximumSize(10000)
         .build(
@@ -1699,10 +1677,9 @@ public class CcToolchainFeatures {
         configurationCache = buildConfigurationCache();
       }
       return configurationCache.get(requestedSelectables);
-    } catch (ExecutionException e) {
+    } catch (CompletionException e) {
       Throwables.throwIfInstanceOf(e.getCause(), CollidingProvidesException.class);
-      Throwables.throwIfUnchecked(e.getCause());
-      throw new IllegalStateException("Unexpected checked exception encountered", e);
+      throw e;
     }
   }
 
@@ -1745,13 +1722,10 @@ public class CcToolchainFeatures {
   private CrosstoolSelectable getActivatableOrFail(String name, String reference)
       throws EvalException {
     if (!selectablesByName.containsKey(name)) {
-      throw new EvalException(
-          Location.BUILTIN,
-          "Invalid toolchain configuration: feature '"
-              + name
-              + "', which is referenced from feature '"
-              + reference
-              + "', is not defined.");
+      throw Starlark.errorf(
+          "Invalid toolchain configuration: feature '%s', which is referenced from feature '%s',"
+              + " is not defined.",
+          name, reference);
     }
     return selectablesByName.get(name);
   }
@@ -1777,10 +1751,8 @@ public class CcToolchainFeatures {
       }
     }
     if (patternForCategory == null) {
-      throw new EvalException(
-          Location.BUILTIN,
-          String.format(
-              MISSING_ARTIFACT_NAME_PATTERN_ERROR_TEMPLATE, artifactCategory.getCategoryName()));
+      throw Starlark.errorf(
+          MISSING_ARTIFACT_NAME_PATTERN_ERROR_TEMPLATE, artifactCategory.getCategoryName());
     }
 
     return output.getParentDirectory()
@@ -1801,10 +1773,8 @@ public class CcToolchainFeatures {
       }
     }
     if (patternForCategory == null) {
-      throw new EvalException(
-          Location.BUILTIN,
-          String.format(
-              MISSING_ARTIFACT_NAME_PATTERN_ERROR_TEMPLATE, artifactCategory.getCategoryName()));
+      throw Starlark.errorf(
+          MISSING_ARTIFACT_NAME_PATTERN_ERROR_TEMPLATE, artifactCategory.getCategoryName());
     }
     return patternForCategory.getExtension();
   }

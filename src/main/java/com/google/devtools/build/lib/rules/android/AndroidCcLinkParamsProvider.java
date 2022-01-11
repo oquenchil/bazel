@@ -19,8 +19,8 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.BuiltinProvider;
 import com.google.devtools.build.lib.packages.NativeInfo;
 import com.google.devtools.build.lib.rules.cpp.CcInfo;
-import com.google.devtools.build.lib.skylarkbuildapi.android.AndroidCcLinkParamsProviderApi;
-import com.google.devtools.build.lib.syntax.EvalException;
+import com.google.devtools.build.lib.starlarkbuildapi.android.AndroidCcLinkParamsProviderApi;
+import net.starlark.java.eval.EvalException;
 
 /** A target that provides C++ libraries to be linked into Android targets. */
 @Immutable
@@ -32,8 +32,12 @@ public final class AndroidCcLinkParamsProvider extends NativeInfo
   private final CcInfo ccInfo;
 
   public AndroidCcLinkParamsProvider(CcInfo ccInfo) {
-    super(PROVIDER);
     this.ccInfo = CcInfo.builder().setCcLinkingContext(ccInfo.getCcLinkingContext()).build();
+  }
+
+  @Override
+  public Provider getProvider() {
+    return PROVIDER;
   }
 
   @Override

@@ -1,13 +1,13 @@
 ---
 layout: documentation
 title: Writing rules on Windows
+category: extending
 ---
 
-# Writing rules on Windows
+# Writing Rules on Windows
 
-Common problems of writing portable rules, and some solutions.
-
-This document focuses on writing Windows-compatible rules.
+This page focuses on writing Windows-compatible rules, common problems of
+writing portable rules, and some solutions.
 
 ## Paths
 
@@ -41,8 +41,8 @@ Problems:
   Absolute paths on Windows start with a drive letter, e.g. `C:\foo\bar.txt`. There's no single
   filesystem root.
 
-  Be aware of this if your rule checks if a path is absolute. (Absolute paths should be avoided
-  though, they are often non-portable.)
+  Be aware of this if your rule checks if a path is absolute. Absolute paths
+  should be avoided since they are often non-portable.
 
 Solutions:
 
@@ -84,8 +84,8 @@ Solutions:
   ```
 
   <sup>[1]</sup>: Strictly speaking
-  [Junctions are not Symbolic Links](https://superuser.com/a/343079), but for sake of build actions
-  we may regard Junctions as Directory Symlinks.
+  [Junctions are not Symbolic Links](https://superuser.com/a/343079), but for
+  the sake of build actions you may regard Junctions as Directory Symlinks.
 
 - **Replace `/` with `\` in paths in actions / envvars.**
 
@@ -150,7 +150,7 @@ Problems:
 
 - **Bash commands**: For sake of portability, avoid running Bash commands directly in actions.
 
-  Bash is widespread on Unix-like systems, but it's often unavailable on Windows.  Bazel itself is
+  Bash is widespread on Unix-like systems, but it's often unavailable on Windows. Bazel itself is
   relying less and less on Bash (MSYS2), so in the future users would be less likely to have MSYS2
   installed along with Bazel. To make rules easier to use on Windows, avoid running Bash commands in
   actions.
@@ -172,38 +172,38 @@ Solutions:
   Build rule examples:
 
   - `copy_file()`
-    ([source](https://github.com/bazelbuild/bazel-skylib/blob/master/rules/copy_file.bzl),
-    [documentation](https://github.com/bazelbuild/bazel-skylib/blob/master/docs/copy_file_doc.md)):
+    ([source](https://github.com/bazelbuild/bazel-skylib/blob/main/rules/copy_file.bzl),
+    [documentation](https://github.com/bazelbuild/bazel-skylib/blob/main/docs/copy_file_doc.md)):
     copies a file somewhere else, optionally making it executable
 
   - `write_file()`
-    ([source](https://github.com/bazelbuild/bazel-skylib/blob/master/rules/write_file.bzl),
-    [documentation](https://github.com/bazelbuild/bazel-skylib/blob/master/docs/write_file_doc.md)):
+    ([source](https://github.com/bazelbuild/bazel-skylib/blob/main/rules/write_file.bzl),
+    [documentation](https://github.com/bazelbuild/bazel-skylib/blob/main/docs/write_file_doc.md)):
     writes a text file, with the desired line endings (`auto`, `unix`, or `windows`), optionally
     making it executable (if it's a script)
 
   - `run_binary()`
-    ([source](https://github.com/bazelbuild/bazel-skylib/blob/master/rules/run_binary.bzl),
-    [documentation](https://github.com/bazelbuild/bazel-skylib/blob/master/docs/run_binary_doc.md)):
+    ([source](https://github.com/bazelbuild/bazel-skylib/blob/main/rules/run_binary.bzl),
+    [documentation](https://github.com/bazelbuild/bazel-skylib/blob/main/docs/run_binary_doc.md)):
     runs a binary (or `*_binary` rule) with given inputs and expected outputs as a build action
     (this is a build rule wrapper for `ctx.actions.run`)
 
   - `native_binary()`
-    ([source](https://github.com/bazelbuild/bazel-skylib/blob/master/rules/native_binary.bzl),
-    [documentation](https://github.com/bazelbuild/bazel-skylib/blob/master/docs/native_binary_doc.md#native_binary)):
+    ([source](https://github.com/bazelbuild/bazel-skylib/blob/main/rules/native_binary.bzl),
+    [documentation](https://github.com/bazelbuild/bazel-skylib/blob/main/docs/native_binary_doc.md#native_binary)):
     wraps a native binary in a `*_binary` rule, which you can `bazel run` or use in `run_binary()`'s
     `tool` attribute or `native.genrule()`'s `tools` attribute
 
   Test rule examples:
 
   - `diff_test()`
-    ([source](https://github.com/bazelbuild/bazel-skylib/blob/master/rules/diff_test.bzl),
-    [documentation](https://github.com/bazelbuild/bazel-skylib/blob/master/docs/diff_test_doc.md)):
+    ([source](https://github.com/bazelbuild/bazel-skylib/blob/main/rules/diff_test.bzl),
+    [documentation](https://github.com/bazelbuild/bazel-skylib/blob/main/docs/diff_test_doc.md)):
     test that compares contents of two files
 
   - `native_test()`
-    ([source](https://github.com/bazelbuild/bazel-skylib/blob/master/rules/native_binary.bzl),
-    [documentation](https://github.com/bazelbuild/bazel-skylib/blob/master/docs/native_binary_doc.md#native_test)):
+    ([source](https://github.com/bazelbuild/bazel-skylib/blob/main/rules/native_binary.bzl),
+    [documentation](https://github.com/bazelbuild/bazel-skylib/blob/main/docs/native_binary_doc.md#native_test)):
     wraps a native binary in a `*_test` rule, which you can `bazel test`
 
 - **On Windows, consider using `.bat` scripts for trivial things.**
@@ -238,8 +238,9 @@ Problems:
 
 - **Files cannot be deleted while open.**
 
-  Open files cannot be deleted (by default), attempts result in "Access Denied" errors.  If you
-  cannot delete a file, maybe a running process still holds it open.
+  Open files cannot be deleted (by default), attempts result in "Access Denied"
+  errors. If you cannot delete a file, maybe a running process still holds it
+  open.
 
 - **Working directory of a running process cannot be deleted.**
 

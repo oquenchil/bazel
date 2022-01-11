@@ -29,8 +29,7 @@ import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.events.StoredEventHandler;
 import com.google.devtools.build.lib.exec.util.TestExecutorBuilder;
-import com.google.devtools.build.lib.testutil.Suite;
-import com.google.devtools.build.lib.testutil.TestSpec;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import com.google.devtools.common.options.OptionsParser;
@@ -41,7 +40,6 @@ import org.junit.runners.JUnit4;
 
 /** Tests for {@link BlazeExecutor}. */
 @RunWith(JUnit4.class)
-@TestSpec(size = Suite.SMALL_TESTS)
 public class BlazeExecutorTest {
   private FileSystem fileSystem;
   private BlazeDirectories directories;
@@ -49,7 +47,7 @@ public class BlazeExecutorTest {
 
   @Before
   public final void setUpDirectoriesAndTools() throws Exception {
-    fileSystem = new InMemoryFileSystem();
+    fileSystem = new InMemoryFileSystem(DigestHashFunction.SHA256);
     directories =
         new BlazeDirectories(
             new ServerDirectories(

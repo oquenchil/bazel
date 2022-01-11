@@ -13,22 +13,29 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe;
 
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
+import com.google.auto.value.AutoValue;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedMap;
-import com.google.common.collect.Maps;
+import com.google.devtools.build.lib.actions.ActionInput;
+import com.google.devtools.build.lib.actions.ActionInputHelper;
+import com.google.devtools.build.lib.actions.Artifact.ArchivedTreeArtifact;
 import com.google.devtools.build.lib.actions.Artifact.SpecialArtifact;
 import com.google.devtools.build.lib.actions.Artifact.TreeFileArtifact;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
+import com.google.devtools.build.lib.actions.FileStateType;
 import com.google.devtools.build.lib.actions.HasDigest;
-import com.google.devtools.build.lib.actions.cache.DigestUtils;
-import com.google.devtools.build.lib.actions.cache.MetadataInjector;
+import com.google.devtools.build.lib.actions.cache.MetadataDigestUtils;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
+import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.vfs.Dirent;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -36,12 +43,11 @@ import com.google.devtools.build.lib.vfs.Symlinks;
 import com.google.devtools.build.skyframe.SkyValue;
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import java.util.Optional;
 import javax.annotation.Nullable;
-import javax.annotation.concurrent.ThreadSafe;
 
 /**
  * Value for TreeArtifacts, which contains a digest and the {@link FileArtifactValue}s of its child
@@ -49,81 +55,153 @@ import javax.annotation.concurrent.ThreadSafe;
  */
 public class TreeArtifactValue implements HasDigest, SkyValue {
 
+  /**
+   * Comparator based on exec path which works on {@link ActionInput} as opposed to {@link
+   * com.google.devtools.build.lib.actions.Artifact}. This way, we can use an {@link ActionInput} to
+   * search {@link #childData}.
+   */
+  @SerializationConstant @AutoCodec.VisibleForSerialization
+  static final Comparator<ActionInput> EXEC_PATH_COMPARATOR =
+      (input1, input2) -> input1.getExecPath().compareTo(input2.getExecPath());
+
+  private static final ImmutableSortedMap<TreeFileArtifact, FileArtifactValue> EMPTY_MAP =
+      childDataBuilder().build();
+
+  @SuppressWarnings("unchecked")
+  private static ImmutableSortedMap.Builder<TreeFileArtifact, FileArtifactValue>
+      childDataBuilder() {
+    return new ImmutableSortedMap.Builder<>(EXEC_PATH_COMPARATOR);
+  }
+
+  /** Returns an empty {@link TreeArtifactValue}. */
+  public static TreeArtifactValue empty() {
+    return EMPTY;
+  }
+
+  /**
+   * Returns a new {@link Builder} for the given parent tree artifact.
+   *
+   * <p>The returned builder only supports adding children under this parent. To build multiple tree
+   * artifacts at once, use {@link MultiBuilder}.
+   */
+  public static Builder newBuilder(SpecialArtifact parent) {
+    return new Builder(parent);
+  }
+
   /** Builder for constructing multiple instances of {@link TreeArtifactValue} at once. */
-  public interface MultiBuilder {
+  public static final class MultiBuilder {
+
+    private final Map<SpecialArtifact, Builder> map = new HashMap<>();
+
+    private MultiBuilder() {}
+
     /**
      * Puts a child tree file into this builder under its {@linkplain TreeFileArtifact#getParent
      * parent}.
+     *
+     * @return {@code this} for convenience
      */
-    void putChild(TreeFileArtifact child, FileArtifactValue metadata);
+    public MultiBuilder putChild(TreeFileArtifact child, FileArtifactValue metadata) {
+      map.computeIfAbsent(child.getParent(), Builder::new).putChild(child, metadata);
+      return this;
+    }
+
+    /**
+     * Sets the archived representation and its metadata for the {@linkplain
+     * ArchivedTreeArtifact#getParent parent} of the provided tree artifact.
+     *
+     * <p>Setting an archived representation is only allowed once per {@linkplain SpecialArtifact
+     * tree artifact}.
+     */
+    public MultiBuilder setArchivedRepresentation(
+        ArchivedTreeArtifact archivedArtifact, FileArtifactValue metadata) {
+      map.computeIfAbsent(archivedArtifact.getParent(), Builder::new)
+          .setArchivedRepresentation(ArchivedRepresentation.create(archivedArtifact, metadata));
+      return this;
+    }
+
+    /**
+     * Removes all of collected data for a given tree artifact.
+     *
+     * <p>No-op if there is no data for a given tree artifact.
+     */
+    public MultiBuilder remove(SpecialArtifact treeArtifact) {
+      checkArgument(treeArtifact.isTreeArtifact(), "Not a tree artifact: %s", treeArtifact);
+      map.remove(treeArtifact);
+      return this;
+    }
 
     /**
      * For each unique parent seen by this builder, passes the aggregated metadata to {@link
-     * MetadataInjector#injectDirectory}.
+     * TreeArtifactInjector#injectTree}.
      */
-    void injectTo(MetadataInjector metadataInjector);
+    public void injectTo(TreeArtifactInjector treeInjector) {
+      map.forEach((parent, builder) -> treeInjector.injectTree(parent, builder.build()));
+    }
   }
 
   /** Returns a new {@link MultiBuilder}. */
   public static MultiBuilder newMultiBuilder() {
-    return new BasicMultiBuilder();
+    return new MultiBuilder();
   }
 
-  /** Returns a new thread-safe {@link MultiBuilder}. */
-  public static MultiBuilder newConcurrentMultiBuilder() {
-    return new ConcurrentMultiBuilder();
+  /**
+   * Archived representation of a tree artifact which contains a representation of the filesystem
+   * tree starting with the tree artifact directory.
+   *
+   * <p>Contains both the {@linkplain ArchivedTreeArtifact artifact} for the archived file and the
+   * metadata for it.
+   */
+  @AutoValue
+  public abstract static class ArchivedRepresentation {
+    public abstract ArchivedTreeArtifact archivedTreeFileArtifact();
+
+    public abstract FileArtifactValue archivedFileValue();
+
+    public static ArchivedRepresentation create(
+        ArchivedTreeArtifact archivedTreeFileArtifact, FileArtifactValue fileArtifactValue) {
+      return new AutoValue_TreeArtifactValue_ArchivedRepresentation(
+          archivedTreeFileArtifact, fileArtifactValue);
+    }
   }
 
-  @SerializationConstant @AutoCodec.VisibleForSerialization
+  @SuppressWarnings("WeakerAccess") // Serialization constant.
+  @SerializationConstant
+  @AutoCodec.VisibleForSerialization
   static final TreeArtifactValue EMPTY =
       new TreeArtifactValue(
-          DigestUtils.fromMetadata(ImmutableMap.of()),
-          ImmutableSortedMap.of(),
+          MetadataDigestUtils.fromMetadata(ImmutableMap.of()),
+          EMPTY_MAP,
+          0L,
+          /*archivedRepresentation=*/ null,
           /*entirelyRemote=*/ false);
 
   private final byte[] digest;
   private final ImmutableSortedMap<TreeFileArtifact, FileArtifactValue> childData;
+  private final long totalChildSize;
+
+  /**
+   * Optional archived representation of the entire tree artifact which can be sent instead of all
+   * the items in the directory.
+   */
+  @Nullable private final ArchivedRepresentation archivedRepresentation;
+
   private final boolean entirelyRemote;
 
-  @AutoCodec.VisibleForSerialization
-  TreeArtifactValue(
+  private TreeArtifactValue(
       byte[] digest,
       ImmutableSortedMap<TreeFileArtifact, FileArtifactValue> childData,
+      long totalChildSize,
+      @Nullable ArchivedRepresentation archivedRepresentation,
       boolean entirelyRemote) {
     this.digest = digest;
     this.childData = childData;
+    this.totalChildSize = totalChildSize;
+    this.archivedRepresentation = archivedRepresentation;
     this.entirelyRemote = entirelyRemote;
   }
 
-  /**
-   * Returns a TreeArtifactValue out of the given Artifact-relative path fragments and their
-   * corresponding FileArtifactValues.
-   */
-  static TreeArtifactValue create(Map<TreeFileArtifact, FileArtifactValue> childFileValues) {
-    if (childFileValues.isEmpty()) {
-      return EMPTY;
-    }
-    Map<String, FileArtifactValue> digestBuilder =
-        Maps.newHashMapWithExpectedSize(childFileValues.size());
-    boolean entirelyRemote = true;
-    for (Map.Entry<TreeFileArtifact, ? extends FileArtifactValue> e : childFileValues.entrySet()) {
-      TreeFileArtifact child = e.getKey();
-      FileArtifactValue value = e.getValue();
-      Preconditions.checkState(
-          !FileArtifactValue.OMITTED_FILE_MARKER.equals(value),
-          "Cannot construct TreeArtifactValue because child %s was omitted",
-          child);
-      // Tolerate a tree artifact having a mix of local and remote children (b/152496153#comment80).
-      entirelyRemote &= value.isRemote();
-      digestBuilder.put(child.getParentRelativePath().getPathString(), value);
-    }
-    return new TreeArtifactValue(
-        DigestUtils.fromMetadata(digestBuilder),
-        ImmutableSortedMap.copyOf(childFileValues),
-        entirelyRemote);
-  }
-
-  FileArtifactValue getMetadata() {
+  public FileArtifactValue getMetadata() {
     return FileArtifactValue.createProxy(digest);
   }
 
@@ -133,7 +211,6 @@ public class TreeArtifactValue implements HasDigest, SkyValue {
         .collect(toImmutableSet());
   }
 
-  @Nullable
   @Override
   public byte[] getDigest() {
     return digest.clone();
@@ -143,8 +220,41 @@ public class TreeArtifactValue implements HasDigest, SkyValue {
     return childData.keySet();
   }
 
-  ImmutableMap<TreeFileArtifact, FileArtifactValue> getChildValues() {
+  public long getTotalChildBytes() {
+    return totalChildSize;
+  }
+
+  /** Return archived representation of the tree artifact (if present). */
+  public Optional<ArchivedRepresentation> getArchivedRepresentation() {
+    return Optional.ofNullable(archivedRepresentation);
+  }
+
+  @VisibleForTesting
+  @Nullable
+  public ArchivedTreeArtifact getArchivedArtifactForTesting() {
+    return archivedRepresentation != null
+        ? archivedRepresentation.archivedTreeFileArtifact()
+        : null;
+  }
+
+  public ImmutableSortedMap<TreeFileArtifact, FileArtifactValue> getChildValues() {
     return childData;
+  }
+
+  /** Returns an entry for child with given exec path or null if no such child is present. */
+  @SuppressWarnings("unchecked")
+  @Nullable
+  public Map.Entry<TreeFileArtifact, FileArtifactValue> findChildEntryByExecPath(
+      PathFragment execPath) {
+    ActionInput searchToken = ActionInputHelper.fromPath(execPath);
+    // Not really a copy -- original map is already an ImmutableSortedMap using the same comparator.
+    ImmutableSortedMap<ActionInput, FileArtifactValue> casted =
+        ImmutableSortedMap.copyOf(childData, EXEC_PATH_COMPARATOR);
+    checkState(casted == (Object) childData, "Casting children resulted with a copy");
+    Map.Entry<? extends ActionInput, FileArtifactValue> entry = casted.floorEntry(searchToken);
+    return entry != null && entry.getKey().getExecPath().equals(execPath)
+        ? (Map.Entry<TreeFileArtifact, FileArtifactValue>) entry
+        : null;
   }
 
   /** Returns true if the {@link TreeFileArtifact}s are only stored remotely. */
@@ -177,7 +287,7 @@ public class TreeArtifactValue implements HasDigest, SkyValue {
 
   @Override
   public String toString() {
-    return MoreObjects.toStringHelper(TreeArtifactValue.class)
+    return MoreObjects.toStringHelper(this)
         .add("digest", digest)
         .add("childData", childData)
         .toString();
@@ -194,22 +304,24 @@ public class TreeArtifactValue implements HasDigest, SkyValue {
    * A TreeArtifactValue that represents a missing TreeArtifact. This is occasionally useful because
    * Java's concurrent collections disallow null members.
    */
-  static final TreeArtifactValue MISSING_TREE_ARTIFACT = createMarker("MISSING_TREE_ARTIFACT");
+  public static final TreeArtifactValue MISSING_TREE_ARTIFACT =
+      createMarker("MISSING_TREE_ARTIFACT");
 
   private static TreeArtifactValue createMarker(String toStringRepresentation) {
-    return new TreeArtifactValue(null, ImmutableSortedMap.of(), /*entirelyRemote=*/ false) {
+    return new TreeArtifactValue(
+        null, EMPTY_MAP, 0L, /*archivedRepresentation=*/ null, /*entirelyRemote=*/ false) {
       @Override
       public ImmutableSet<TreeFileArtifact> getChildren() {
         throw new UnsupportedOperationException(toString());
       }
 
       @Override
-      ImmutableMap<TreeFileArtifact, FileArtifactValue> getChildValues() {
+      public ImmutableSortedMap<TreeFileArtifact, FileArtifactValue> getChildValues() {
         throw new UnsupportedOperationException(toString());
       }
 
       @Override
-      FileArtifactValue getMetadata() {
+      public FileArtifactValue getMetadata() {
         throw new UnsupportedOperationException(toString());
       }
 
@@ -274,7 +386,7 @@ public class TreeArtifactValue implements HasDigest, SkyValue {
    *     artifact directory, or if {@link TreeArtifactVisitor#visit} throws {@link IOException}
    */
   public static void visitTree(Path parentDir, TreeArtifactVisitor visitor) throws IOException {
-    visitTree(parentDir, PathFragment.EMPTY_FRAGMENT, Preconditions.checkNotNull(visitor));
+    visitTree(parentDir, PathFragment.EMPTY_FRAGMENT, checkNotNull(visitor));
   }
 
   private static void visitTree(Path parentDir, PathFragment subdir, TreeArtifactVisitor visitor)
@@ -314,7 +426,7 @@ public class TreeArtifactValue implements HasDigest, SkyValue {
     // points to a file under the TreeArtifact, the link target traverses outside of the
     // TreeArtifact into a/b/outside_dir.
     PathFragment intermediatePath = subDir;
-    for (String pathSegment : linkTarget.getSegments()) {
+    for (String pathSegment : linkTarget.segments()) {
       intermediatePath = intermediatePath.getRelative(pathSegment);
       if (intermediatePath.containsUplevelReferences()) {
         String errorMessage =
@@ -327,37 +439,111 @@ public class TreeArtifactValue implements HasDigest, SkyValue {
     }
   }
 
-  private static final class BasicMultiBuilder implements MultiBuilder {
-    private final Map<
-            SpecialArtifact, ImmutableSortedMap.Builder<TreeFileArtifact, FileArtifactValue>>
-        map = new HashMap<>();
+  /** Builder for a {@link TreeArtifactValue}. */
+  public static final class Builder {
+    private final ImmutableSortedMap.Builder<TreeFileArtifact, FileArtifactValue> childData =
+        childDataBuilder();
+    private ArchivedRepresentation archivedRepresentation;
+    private final SpecialArtifact parent;
 
-    @Override
-    public void putChild(TreeFileArtifact child, FileArtifactValue metadata) {
-      map.computeIfAbsent(child.getParent(), parent -> ImmutableSortedMap.naturalOrder())
-          .put(child, metadata);
+    Builder(SpecialArtifact parent) {
+      checkArgument(parent.isTreeArtifact(), "%s is not a tree artifact", parent);
+      this.parent = parent;
     }
 
-    @Override
-    public void injectTo(MetadataInjector metadataInjector) {
-      map.forEach((parent, builder) -> metadataInjector.injectDirectory(parent, builder.build()));
+    /**
+     * Adds a child to this builder.
+     *
+     * <p>The child's {@linkplain TreeFileArtifact#getParent parent} <em>must</em> match the parent
+     * with which this builder was initialized.
+     *
+     * <p>Children may be added in any order. The children are sorted prior to constructing the
+     * final {@link TreeArtifactValue}.
+     *
+     * <p>It is illegal to call this method with {@link FileArtifactValue#OMITTED_FILE_MARKER}. When
+     *
+     * <p>It is illegal to call this method with {@link FileArtifactValue#OMITTED_FILE_MARKER}. When
+     * children are omitted, use {@link TreeArtifactValue#OMITTED_TREE_MARKER}.
+     *
+     * @return {@code this} for convenience
+     */
+    public Builder putChild(TreeFileArtifact child, FileArtifactValue metadata) {
+      checkArgument(
+          child.getParent().equals(parent),
+          "While building TreeArtifactValue for %s, got %s with parent %s",
+          parent,
+          child,
+          child.getParent());
+      checkArgument(
+          !FileArtifactValue.OMITTED_FILE_MARKER.equals(metadata),
+          "Cannot construct TreeArtifactValue for %s because child %s was omitted",
+          parent,
+          child);
+      childData.put(child, metadata);
+      return this;
     }
-  }
 
-  @ThreadSafe
-  private static final class ConcurrentMultiBuilder implements MultiBuilder {
-    private final ConcurrentMap<SpecialArtifact, ConcurrentMap<TreeFileArtifact, FileArtifactValue>>
-        map = new ConcurrentHashMap<>();
-
-    @Override
-    public void putChild(TreeFileArtifact child, FileArtifactValue metadata) {
-      map.computeIfAbsent(child.getParent(), parent -> new ConcurrentHashMap<>())
-          .put(child, metadata);
+    public Builder setArchivedRepresentation(
+        ArchivedTreeArtifact archivedTreeArtifact, FileArtifactValue metadata) {
+      return setArchivedRepresentation(
+          ArchivedRepresentation.create(archivedTreeArtifact, metadata));
     }
 
-    @Override
-    public void injectTo(MetadataInjector metadataInjector) {
-      map.forEach(metadataInjector::injectDirectory);
+    public Builder setArchivedRepresentation(ArchivedRepresentation archivedRepresentation) {
+      checkState(
+          this.archivedRepresentation == null,
+          "Tried to add 2 archived representations for: %s",
+          parent);
+      checkArgument(
+          parent.equals(archivedRepresentation.archivedTreeFileArtifact().getParent()),
+          "Cannot add archived representation: %s for a mismatching tree artifact: %s",
+          archivedRepresentation,
+          parent);
+      checkArgument(
+          !archivedRepresentation.archivedFileValue().equals(FileArtifactValue.OMITTED_FILE_MARKER),
+          "Cannot add archived representation: %s to %s because it has omitted metadata.",
+          archivedRepresentation,
+          parent);
+      this.archivedRepresentation = archivedRepresentation;
+      return this;
+    }
+
+    /** Builds the final {@link TreeArtifactValue}. */
+    public TreeArtifactValue build() {
+      ImmutableSortedMap<TreeFileArtifact, FileArtifactValue> finalChildData = childData.build();
+      if (finalChildData.isEmpty() && archivedRepresentation == null) {
+        return EMPTY;
+      }
+
+      Fingerprint fingerprint = new Fingerprint();
+      boolean entirelyRemote =
+          archivedRepresentation == null || archivedRepresentation.archivedFileValue().isRemote();
+
+      long totalChildSize = 0;
+      for (Map.Entry<TreeFileArtifact, FileArtifactValue> childData : finalChildData.entrySet()) {
+        // Digest will be deterministic because children are sorted.
+        fingerprint.addPath(childData.getKey().getParentRelativePath());
+        FileArtifactValue metadata = childData.getValue();
+        metadata.addTo(fingerprint);
+
+        // Tolerate a mix of local and remote children (b/152496153#comment80).
+        entirelyRemote &= metadata.isRemote();
+
+        if (metadata.getType() == FileStateType.REGULAR_FILE) {
+          totalChildSize += metadata.getSize();
+        }
+      }
+
+      if (archivedRepresentation != null) {
+        archivedRepresentation.archivedFileValue().addTo(fingerprint);
+      }
+
+      return new TreeArtifactValue(
+          fingerprint.digestAndReset(),
+          finalChildData,
+          totalChildSize,
+          archivedRepresentation,
+          entirelyRemote);
     }
   }
 }

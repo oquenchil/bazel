@@ -18,7 +18,6 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Interner;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
@@ -32,17 +31,17 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.ExpansionException;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
-import com.google.devtools.build.lib.skylarkbuildapi.cpp.CcToolchainVariablesApi;
-import com.google.devtools.build.lib.syntax.EvalException;
-import com.google.devtools.build.lib.syntax.Location;
-import java.io.Serializable;
+import com.google.devtools.build.lib.starlarkbuildapi.cpp.CcToolchainVariablesApi;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.Stack;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.EvalException;
+import net.starlark.java.eval.Starlark;
 
 /**
  * Configured build variables usable by the toolchain configuration.
@@ -71,12 +70,9 @@ public abstract class CcToolchainVariables implements CcToolchainVariablesApi {
 
   /** A plain text chunk of a string (containing no variables). */
   @Immutable
-  @AutoCodec
-  @VisibleForSerialization
-  static class StringLiteralChunk implements StringChunk, Serializable {
+  private static final class StringLiteralChunk implements StringChunk {
     private final String text;
 
-    @VisibleForSerialization
     StringLiteralChunk(String text) {
       this.text = text;
     }
@@ -100,7 +96,7 @@ public abstract class CcToolchainVariables implements CcToolchainVariablesApi {
 
     @Override
     public int hashCode() {
-      return Objects.hash(text);
+      return 31 + text.hashCode();
     }
 
     @Override
@@ -111,11 +107,9 @@ public abstract class CcToolchainVariables implements CcToolchainVariablesApi {
 
   /** A chunk of a string value into which a variable should be expanded. */
   @Immutable
-  @AutoCodec
-  static class VariableChunk implements StringChunk, Serializable {
+  private static final class VariableChunk implements StringChunk {
     private final String variableName;
 
-    @VisibleForSerialization
     VariableChunk(String variableName) {
       this.variableName = variableName;
     }
@@ -238,7 +232,7 @@ public abstract class CcToolchainVariables implements CcToolchainVariablesApi {
       if (current == -1) {
         current = value.length();
       }
-      final String text = value.substring(start, current);
+      String text = value.substring(start, current);
       chunks.add(new StringLiteralChunk(text));
     }
 
@@ -268,15 +262,9 @@ public abstract class CcToolchainVariables implements CcToolchainVariablesApi {
      *     position in the string.
      */
     private void abort(String error) throws EvalException {
-      throw new EvalException(
-          Location.BUILTIN,
-          "Invalid toolchain configuration: "
-              + error
-              + " at position "
-              + current
-              + " while parsing a flag containing '"
-              + value
-              + "'");
+      throw Starlark.errorf(
+          "Invalid toolchain configuration: %s at position %s while parsing a flag containing '%s'",
+          error, current, value);
     }
   }
 
@@ -348,6 +336,15 @@ public abstract class CcToolchainVariables implements CcToolchainVariablesApi {
     VariableValue var = getNonStructuredVariable(name);
     if (var != null) {
       return var;
+    }
+
+    if (!name.contains(".")) {
+      if (throwOnMissingVariable) {
+        throw new ExpansionException(
+            String.format(
+                "Invalid toolchain configuration: Cannot find variable named '%s'.", name));
+      }
+      return null;
     }
 
     if (structuredVariableCache == null) {
@@ -452,7 +449,9 @@ public abstract class CcToolchainVariables implements CcToolchainVariablesApi {
     }
   }
 
-  abstract Map<String, Object> getVariablesMap();
+  abstract Set<String> getVariableKeys();
+
+  abstract void addVariablesToMap(Map<String, Object> variablesMap);
 
   @Nullable
   abstract VariableValue getNonStructuredVariable(String name);
@@ -1282,10 +1281,10 @@ public abstract class CcToolchainVariables implements CcToolchainVariablesApi {
      */
     public Builder addAllNonTransitive(CcToolchainVariables variables) {
       SetView<String> intersection =
-          Sets.intersection(variables.getVariablesMap().keySet(), variablesMap.keySet());
+          Sets.intersection(variables.getVariableKeys(), variablesMap.keySet());
       Preconditions.checkArgument(
           intersection.isEmpty(), "Cannot overwrite existing variables: %s", intersection);
-      this.variablesMap.putAll(variables.getVariablesMap());
+      variables.addVariablesToMap(variablesMap);
       return this;
     }
 
@@ -1297,7 +1296,7 @@ public abstract class CcToolchainVariables implements CcToolchainVariablesApi {
             o instanceof String ? new StringValue((String) o) : (VariableValue) o;
         return new SingleVariables(parent, variablesMap.keySet().iterator().next(), variableValue);
       }
-      return new MapVariables(parent, ImmutableSortedMap.copyOf(variablesMap));
+      return new MapVariables(parent, variablesMap);
     }
   }
 
@@ -1313,20 +1312,52 @@ public abstract class CcToolchainVariables implements CcToolchainVariablesApi {
   @AutoCodec
   static class MapVariables extends CcToolchainVariables {
     private static final Interner<MapVariables> INTERNER = BlazeInterners.newWeakInterner();
+    private static final Interner<ImmutableMap<String, Integer>> KEY_INTERNER =
+        BlazeInterners.newWeakInterner();
 
     @Nullable private final CcToolchainVariables parent;
-    private final ImmutableMap<String, Object> variablesMap;
 
-    private MapVariables(CcToolchainVariables parent, ImmutableMap<String, Object> variablesMap) {
+    /**
+     * This is a slightly interesting data structure that's necessary to optimize for memory
+     * consumption. The premise is that a lot of compilations use the exact same variable keys, just
+     * with different values. Thus, it is important to store the keys separately so that they can be
+     * interned while storing the values in a compact way. keyToIndex maps from a variable name to
+     * the index of the corresponding value in values.
+     */
+    private final ImmutableMap<String, Integer> keyToIndex;
+
+    /** The values belonging to the keys stored in keyToIndex. */
+    private final ImmutableList<Object> values;
+
+    private MapVariables(CcToolchainVariables parent, Map<String, Object> variablesMap) {
       this.parent = parent;
-      this.variablesMap = variablesMap;
+      ImmutableMap.Builder<String, Integer> keyBuilder = ImmutableMap.builder();
+      ImmutableList.Builder<Object> valuesBuilder = ImmutableList.builder();
+      int index = 0;
+      for (String key : ImmutableList.sortedCopyOf(variablesMap.keySet())) {
+        keyBuilder.put(key, index++);
+        valuesBuilder.add(variablesMap.get(key));
+      }
+      this.keyToIndex = KEY_INTERNER.intern(keyBuilder.build());
+      this.values = valuesBuilder.build();
+    }
+
+    private MapVariables(
+        CcToolchainVariables parent,
+        ImmutableMap<String, Integer> keyToIndex,
+        ImmutableList<Object> values) {
+      this.parent = parent;
+      this.keyToIndex = keyToIndex;
+      this.values = values;
     }
 
     @AutoCodec.Instantiator
     @VisibleForSerialization
     static MapVariables create(
-        CcToolchainVariables parent, ImmutableMap<String, Object> variablesMap) {
-      return INTERNER.intern(new MapVariables(parent, variablesMap));
+        CcToolchainVariables parent,
+        ImmutableMap<String, Integer> keyToIndex,
+        ImmutableList<Object> values) {
+      return INTERNER.intern(new MapVariables(parent, keyToIndex, values));
     }
 
     @Override
@@ -1335,14 +1366,21 @@ public abstract class CcToolchainVariables implements CcToolchainVariablesApi {
     }
 
     @Override
-    Map<String, Object> getVariablesMap() {
-      return variablesMap;
+    Set<String> getVariableKeys() {
+      return keyToIndex.keySet();
+    }
+
+    @Override
+    void addVariablesToMap(Map<String, Object> variablesMap) {
+      for (Map.Entry<String, Integer> entry : keyToIndex.entrySet()) {
+        variablesMap.put(entry.getKey(), values.get(entry.getValue()));
+      }
     }
 
     @Override
     VariableValue getNonStructuredVariable(String name) {
-      if (variablesMap.containsKey(name)) {
-        Object o = variablesMap.get(name);
+      if (keyToIndex.containsKey(name)) {
+        Object o = values.get(keyToIndex.get(name));
         if (o instanceof String) {
           return new StringValue((String) o);
         }
@@ -1378,12 +1416,13 @@ public abstract class CcToolchainVariables implements CcToolchainVariablesApi {
       if (this.parent != that.parent) {
         return false;
       }
-      return Objects.equals(this.variablesMap, that.variablesMap);
+      return Objects.equals(this.keyToIndex, that.keyToIndex)
+          && Objects.equals(this.values, that.values);
     }
 
     @Override
     public int hashCode() {
-      return 31 * Objects.hashCode(variablesMap) + System.identityHashCode(parent);
+      return 31 * Objects.hash(keyToIndex, values) + System.identityHashCode(parent);
     }
   }
 
@@ -1411,8 +1450,13 @@ public abstract class CcToolchainVariables implements CcToolchainVariablesApi {
     }
 
     @Override
-    Map<String, Object> getVariablesMap() {
-      return ImmutableMap.of(name, variableValue);
+    Set<String> getVariableKeys() {
+      return ImmutableSet.of(name);
+    }
+
+    @Override
+    void addVariablesToMap(Map<String, Object> variablesMap) {
+      variablesMap.put(name, variableValue);
     }
 
     @Override

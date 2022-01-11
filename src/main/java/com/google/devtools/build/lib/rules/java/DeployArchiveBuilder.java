@@ -18,10 +18,10 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.CommandLine;
-import com.google.devtools.build.lib.actions.ExecutionRequirements;
 import com.google.devtools.build.lib.actions.ParamFileInfo;
 import com.google.devtools.build.lib.actions.ParameterFile.ParameterFileType;
 import com.google.devtools.build.lib.actions.ResourceSet;
@@ -30,10 +30,11 @@ import com.google.devtools.build.lib.analysis.actions.CustomCommandLine;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
+import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
+import com.google.devtools.build.lib.packages.TargetUtils;
 import com.google.devtools.build.lib.rules.cpp.CppHelper;
 import com.google.devtools.build.lib.rules.java.JavaConfiguration.OneVersionEnforcementLevel;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
 import javax.annotation.Nullable;
 
@@ -45,8 +46,6 @@ public class DeployArchiveBuilder {
    * recent example, 400 MB of memory was enough for about 500,000 entries.
    */
   private static final int SINGLEJAR_MEMORY_MB = 1600;
-
-  private static final String SINGLEJAR_MAX_MEMORY = "-Xmx" + SINGLEJAR_MEMORY_MB + "m";
 
   private static final ResourceSet DEPLOY_ACTION_RESOURCE_SET =
       ResourceSet.createWithRamCpu(/*memoryMb = */ SINGLEJAR_MEMORY_MB, /*cpuUsage = */ 1);
@@ -184,8 +183,7 @@ public class DeployArchiveBuilder {
       NestedSet<Artifact> runtimeClasspath,
       boolean includeBuildData,
       Compression compress,
-      Artifact launcher,
-      boolean usingNativeSinglejar) {
+      Artifact launcher) {
     return defaultSingleJarCommandLine(
         outputJar,
         javaMainClass,
@@ -196,7 +194,6 @@ public class DeployArchiveBuilder {
         includeBuildData,
         compress,
         launcher,
-        usingNativeSinglejar,
         OneVersionEnforcementLevel.OFF,
         null);
   }
@@ -211,7 +208,6 @@ public class DeployArchiveBuilder {
       boolean includeBuildData,
       Compression compress,
       Artifact launcher,
-      boolean usingNativeSinglejar,
       OneVersionEnforcementLevel oneVersionEnforcementLevel,
       @Nullable Artifact oneVersionAllowlistArtifact) {
 
@@ -244,14 +240,10 @@ public class DeployArchiveBuilder {
 
     args.addExecPaths("--classpath_resources", classpathResources);
     if (runtimeClasspath != null) {
-      if (usingNativeSinglejar) {
-        args.addAll(
-            "--sources", OneVersionCheckActionBuilder.jarAndTargetVectorArg(runtimeClasspath));
-      } else {
-        args.addExecPaths("--sources", runtimeClasspath);
-      }
+      args.addAll(
+          "--sources", OneVersionCheckActionBuilder.jarAndTargetVectorArg(runtimeClasspath));
     }
-    if (oneVersionEnforcementLevel != OneVersionEnforcementLevel.OFF && usingNativeSinglejar) {
+    if (oneVersionEnforcementLevel != OneVersionEnforcementLevel.OFF) {
       args.add("--enforce_one_version");
       // RuleErrors should have been added in Builder.build() before this command
       // line is invoked.
@@ -343,16 +335,21 @@ public class DeployArchiveBuilder {
     if (sharedArchive != null) {
       inputs.add(sharedArchive);
     }
-    // If singlejar's name ends with .jar, it is Java application, otherwise it is native.
-    // TODO(asmundak): once https://github.com/bazelbuild/bazel/issues/2241 is fixed (that is,
-    // the native singlejar is used on windows) remove support for the Java implementation
-    Artifact singlejar = JavaToolchainProvider.from(ruleContext).getSingleJar();
-    boolean usingNativeSinglejar = !singlejar.getFilename().endsWith(".jar");
 
+    Artifact singlejar = JavaToolchainProvider.from(ruleContext).getSingleJar();
+
+    String toolchainIdentifier = null;
+    try {
+      toolchainIdentifier =
+          CppHelper.getToolchainUsingDefaultCcToolchainAttribute(ruleContext)
+              .getToolchainIdentifier();
+    } catch (RuleErrorException e) {
+      // Something went wrong loading the toolchain, which is an exceptional condition.
+      throw new IllegalStateException("Unable to load cc toolchain", e);
+    }
     CommandLine commandLine =
         semantics.buildSingleJarCommandLine(
-            CppHelper.getToolchainUsingDefaultCcToolchainAttribute(ruleContext)
-                .getToolchainIdentifier(),
+            toolchainIdentifier,
             outputJar,
             javaStartClass,
             deployManifestLines,
@@ -362,7 +359,6 @@ public class DeployArchiveBuilder {
             includeBuildData,
             compression,
             launcher,
-            usingNativeSinglejar,
             oneVersionEnforcementLevel,
             oneVersionAllowlistArtifact,
             sharedArchive);
@@ -370,36 +366,23 @@ public class DeployArchiveBuilder {
       commandLine = CommandLine.concat(commandLine, ImmutableList.of("--check_desugar_deps"));
     }
 
-    List<String> jvmArgs = ImmutableList.of(SINGLEJAR_MAX_MEMORY);
+    ImmutableMap.Builder<String, String> executionInfo = ImmutableMap.builder();
+    executionInfo.putAll(
+        TargetUtils.getExecutionInfo(ruleContext.getRule(), ruleContext.isAllowTagsPropagation()));
 
-    if (!usingNativeSinglejar) {
-      ruleContext.registerAction(
-          new SpawnAction.Builder()
-              .addTransitiveInputs(inputs.build())
-              .addTransitiveInputs(JavaRuntimeInfo.forHost(ruleContext).javaBaseInputsMiddleman())
-              .addOutput(outputJar)
-              .setResources(DEPLOY_ACTION_RESOURCE_SET)
-              .setJarExecutable(JavaCommon.getHostJavaExecutable(ruleContext), singlejar, jvmArgs)
-              .addCommandLine(
-                  commandLine,
-                  ParamFileInfo.builder(ParameterFileType.SHELL_QUOTED).setUseAlways(true).build())
-              .setProgressMessage("Building deploy jar %s", outputJar.prettyPrint())
-              .setMnemonic("JavaDeployJar")
-              .setExecutionInfo(ExecutionRequirements.WORKER_MODE_ENABLED)
-              .build(ruleContext));
-    } else {
-      ruleContext.registerAction(
-          new SpawnAction.Builder()
-              .addTransitiveInputs(inputs.build())
-              .addOutput(outputJar)
-              .setResources(DEPLOY_ACTION_RESOURCE_SET)
-              .setExecutable(singlejar)
-              .addCommandLine(
-                  commandLine,
-                  ParamFileInfo.builder(ParameterFileType.SHELL_QUOTED).setUseAlways(true).build())
-              .setProgressMessage("Building deploy jar %s", outputJar.prettyPrint())
-              .setMnemonic("JavaDeployJar")
-              .build(ruleContext));
-    }
+    ruleContext.registerAction(
+        new SpawnAction.Builder()
+            .useDefaultShellEnvironment()
+            .addTransitiveInputs(inputs.build())
+            .addOutput(outputJar)
+            .setResources(DEPLOY_ACTION_RESOURCE_SET)
+            .setExecutable(singlejar)
+            .addCommandLine(
+                commandLine,
+                ParamFileInfo.builder(ParameterFileType.SHELL_QUOTED).setUseAlways(true).build())
+            .setProgressMessage("Building deploy jar %{output}")
+            .setMnemonic("JavaDeployJar")
+            .setExecutionInfo(executionInfo.build())
+            .build(ruleContext));
   }
 }

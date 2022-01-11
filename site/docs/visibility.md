@@ -1,7 +1,27 @@
 ---
 layout: documentation
 title: Visibility
+category: getting-started
 ---
+# Visibility
+
+
+This page covers visibility specifications, best practices, and examples.
+
+Visibility controls whether a target can be used (depended on) by targets in
+other packages. This helps other people distinguish between your library's
+public API and its implementation details, and is an important tool to help
+enforce structure as your workspace grows.
+
+If you need to disable the visibility check (for example when experimenting),
+use `--check_visibility=false`.
+
+
+For more details on package and subpackages, see
+<a href="build-ref.html">Concepts and terminology</a>.
+
+## Visibility specifications
+
 All rule targets have a `visibility` attribute that takes a list of labels. One
 target is visible to another if they are in the same package, or if they are
 granted visibility by one of the labels.
@@ -38,6 +58,8 @@ in `//tests/BUILD`, but not by targets defined in `//tests/integration/BUILD`.
 As a special case, `package_group` targets themselves do not have a `visibility`
 attribute; they are always publicly visible.
 
+Visibility cannot be set to specific non-package_group targets. That triggers a "Label does not refer to a package group" or "cycle in dependency graph" error.
+
 ## Visibility of a rule target
 
 If a rule target does not set the `visibility` attribute, its visibility is
@@ -46,6 +68,25 @@ given by the
 specified in the [`package`](be/functions.html#package) statement of the
 target's BUILD file. If there is no such `default_visibility` declaration, the
 visibility is `//visibility:private`.
+
+`config_setting` visibility has historically not been enforced.
+`--incompatible_enforce_config_setting_visibility` and
+`--incompatible_config_setting_private_default_visibility` provide migration
+logic for converging with other rules.
+
+If `--incompatible_enforce_config_setting_visibility=false`, every
+`config_setting` is unconditionally visible to all targets.
+
+Else if `--incompatible_config_setting_private_default_visibility=false`, any
+`config_setting` that doesn't explicitly set visibility is `//visibility:public`
+(ignoring package [`default_visibility`](be/functions.html#package.default_visibility)).
+
+Else if `--incompatible_config_setting_private_default_visibility=true`,
+`config_setting` uses the same visibility logic as all other rules.
+
+Best practice is to treat all `config_setting` targets like other rules:
+explicitly set `visibility` on any `config_setting` used anywhere outside its
+package.
 
 ### Example
 
@@ -146,6 +187,10 @@ for more details.
 
 `load` statements are currently not subject to visibility. It is possible to
 load a `bzl` file anywhere in the workspace.
+
+However, users may choose to run the Buildifier linter.
+The [bzl-visibility](https://github.com/bazelbuild/buildtools/blob/master/WARNINGS.md#bzl-visibility) check
+provides a warning if users `load` from beneath a subdirectory named `internal` or `private`.
 
 ## Visibility of implicit dependencies
 

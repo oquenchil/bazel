@@ -16,9 +16,9 @@ package com.google.devtools.build.lib.exec;
 
 import static com.google.common.truth.Truth.assertThat;
 
-import com.google.common.base.Strings;
 import com.google.common.io.ByteStreams;
 import com.google.devtools.build.lib.util.io.OutErr;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
@@ -33,7 +33,7 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class StreamedTestOutputTest {
 
-  private final InMemoryFileSystem fileSystem = new InMemoryFileSystem();
+  private final InMemoryFileSystem fileSystem = new InMemoryFileSystem(DigestHashFunction.SHA256);
 
   @Test
   public void testEmptyFile() throws IOException {
@@ -81,7 +81,7 @@ public class StreamedTestOutputTest {
         new StreamedTestOutput(OutErr.create(out, err), fileSystem.getPath("/myfile"))) {}
 
     assertThat(out.toString(StandardCharsets.UTF_8.name()))
-        .isEqualTo(String.format("included%nlines%n"));
+        .isEqualTo("included" + System.lineSeparator() + "lines" + System.lineSeparator());
     assertThat(err.toString(StandardCharsets.UTF_8.name())).isEmpty();
   }
 
@@ -89,10 +89,7 @@ public class StreamedTestOutputTest {
   public void testWatcherDoneAfterClose() throws IOException {
     Path watchedPath = fileSystem.getPath("/myfile");
     FileSystemUtils.writeLinesAs(
-        watchedPath,
-        StandardCharsets.UTF_8,
-        TestLogHelper.HEADER_DELIMITER,
-        Strings.repeat("x", 10 << 20));
+        watchedPath, StandardCharsets.UTF_8, TestLogHelper.HEADER_DELIMITER, "x".repeat(10 << 20));
     StreamedTestOutput underTest =
         new StreamedTestOutput(
             OutErr.create(ByteStreams.nullOutputStream(), ByteStreams.nullOutputStream()),
@@ -105,10 +102,7 @@ public class StreamedTestOutputTest {
   public void testInterruptWaitsForWatcherToClose() throws IOException {
     Path watchedPath = fileSystem.getPath("/myfile");
     FileSystemUtils.writeLinesAs(
-        watchedPath,
-        StandardCharsets.UTF_8,
-        TestLogHelper.HEADER_DELIMITER,
-        Strings.repeat("x", 10 << 20));
+        watchedPath, StandardCharsets.UTF_8, TestLogHelper.HEADER_DELIMITER, "x".repeat(10 << 20));
 
     StreamedTestOutput underTest =
         new StreamedTestOutput(

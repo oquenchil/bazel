@@ -13,16 +13,10 @@
 // limitations under the License.
 package com.google.testing.coverage;
 
-import static java.nio.charset.StandardCharsets.UTF_8;
-import static java.nio.file.StandardOpenOption.APPEND;
-import static java.nio.file.StandardOpenOption.CREATE;
 
 import com.google.common.collect.ImmutableSet;
-import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
-import java.io.Writer;
-import java.nio.file.Files;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -49,7 +43,11 @@ public class JacocoLCOVFormatter {
   // Exec paths of the uninstrumented files that are being analyzed. This is helpful for files in
   // jars passed through java_import or some custom rule where blaze doesn't have enough context to
   // compute the right paths, but relies on these pre-computed exec paths.
+  // Exec paths can be provided in two formats, either as a plain string or as a delimited
+  // string mapping source file paths to class paths.
   private final ImmutableSet<String> execPathsOfUninstrumentedFiles;
+
+  private static final String EXEC_PATH_DELIMITER = "///";
 
   public JacocoLCOVFormatter(ImmutableSet<String> execPathsOfUninstrumentedFiles) {
     this.execPathsOfUninstrumentedFiles = execPathsOfUninstrumentedFiles;
@@ -60,7 +58,7 @@ public class JacocoLCOVFormatter {
   }
 
   public IReportVisitor createVisitor(
-      final File output, final Map<String, BranchCoverageDetail> branchCoverageDetail) {
+      PrintWriter output, final Map<String, BranchCoverageDetail> branchCoverageDetail) {
     return new IReportVisitor() {
 
       private Map<String, Map<String, IClassCoverage>> sourceToClassCoverage = new TreeMap<>();
@@ -73,7 +71,15 @@ public class JacocoLCOVFormatter {
 
         String matchingFileName = fileName.startsWith("/") ? fileName : "/" + fileName;
         for (String execPath : execPathsOfUninstrumentedFiles) {
-          if (execPath.endsWith(matchingFileName)) {
+          if (execPath.contains(EXEC_PATH_DELIMITER)) {
+            String[] parts = execPath.split(EXEC_PATH_DELIMITER, 2);
+            if (parts.length != 2) {
+              continue;
+            }
+            if (parts[1].equals(matchingFileName)) {
+              return parts[0];
+            }
+          } else if (execPath.endsWith(matchingFileName)) {
             return execPath;
           }
         }
@@ -86,11 +92,8 @@ public class JacocoLCOVFormatter {
 
       @Override
       public void visitEnd() throws IOException {
-        try (Writer fileWriter = Files.newBufferedWriter(output.toPath(), UTF_8, CREATE, APPEND);
-            PrintWriter printWriter = new PrintWriter(fileWriter)) {
-          for (String sourceFile : sourceToClassCoverage.keySet()) {
-            processSourceFile(printWriter, sourceFile);
-          }
+        for (String sourceFile : sourceToClassCoverage.keySet()) {
+          processSourceFile(output, sourceFile);
         }
       }
 
@@ -145,6 +148,7 @@ public class JacocoLCOVFormatter {
             }
           }
 
+          // List branches
           for (IClassCoverage clsCoverage : sourceToClassCoverage.get(sourceFile).values()) {
             BranchCoverageDetail detail = branchCoverageDetail.get(clsCoverage.getName());
             if (detail != null) {
@@ -153,15 +157,18 @@ public class JacocoLCOVFormatter {
                 boolean executed = detail.getExecutedBit(line);
                 if (executed) {
                   for (int branchIdx = 0; branchIdx < numBranches; branchIdx++) {
+                    // We haven't got execution counts for branches; just record if they were hit or
+                    // not.
                     if (detail.getTakenBit(line, branchIdx)) {
-                      writer.printf("BA:%d,%d\n", line, 2); // executed, taken
+                      writer.printf("BRDA:%d,%d,%d,%d\n", line, 0, branchIdx, 1); // executed, taken
                     } else {
-                      writer.printf("BA:%d,%d\n", line, 1); // executed, not taken
+                      writer.printf(
+                          "BRDA:%d,%d,%d,%d\n", line, 0, branchIdx, 0); // executed, not taken
                     }
                   }
                 } else {
                   for (int branchIdx = 0; branchIdx < numBranches; branchIdx++) {
-                    writer.printf("BA:%d,%d\n", line, 0); // not executed
+                    writer.printf("BRDA:%d,%d,%d,%s\n", line, 0, branchIdx, "-"); // not executed
                   }
                 }
               }
@@ -174,7 +181,9 @@ public class JacocoLCOVFormatter {
           for (int line = firstLine; line <= lastLine; line++) {
             ICounter instructionCounter = srcCoverage.getLine(line).getInstructionCounter();
             if (instructionCounter.getTotalCount() != 0) {
-              writer.printf("DA:%d,%d\n", line, instructionCounter.getCoveredCount());
+              // All we can do is say if a line was hit, we do not have execution counts.
+              int execCount = instructionCounter.getCoveredCount() > 0 ? 1 : 0;
+              writer.printf("DA:%d,%d\n", line, execCount);
             }
           }
         }

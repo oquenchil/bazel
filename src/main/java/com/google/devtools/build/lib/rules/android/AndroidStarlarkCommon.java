@@ -14,10 +14,11 @@
 package com.google.devtools.build.lib.rules.android;
 
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.analysis.config.transitions.StarlarkExposedRuleTransitionFactory;
 import com.google.devtools.build.lib.rules.java.JavaCompilationArgsProvider;
 import com.google.devtools.build.lib.rules.java.JavaInfo;
-import com.google.devtools.build.lib.skylarkbuildapi.android.AndroidSplitTransititionApi;
-import com.google.devtools.build.lib.skylarkbuildapi.android.AndroidStarlarkCommonApi;
+import com.google.devtools.build.lib.starlarkbuildapi.android.AndroidSplitTransitionApi;
+import com.google.devtools.build.lib.starlarkbuildapi.android.AndroidStarlarkCommonApi;
 
 /** Common utilities for Starlark rules related to Android. */
 public class AndroidStarlarkCommon implements AndroidStarlarkCommonApi<Artifact, JavaInfo> {
@@ -33,8 +34,13 @@ public class AndroidStarlarkCommon implements AndroidStarlarkCommonApi<Artifact,
   }
 
   @Override
-  public AndroidSplitTransititionApi getAndroidSplitTransition() {
+  public AndroidSplitTransitionApi getAndroidSplitTransition() {
     return AndroidRuleClasses.ANDROID_SPLIT_TRANSITION;
+  }
+
+  @Override
+  public StarlarkExposedRuleTransitionFactory getAndroidPlatformsTransition() {
+    return new AndroidPlatformsTransition.AndroidPlatformsTransitionFactory();
   }
 
   /**

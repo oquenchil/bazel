@@ -23,7 +23,6 @@ import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.Runfiles;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
 import com.google.devtools.build.lib.analysis.RunfilesSupport;
-import com.google.devtools.build.lib.analysis.TransitionMode;
 import com.google.devtools.build.lib.packages.BuildType;
 import com.google.devtools.build.lib.packages.TriState;
 import com.google.devtools.build.lib.rules.cpp.CcCommon.CcFlagsSupplier;
@@ -47,9 +46,10 @@ public abstract class PyExecutable implements RuleConfiguredTargetFactory {
     ruleContext.initConfigurationMakeVariableContext(new CcFlagsSupplier(ruleContext));
 
     PythonSemantics semantics = createSemantics();
-    PyCommon common = new PyCommon(ruleContext, semantics);
+    PyCommon common =
+        new PyCommon(ruleContext, semantics, /*validateSources=*/ true, /*requiresMainFile=*/ true);
 
-    List<Artifact> srcs = common.validateSrcs();
+    List<Artifact> srcs = common.getPythonSources();
     List<Artifact> allOutputs =
         new ArrayList<>(semantics.precompiledPythonFiles(ruleContext, srcs, common));
     if (ruleContext.hasErrors()) {
@@ -62,14 +62,15 @@ public abstract class PyExecutable implements RuleConfiguredTargetFactory {
       return null;
     }
 
-    CcInfo ccInfo =
-        semantics.buildCcInfoProvider(ruleContext.getPrerequisites("deps", TransitionMode.TARGET));
+    CcInfo ccInfo = semantics.buildCcInfoProvider(ruleContext.getPrerequisites("deps"));
 
     Runfiles commonRunfiles = collectCommonRunfiles(ruleContext, common, semantics, ccInfo);
 
-    Runfiles.Builder defaultRunfilesBuilder = new Runfiles.Builder(
-        ruleContext.getWorkspaceName(), ruleContext.getConfiguration().legacyExternalRunfiles())
-        .merge(commonRunfiles);
+    Runfiles.Builder defaultRunfilesBuilder =
+        new Runfiles.Builder(
+                ruleContext.getWorkspaceName(),
+                ruleContext.getConfiguration().legacyExternalRunfiles())
+            .merge(commonRunfiles);
     semantics.collectDefaultRunfilesForBinary(ruleContext, common, defaultRunfilesBuilder);
 
     common.createExecutable(ccInfo, defaultRunfilesBuilder);
@@ -77,10 +78,7 @@ public abstract class PyExecutable implements RuleConfiguredTargetFactory {
     Runfiles defaultRunfiles = defaultRunfilesBuilder.build();
 
     RunfilesSupport runfilesSupport =
-        RunfilesSupport.withExecutable(
-            ruleContext,
-            defaultRunfiles,
-            common.getExecutable());
+        RunfilesSupport.withExecutable(ruleContext, defaultRunfiles, common.getExecutable());
 
     if (ruleContext.hasErrors()) {
       return null;
@@ -104,8 +102,7 @@ public abstract class PyExecutable implements RuleConfiguredTargetFactory {
 
     RunfilesProvider runfilesProvider = RunfilesProvider.withData(defaultRunfiles, dataRunfiles);
 
-    RuleConfiguredTargetBuilder builder =
-        new RuleConfiguredTargetBuilder(ruleContext);
+    RuleConfiguredTargetBuilder builder = new RuleConfiguredTargetBuilder(ruleContext);
     common.addCommonTransitiveInfoProviders(builder, common.getFilesToBuild());
 
     semantics.postInitExecutable(ruleContext, runfilesSupport, common, builder);
@@ -147,16 +144,13 @@ public abstract class PyExecutable implements RuleConfiguredTargetFactory {
   private static Runfiles collectCommonRunfiles(
       RuleContext ruleContext, PyCommon common, PythonSemantics semantics, CcInfo ccInfo)
       throws InterruptedException, RuleErrorException {
-    Runfiles.Builder builder = new Runfiles.Builder(
-        ruleContext.getWorkspaceName(), ruleContext.getConfiguration().legacyExternalRunfiles());
+    Runfiles.Builder builder =
+        new Runfiles.Builder(
+            ruleContext.getWorkspaceName(),
+            ruleContext.getConfiguration().legacyExternalRunfiles());
     builder.addArtifact(common.getExecutable());
-    if (common.getConvertedFiles() != null) {
-      builder.addSymlinks(common.getConvertedFiles());
-    } else {
-      builder.addTransitiveArtifacts(common.getFilesToBuild());
-    }
+    builder.addTransitiveArtifacts(common.getFilesToBuild());
     semantics.collectDefaultRunfiles(ruleContext, builder);
-    builder.add(ruleContext, PythonRunfilesProvider.TO_RUNFILES);
 
     maybeCreateInitFiles(ruleContext, builder, semantics);
 

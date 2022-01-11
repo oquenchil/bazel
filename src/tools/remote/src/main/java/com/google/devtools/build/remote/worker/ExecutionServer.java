@@ -35,9 +35,13 @@ import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.devtools.build.lib.actions.ExecException;
+import com.google.devtools.build.lib.events.NullEventHandler;
 import com.google.devtools.build.lib.remote.ExecutionStatusException;
+import com.google.devtools.build.lib.remote.UploadManifest;
 import com.google.devtools.build.lib.remote.common.CacheNotFoundException;
+import com.google.devtools.build.lib.remote.common.RemoteActionExecutionContext;
 import com.google.devtools.build.lib.remote.common.RemoteCacheClient.ActionKey;
+import com.google.devtools.build.lib.remote.common.RemotePathResolver;
 import com.google.devtools.build.lib.remote.util.DigestUtil;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
 import com.google.devtools.build.lib.shell.AbnormalTerminationException;
@@ -49,10 +53,10 @@ import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.longrunning.Operation;
 import com.google.protobuf.Any;
+import com.google.protobuf.ExtensionRegistry;
 import com.google.protobuf.util.Durations;
 import com.google.rpc.Code;
 import com.google.rpc.Status;
-import io.grpc.Context;
 import io.grpc.StatusException;
 import io.grpc.protobuf.StatusProto;
 import io.grpc.stub.StreamObserver;
@@ -198,9 +202,12 @@ final class ExecutionServer extends ExecutionImplBase {
 
   @Override
   public void execute(ExecuteRequest request, StreamObserver<Operation> responseObserver) {
+    RequestMetadata metadata = TracingMetadataUtils.fromCurrentContext();
+    RemoteActionExecutionContext context = RemoteActionExecutionContext.create(metadata);
+
     final String opName = UUID.randomUUID().toString();
     ListenableFuture<ActionResult> future =
-        executorService.submit(Context.current().wrap(() -> execute(request, opName)));
+        executorService.submit(() -> execute(context, request, opName));
     operationsCache.put(opName, future);
     // Send the first operation.
     responseObserver.onNext(Operation.newBuilder().setName(opName).build());
@@ -209,19 +216,20 @@ final class ExecutionServer extends ExecutionImplBase {
   }
 
   @SuppressWarnings("LogAndThrow")
-  private ActionResult execute(ExecuteRequest request, String id)
+  private ActionResult execute(
+      RemoteActionExecutionContext context, ExecuteRequest request, String id)
       throws IOException, InterruptedException, StatusException {
     Path tempRoot = workPath.getRelative("build-" + id);
     String workDetails = "";
     try {
       tempRoot.createDirectory();
-      RequestMetadata meta = TracingMetadataUtils.fromCurrentContext();
+      RequestMetadata meta = context.getRequestMetadata();
       workDetails =
           String.format(
               "build-request-id: %s command-id: %s action-id: %s",
               meta.getCorrelatedInvocationsId(), meta.getToolInvocationId(), meta.getActionId());
       logger.atFine().log("Received work for: %s", workDetails);
-      ActionResult result = execute(request.getActionDigest(), tempRoot);
+      ActionResult result = execute(context, request.getActionDigest(), tempRoot);
       logger.atFine().log("Completed %s", workDetails);
       return result;
     } catch (Exception e) {
@@ -240,22 +248,32 @@ final class ExecutionServer extends ExecutionImplBase {
     }
   }
 
-  private ActionResult execute(Digest actionDigest, Path execRoot)
+  private ActionResult execute(
+      RemoteActionExecutionContext context, Digest actionDigest, Path execRoot)
       throws IOException, InterruptedException, StatusException {
-    Command command = null;
-    Action action = null;
+    Command command;
+    Action action;
     ActionKey actionKey = digestUtil.asActionKey(actionDigest);
     try {
-      action = Action.parseFrom(getFromFuture(cache.downloadBlob(actionDigest)));
-      command = Command.parseFrom(getFromFuture(cache.downloadBlob(action.getCommandDigest())));
-      cache.downloadTree(action.getInputRootDigest(), execRoot);
+      action =
+          Action.parseFrom(
+              getFromFuture(cache.downloadBlob(context, actionDigest)),
+              ExtensionRegistry.getEmptyRegistry());
+      command =
+          Command.parseFrom(
+              getFromFuture(cache.downloadBlob(context, action.getCommandDigest())),
+              ExtensionRegistry.getEmptyRegistry());
+      cache.downloadTree(context, action.getInputRootDigest(), execRoot);
     } catch (CacheNotFoundException e) {
       throw StatusUtils.notFoundError(e.getMissingDigest());
     }
 
+    Path workingDirectory = execRoot.getRelative(command.getWorkingDirectory());
+    FileSystemUtils.createDirectoryAndParents(workingDirectory);
+
     List<Path> outputs = new ArrayList<>(command.getOutputFilesList().size());
     for (String output : command.getOutputFilesList()) {
-      Path file = execRoot.getRelative(output);
+      Path file = workingDirectory.getRelative(output);
       if (file.exists()) {
         throw new FileAlreadyExistsException("Output file already exists: " + file);
       }
@@ -263,7 +281,7 @@ final class ExecutionServer extends ExecutionImplBase {
       outputs.add(file);
     }
     for (String output : command.getOutputDirectoriesList()) {
-      Path file = execRoot.getRelative(output);
+      Path file = workingDirectory.getRelative(output);
       if (file.exists()) {
         throw new FileAlreadyExistsException("Output directory/file already exists: " + file);
       }
@@ -273,7 +291,8 @@ final class ExecutionServer extends ExecutionImplBase {
 
     // TODO(ulfjack): This is basically a copy of LocalSpawnRunner. Ideally, we'd use that
     // implementation instead of copying it.
-    com.google.devtools.build.lib.shell.Command cmd = getCommand(command, execRoot.getPathString());
+    com.google.devtools.build.lib.shell.Command cmd =
+        getCommand(command, workingDirectory.getPathString());
     long startTime = System.currentTimeMillis();
     CommandResult cmdResult = null;
 
@@ -312,7 +331,7 @@ final class ExecutionServer extends ExecutionImplBase {
             String.format(
                 "Command:\n%s\nexceeded deadline of %f seconds.",
                 Arrays.toString(command.getArgumentsList().toArray()), timeoutMillis / 1000.0);
-        logger.atWarning().log(errMessage);
+        logger.atWarning().log("%s", errMessage);
         errStatus =
             Status.newBuilder()
                 .setCode(Code.DEADLINE_EXCEEDED.getNumber())
@@ -327,7 +346,18 @@ final class ExecutionServer extends ExecutionImplBase {
 
       ActionResult result = null;
       try {
-        result = cache.upload(actionKey, action, command, execRoot, outputs, outErr, exitCode);
+        UploadManifest manifest =
+            UploadManifest.create(
+                cache.getRemoteOptions(),
+                digestUtil,
+                RemotePathResolver.createDefault(workingDirectory),
+                actionKey,
+                action,
+                command,
+                outputs,
+                outErr,
+                exitCode);
+        result = manifest.upload(context, cache, NullEventHandler.INSTANCE);
       } catch (ExecException e) {
         if (errStatus == null) {
           errStatus =
@@ -376,7 +406,7 @@ final class ExecutionServer extends ExecutionImplBase {
   // This is used to set "-u UID" flag for commands running inside Docker containers. There are
   // only a small handful of cases where uid is vital (e.g., if strict permissions are set on the
   // output files), so most use cases would work without setting uid.
-  private static long getUid() {
+  private static long getUid() throws InterruptedException {
     com.google.devtools.build.lib.shell.Command cmd =
         new com.google.devtools.build.lib.shell.Command(
             new String[] {"id", "-u"},
@@ -442,7 +472,7 @@ final class ExecutionServer extends ExecutionImplBase {
   // arguments. Otherwise, returns a Command that would run the specified command inside the
   // specified docker container.
   private com.google.devtools.build.lib.shell.Command getCommand(Command cmd, String pathString)
-      throws StatusException {
+      throws StatusException, InterruptedException {
     Map<String, String> environmentVariables = getEnvironmentVariables(cmd);
     // This allows Bazel's integration tests to test for the remote platform.
     environmentVariables.put("BAZEL_REMOTE_PLATFORM", platformAsString(cmd.getPlatform()));

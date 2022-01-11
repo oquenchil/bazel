@@ -197,6 +197,7 @@ function write_xml_output_file {
       error_msg="<error message=\"exited with error code $exitCode\"></error>"
     fi
     test_name="${TEST_BINARY#./}"
+    test_name="${TEST_BINARY#../}"
     # Ensure that test shards have unique names in the xml output.
     if [[ -n "${TEST_TOTAL_SHARDS+x}" ]] && ((TEST_TOTAL_SHARDS != 0)); then
       ((shard_num=TEST_SHARD_INDEX+1))
@@ -361,7 +362,7 @@ wait $childPid
 # By this point, we have everything we're willing to wait for. Tidy up our own
 # processes and move on.
 kill_group SIGKILL $childPid
-kill -SIGKILL $cleanupPid &> /dev/null
+kill_group SIGKILL $cleanupPid &> /dev/null
 wait $cleanupPid
 
 for signal in $signals; do
@@ -404,6 +405,11 @@ if [[ -n "$TEST_UNDECLARED_OUTPUTS_ANNOTATIONS" && \
   (
    shopt -s failglob
    cat "$TEST_UNDECLARED_OUTPUTS_ANNOTATIONS_DIR"/*.part > "$TEST_UNDECLARED_OUTPUTS_ANNOTATIONS"
+  ) 2> /dev/null
+  (
+   # length-delimited proto files
+   shopt -s failglob
+   cat $TEST_UNDECLARED_OUTPUTS_ANNOTATIONS_DIR/*.pb > "${TEST_UNDECLARED_OUTPUTS_ANNOTATIONS}.pb"
   ) 2> /dev/null
 fi
 

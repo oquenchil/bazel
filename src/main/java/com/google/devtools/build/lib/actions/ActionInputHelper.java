@@ -14,9 +14,6 @@
 
 package com.google.devtools.build.lib.actions;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Function;
-import com.google.common.base.Functions;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
@@ -24,47 +21,18 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.List;
 
 /** Helper utility to create ActionInput instances. */
 public final class ActionInputHelper {
   private ActionInputHelper() {}
 
-  @VisibleForTesting
-  public static ArtifactExpander actionGraphArtifactExpander(ActionGraph actionGraph) {
-    return new ArtifactExpander() {
-      @Override
-      public void expand(Artifact mm, Collection<? super Artifact> output) {
-        // Skyframe is stricter in that it checks that "mm" is a input of the action, because
-        // it cannot expand arbitrary middlemen without access to a global action graph.
-        // We could check this constraint here too, but it seems unnecessary. This code is
-        // going away anyway.
-        Preconditions.checkArgument(mm.isMiddlemanArtifact(), "%s is not a middleman artifact", mm);
-        ActionAnalysisMetadata middlemanAction = actionGraph.getGeneratingAction(mm);
-        Preconditions.checkState(middlemanAction != null, mm);
-        // TODO(bazel-team): Consider expanding recursively or throwing an exception here.
-        // Most likely, this code will cause silent errors if we ever have a middleman that
-        // contains a middleman.
-        if (middlemanAction.getActionType() == Action.MiddlemanType.AGGREGATING_MIDDLEMAN) {
-          Artifact.addNonMiddlemanArtifacts(
-              middlemanAction.getInputs().toList(), output, Functions.<Artifact>identity());
-        }
-      }
-    };
-  }
-
   /**
    * Most ActionInputs are created and never used again. On the off chance that one is, however, we
    * implement equality via path comparison. Since file caches are keyed by ActionInput, equality
    * checking does come up.
    */
-  private static class BasicActionInput implements ActionInput {
-    private final String path;
-
-    BasicActionInput(String path) {
-      this.path = Preconditions.checkNotNull(path);
-    }
+  private abstract static class BasicActionInput implements ActionInput {
 
     // TODO(lberki): Plumb this flag from InputTree.build() somehow.
     @Override
@@ -73,18 +41,8 @@ public final class ActionInputHelper {
     }
 
     @Override
-    public String getExecPathString() {
-      return path;
-    }
-
-    @Override
-    public PathFragment getExecPath() {
-      return PathFragment.create(path);
-    }
-
-    @Override
     public int hashCode() {
-      return path.hashCode();
+      return getExecPathString().hashCode();
     }
 
     @Override
@@ -92,18 +50,15 @@ public final class ActionInputHelper {
       if (this == other) {
         return true;
       }
-      if (other == null) {
+      if (!(other instanceof BasicActionInput)) {
         return false;
       }
-      if (!this.getClass().equals(other.getClass())) {
-        return false;
-      }
-      return this.path.equals(((BasicActionInput) other).path);
+      return getExecPathString().equals(((BasicActionInput) other).getExecPathString());
     }
 
     @Override
     public String toString() {
-      return "BasicActionInput: " + path;
+      return "BasicActionInput: " + getExecPathString();
     }
   }
 
@@ -114,7 +69,17 @@ public final class ActionInputHelper {
    * @return a ActionInput.
    */
   public static ActionInput fromPath(String path) {
-    return new BasicActionInput(path);
+    return new BasicActionInput() {
+      @Override
+      public String getExecPathString() {
+        return path;
+      }
+
+      @Override
+      public PathFragment getExecPath() {
+        return PathFragment.create(path);
+      }
+    };
   }
 
   /**
@@ -124,7 +89,17 @@ public final class ActionInputHelper {
    * @return a ActionInput.
    */
   public static ActionInput fromPath(PathFragment path) {
-    return fromPath(path.getPathString());
+    return new BasicActionInput() {
+      @Override
+      public String getExecPathString() {
+        return path.getPathString();
+      }
+
+      @Override
+      public PathFragment getExecPath() {
+        return path;
+      }
+    };
   }
 
   /**
@@ -147,12 +122,8 @@ public final class ActionInputHelper {
     return result;
   }
 
-  /** Formatter for execPath String output. Public because {@link Artifact} uses it directly. */
-  public static final Function<ActionInput, String> EXEC_PATH_STRING_FORMATTER =
-      ActionInput::getExecPathString;
-
   public static Iterable<String> toExecPaths(Iterable<? extends ActionInput> artifacts) {
-    return Iterables.transform(artifacts, EXEC_PATH_STRING_FORMATTER);
+    return Iterables.transform(artifacts, ActionInput::getExecPathString);
   }
 
   /** Returns the {@link Path} for an {@link ActionInput}. */

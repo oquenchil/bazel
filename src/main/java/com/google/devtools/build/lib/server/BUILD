@@ -19,16 +19,18 @@ java_library(
         "ServerWatcherRunnable.java",
     ],
     deps = [
+        ":pid_file_watcher",
         ":rpc_server",
-        "//src/main/java/com/google/devtools/build/lib:runtime",
+        ":shutdown_hooks",
         "//src/main/java/com/google/devtools/build/lib:runtime/blaze_command_result",
         "//src/main/java/com/google/devtools/build/lib:runtime/command_dispatcher",
+        "//src/main/java/com/google/devtools/build/lib:runtime/safe_request_logging",
         "//src/main/java/com/google/devtools/build/lib/bugreport",
         "//src/main/java/com/google/devtools/build/lib/clock",
-        "//src/main/java/com/google/devtools/build/lib/platform:memory_pressure_counter",
+        "//src/main/java/com/google/devtools/build/lib/platform:system_memory_pressure_monitor",
         "//src/main/java/com/google/devtools/build/lib/profiler",
         "//src/main/java/com/google/devtools/build/lib/profiler:google-auto-profiler-utils",
-        "//src/main/java/com/google/devtools/build/lib/unix",
+        "//src/main/java/com/google/devtools/build/lib/unix:procmeminfo_parser",
         "//src/main/java/com/google/devtools/build/lib/util",
         "//src/main/java/com/google/devtools/build/lib/util:abrupt_exit_exception",
         "//src/main/java/com/google/devtools/build/lib/util:detailed_exit_code",
@@ -54,14 +56,38 @@ java_library(
 )
 
 java_library(
+    name = "pid_file_watcher",
+    srcs = [
+        "PidFileWatcher.java",
+    ],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/util:exit_code",
+        "//src/main/java/com/google/devtools/build/lib/vfs",
+        "//third_party:flogger",
+        "//third_party:guava",
+        "//third_party:jsr305",
+    ],
+)
+
+java_library(
+    name = "shutdown_hooks",
+    srcs = [
+        "ShutdownHooks.java",
+    ],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib/vfs",
+        "//third_party:flogger",
+        "//third_party:guava",
+        "//third_party:jsr305",
+    ],
+)
+
+java_library(
     name = "rpc_server",
     srcs = [
         "RPCServer.java",
     ],
     deps = [
-        "//src/main/java/com/google/devtools/build/lib:runtime/command_dispatcher",
-        "//src/main/java/com/google/devtools/build/lib/clock",
         "//src/main/java/com/google/devtools/build/lib/util:abrupt_exit_exception",
-        "//src/main/java/com/google/devtools/build/lib/vfs",
     ],
 )

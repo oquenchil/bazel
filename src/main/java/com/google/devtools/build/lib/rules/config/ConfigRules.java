@@ -21,7 +21,7 @@ import com.google.devtools.build.lib.analysis.starlark.StarlarkConfig;
 import com.google.devtools.build.lib.rules.config.ConfigFeatureFlagTaggedTrimmingTransitionFactory.ConfigFeatureFlagTaggedTrimmingTransition;
 import com.google.devtools.build.lib.rules.core.CoreRules;
 import com.google.devtools.build.lib.rules.platform.PlatformRules;
-import com.google.devtools.build.lib.skylarkbuildapi.config.ConfigBootstrap;
+import com.google.devtools.build.lib.starlarkbuildapi.config.ConfigBootstrap;
 
 /**
  * Set of rules to specify or manipulate configuration settings.
@@ -45,7 +45,7 @@ public final class ConfigRules implements RuleSet {
 
     builder.addRuleDefinition(new ConfigRuleClasses.ConfigBaseRule());
     builder.addRuleDefinition(new ConfigRuleClasses.ConfigSettingRule());
-    builder.addConfigurationFragment(new ConfigFeatureFlagConfiguration.Loader());
+    builder.addConfigurationFragment(ConfigFeatureFlagConfiguration.class);
 
     builder.addRuleDefinition(new ConfigRuleClasses.ConfigFeatureFlagRule());
     builder.addStarlarkBootstrap(

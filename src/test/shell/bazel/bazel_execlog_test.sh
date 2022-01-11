@@ -22,7 +22,7 @@ source "${CURRENT_DIR}/../integration_test_setup.sh" \
 
 function test_dir_depends() {
   create_new_workspace
-  cat > skylark.bzl <<'EOF'
+  cat > starlark.bzl <<'EOF'
 def _dir_impl(ctx):
   output_dir = ctx.actions.declare_directory(ctx.attr.outdir)
   ctx.actions.run_shell(
@@ -45,7 +45,7 @@ gen_dir = rule(
 )
 EOF
   cat > BUILD <<'EOF'
-load(":skylark.bzl", "gen_dir")
+load(":starlark.bzl", "gen_dir")
 
 gen_dir(
   name = "dir",
@@ -119,6 +119,26 @@ EOF
   wc output || fail "no output produced"
 }
 
+function test_empty_file_in_runfiles() {
+  mkdir d
+  touch d/main.py
+  cat > BUILD <<'EOF'
+py_binary(
+    name = "py_tool",
+    main = "d/main.py",
+    srcs = ["d/main.py"],
+)
+genrule(
+    name = "rule",
+    outs = ["out.txt"],
+    tools = [":py_tool"],
+    cmd = "echo hello > $(location out.txt)"
+)
+EOF
+  bazel build //:rule --experimental_execution_log_file output 2>&1 >> $TEST_log || fail "could not build"
+  [[ -e output ]] || fail "no output produced"
+}
+
 function test_negating_flags() {
   cat > BUILD <<'EOF'
 genrule(
@@ -145,7 +165,7 @@ EOF
 
 function test_no_output() {
   create_new_workspace
-  cat > skylark.bzl <<'EOF'
+  cat > starlark.bzl <<'EOF'
 def _impl(ctx):
   ctx.actions.write(ctx.outputs.executable, content="echo hello world", is_executable=True)
   return DefaultInfo()
@@ -157,7 +177,7 @@ my_test = rule(
 EOF
 
   cat > BUILD <<'EOF'
-load(":skylark.bzl", "my_test")
+load(":starlark.bzl", "my_test")
 
 my_test(
   name = "little_test",
@@ -166,6 +186,19 @@ EOF
 
   bazel test //:little_test --execution_log_json_file output.json 2>&1 >> $TEST_log || fail "could not test"
   grep "listedOutputs" output.json || fail "log does not contain listed outputs"
+}
+
+function test_no_remote_cache() {
+  cat > BUILD <<'EOF'
+genrule(
+      name = "action",
+      outs = ["out.txt"],
+      cmd = "echo hello > $(location out.txt)",
+      tags = ["no-remote-cache"],
+)
+EOF
+  bazel build //:action --execution_log_json_file=output.json 2>&1 >> $TEST_log || fail "could not build"
+  grep "\"remoteCacheable\": false" output.json || fail "log does not contain valid remoteCacheable entry"
 }
 
 run_suite "execlog_tests"

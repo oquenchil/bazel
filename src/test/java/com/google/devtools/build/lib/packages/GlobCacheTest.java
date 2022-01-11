@@ -18,10 +18,10 @@ import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
+import com.google.devtools.build.lib.actions.ThreadStateReceiver;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.packages.Globber.BadGlobException;
 import com.google.devtools.build.lib.testutil.Scratch;
-import com.google.devtools.build.lib.testutil.TestUtils;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -30,6 +30,8 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -48,6 +50,7 @@ public class GlobCacheTest {
 
   private Path packageDirectory;
   private Path buildFile;
+  private ExecutorService cacheThreadPool;
   private GlobCache cache;
 
   @Before
@@ -91,7 +94,16 @@ public class GlobCacheTest {
     createCache();
   }
 
+  @After
+  public void shutDownThreadPoolIfExists() {
+    if (cacheThreadPool != null) {
+      cacheThreadPool.shutdownNow();
+    }
+  }
+
   private void createCache(PathFragment... ignoredDirectories) {
+    shutDownThreadPoolIfExists();
+    cacheThreadPool = Executors.newFixedThreadPool(10);
     cache =
         new GlobCache(
             packageDirectory,
@@ -109,10 +121,17 @@ public class GlobCacheTest {
                   return null;
                 }
               }
+
+              @Override
+              public String getBaseNameForLoadedPackage(PackageIdentifier packageName) {
+                Path buildFileForPackage = getBuildFileForPackage(packageName);
+                return buildFileForPackage == null ? null : buildFileForPackage.getBaseName();
+              }
             },
             null,
-            TestUtils.getPool(),
-            -1);
+            cacheThreadPool,
+            -1,
+            ThreadStateReceiver.NULL_INSTANCE);
   }
 
   @After
@@ -205,13 +224,13 @@ public class GlobCacheTest {
   }
 
   @Test
-  public void testSingleFileExclude_Star() throws Exception {
+  public void testSingleFileExclude_star() throws Exception {
     assertThat(cache.globUnsorted(list("*"), list("first.txt"), false, true))
         .containsExactly("BUILD", "bar", "first.js", "foo", "second.js", "second.txt");
   }
 
   @Test
-  public void testSingleFileExclude_StarStar() throws Exception {
+  public void testSingleFileExclude_starStar() throws Exception {
     assertThat(cache.globUnsorted(list("**"), list("first.txt"), false, true))
         .containsExactly(
             "BUILD",
@@ -227,22 +246,22 @@ public class GlobCacheTest {
   }
 
   @Test
-  public void testExcludeAll_Star() throws Exception {
+  public void testExcludeAll_star() throws Exception {
     assertThat(cache.globUnsorted(list("*"), list("*"), false, true)).isEmpty();
   }
 
   @Test
-  public void testExcludeAll_Star_NoMatchesAnyway() throws Exception {
+  public void testExcludeAll_star_noMatchesAnyway() throws Exception {
     assertThat(cache.globUnsorted(list("nope"), list("*"), false, true)).isEmpty();
   }
 
   @Test
-  public void testExcludeAll_StarStar() throws Exception {
+  public void testExcludeAll_starStar() throws Exception {
     assertThat(cache.globUnsorted(list("**"), list("**"), false, true)).isEmpty();
   }
 
   @Test
-  public void testExcludeAll_Manual() throws Exception {
+  public void testExcludeAll_manual() throws Exception {
     assertThat(cache.globUnsorted(list("**"), list("*", "*/*", "*/*/*"), false, true)).isEmpty();
   }
 

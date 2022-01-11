@@ -21,7 +21,7 @@ import com.google.devtools.build.lib.analysis.AnalysisUtils;
 import com.google.devtools.build.lib.analysis.ConfiguredAspect;
 import com.google.devtools.build.lib.analysis.ConfiguredAspectFactory;
 import com.google.devtools.build.lib.analysis.RuleContext;
-import com.google.devtools.build.lib.analysis.TransitionMode;
+import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.packages.AspectDefinition;
 import com.google.devtools.build.lib.packages.AspectParameters;
 import com.google.devtools.build.lib.packages.NativeAspectClass;
@@ -53,7 +53,10 @@ public final class GraphNodeAspect extends NativeAspectClass implements Configur
 
   @Override
   public AspectDefinition getDefinition(AspectParameters aspectParameters) {
-    return new AspectDefinition.Builder(this).propagateAlongAllAttributes().build();
+    return new AspectDefinition.Builder(this)
+        .propagateAlongAllAttributes()
+        .requireStarlarkProviders(CcInfo.PROVIDER.id())
+        .build();
   }
 
   @Override
@@ -61,13 +64,12 @@ public final class GraphNodeAspect extends NativeAspectClass implements Configur
       ConfiguredTargetAndData ctadBase,
       RuleContext ruleContext,
       AspectParameters params,
-      String toolsRepository)
-      throws ActionConflictException {
+      RepositoryName toolsRepository)
+      throws ActionConflictException, InterruptedException {
     ImmutableList.Builder<GraphNodeInfo> children = ImmutableList.builder();
     if (ruleContext.attributes().has("deps")) {
       children.addAll(
-          AnalysisUtils.getProviders(
-              ruleContext.getPrerequisites("deps", TransitionMode.TARGET), GraphNodeInfo.class));
+          AnalysisUtils.getProviders(ruleContext.getPrerequisites("deps"), GraphNodeInfo.class));
     }
     return new ConfiguredAspect.Builder(ruleContext)
         .addProvider(

@@ -11,7 +11,7 @@ title: Common Definitions
 <h1 id="common-definitions">Common definitions</h1>
 
 <p>This section defines various terms and concepts that are common to
-many functions or build rules below.
+many functions or build rules.
 </p>
 
 #if (!$singlePage)
@@ -20,6 +20,7 @@ many functions or build rules below.
   <ul>
     <li><a href="#sh-tokenization">Bourne shell tokenization</a></li>
     <li><a href="#label-expansion">Label Expansion</a></li>
+    <li><a href="#typical-attributes">Typical attributes defined by most build rules</a></li>
     <li><a href="#common-attributes">Attributes common to all build rules</a></li>
     <li><a href="#common-attributes-tests">Attributes common to all test rules (*_test)</a></li>
     <li><a href="#common-attributes-binaries">Attributes common to all binary rules (*_binary)</a></li>
@@ -56,7 +57,9 @@ many functions or build rules below.
   expansion: if those strings contain a valid label as a
   substring, such as <code>//mypkg:target</code>, and that label is a
   declared prerequisite of the current rule, it is expanded into the
-  pathname of the file represented by the target <code>//mypkg:target</code>.
+  pathname of the file represented by the
+  <a href="https://docs.bazel.build/versions/main/glossary.html#target">target</a>
+  <code>//mypkg:target</code>.
 </p>
 
 <p>
@@ -67,8 +70,6 @@ many functions or build rules below.
   treated, etc.  Consult the rule attribute documentation for
   specifics.
 </p>
-
-<h2 id="common-attributes">Attributes common to all build rules</h2>
 
 #macro(commonAttributeDoc $type $attributeMap)
   <table class="table table-condensed table-bordered table-params">
@@ -93,9 +94,18 @@ many functions or build rules below.
   </table>
 #end
 
-<p>This section describes attributes that are common to all build rules.<br/>
-Please note that it is an error to list the same label twice in a list of
-labels attribute.
+<h2 id="typical-attributes">Typical attributes defined by most build rules</h2>
+
+<p>This section describes attributes that are defined by many build rules,
+but not all.
+</p>
+
+#commonAttributeDoc("typical" $typicalAttributes)
+
+<h2 id="common-attributes">Attributes common to all build rules</h2>
+
+<p>This section describes attributes that are implicitly added to all build
+rules.
 </p>
 
 #commonAttributeDoc("common" $commonAttributes)
@@ -150,25 +160,21 @@ config_setting(
 <p>
   The <a href="$expander.expandRef("select")"><code>select()</code></a> function
   chooses among different alternative values for a configurable attribute based
-  on which <a href="$expander.expandRef("config_setting")">
-  <code>config_setting</code></a> criteria is satisfied in the current
-  configuration.
+  on which <a href="$expander.expandRef("config_setting")"> or
+  <a href="$expander.expandRef("constraint_value")"> criteria the target's
+  configuration satisfies.
 </p>
 
 <p>
-  Configurable attributes are evaluated after the processing of macros and
-  before the processing of rules (technically, between the
-  <a href="https://docs.bazel.build/versions/master/skylark/concepts.html#evaluation-model">
-  loading and analysis phases</a>.
-  Any processing that Bazel does before the <code>select()</code> is evaluated
-  will not know which branch will be chosen. In particular, macros can't change
+  Bazel evaluates configurable attributes after processing macros and before
+  processing rules (technically, between the
+  <a href="https://docs.bazel.build/versions/main/skylark/concepts.html#evaluation-model">
+  loading and analysis phases</a>).
+  Any processing before <code>select()</code> evaluation doesn't know which
+  branch the <code>select()</code> chooses. Macros, for example, can't change
   their behavior based on the chosen branch, and <code>bazel query</code> can
-  only make conservative guesses about the configurable dependencies of a
-  target. Conversely, when authoring a new type of rule, you do not need to
-  worry about the ambiguity of configurable attributes because all
-  <code>select()</code> expressions have already been replaced by their resolved
-  values. See
-  <a href="https://docs.bazel.build/versions/master/configurable-attributes.html#faq">
+  only make conservative guesses about a target's configurable dependencies. See
+  <a href="https://docs.bazel.build/versions/main/configurable-attributes.html#faq">
   this FAQ</a>
   for more on using <code>select()</code> with rules and macros.
 </p>
@@ -176,13 +182,13 @@ config_setting(
 <p>
   Attributes marked <code>nonconfigurable</code> in their documentation cannot
   use this feature. Usually an attribute is nonconfigurable because Bazel
-  internally needs to know its value before it can determine how to choose the
-  <code>select()</code> branch.
+  internally needs to know its value before it can determine how to resolve a
+  <code>select()</code>.
 </p>
 
 <p>
-  See <a href="https://docs.bazel.build/versions/master/configurable-attributes.html">
-  Configurable Build Attributes</a> for more information.
+  See <a href="https://docs.bazel.build/versions/main/configurable-attributes.html">
+  Configurable Build Attributes</a> for a detailed overview.
 </p>
 
 <h2 id="implicit-outputs">Implicit output targets</h2>

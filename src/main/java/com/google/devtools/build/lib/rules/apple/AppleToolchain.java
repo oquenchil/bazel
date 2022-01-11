@@ -22,12 +22,13 @@ import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.Attribute;
 import com.google.devtools.build.lib.packages.Attribute.LabelLateBoundDefault;
 import com.google.devtools.build.lib.packages.RuleClass;
 import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
-import com.google.devtools.build.lib.skylarkbuildapi.apple.AppleToolchainApi;
+import com.google.devtools.build.lib.starlarkbuildapi.apple.AppleToolchainApi;
 import java.io.Serializable;
 
 /**
@@ -117,6 +118,7 @@ public class AppleToolchain implements AppleToolchainApi<AppleConfiguration> {
       case WATCHOS_SIMULATOR:
       case TVOS_DEVICE:
       case TVOS_SIMULATOR:
+      case CATALYST:
         relativePath = SYSTEM_FRAMEWORK_PATH;
         break;
       default:
@@ -127,7 +129,7 @@ public class AppleToolchain implements AppleToolchainApi<AppleConfiguration> {
 
   /** The default label of the build-wide {@code xcode_config} configuration rule. */
   public static LabelLateBoundDefault<AppleConfiguration> getXcodeConfigLabel(
-      String toolsRepository) {
+      RepositoryName toolsRepository) {
     return LabelLateBoundDefault.fromTargetConfiguration(
         AppleConfiguration.class,
         Label.parseAbsoluteUnchecked(
@@ -169,9 +171,9 @@ public class AppleToolchain implements AppleToolchainApi<AppleConfiguration> {
    * Base rule definition to be ancestor for rules which may require an xcode toolchain.
    */
   public static class RequiresXcodeConfigRule implements RuleDefinition {
-    private final String toolsRepository;
+    private final RepositoryName toolsRepository;
 
-    public RequiresXcodeConfigRule(String toolsRepository) {
+    public RequiresXcodeConfigRule(RepositoryName toolsRepository) {
       this.toolsRepository = toolsRepository;
     }
 

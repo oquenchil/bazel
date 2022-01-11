@@ -263,7 +263,7 @@ class PlaceholderIdFieldInitializerBuilder {
         nextTypeId = nextFreeId(nextTypeId + 1, reservedTypeSlots);
       }
     }
-    // Sanity check that everything has been assigned, except STYLEABLE. There shouldn't be
+    // Check that everything has been assigned, except STYLEABLE. There shouldn't be
     // anything of type PUBLIC either (since that isn't a real resource).
     // We will need to update the list if there is a new resource type.
     for (ResourceType t : innerClasses.keySet()) {
@@ -352,7 +352,9 @@ class PlaceholderIdFieldInitializerBuilder {
               dependencyInfo,
               linkageInfo.visibility(),
               field,
-              ImmutableList.copyOf(arrayInitMap.values())));
+              arrayInitMap.values().stream()
+                  .map(IntArrayFieldInitializer.IntegerValue::new)
+                  .collect(ImmutableList.toImmutableList())));
       int index = 0;
       for (String attr : arrayInitMap.keySet()) {
         initList.add(

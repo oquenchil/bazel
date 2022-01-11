@@ -15,7 +15,6 @@
 package com.google.devtools.build.lib.analysis.platform;
 
 import com.google.common.collect.ImmutableCollection;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
@@ -23,13 +22,13 @@ import com.google.devtools.build.lib.packages.Attribute;
 import com.google.devtools.build.lib.packages.BuiltinProvider;
 import com.google.devtools.build.lib.packages.NativeInfo;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
-import com.google.devtools.build.lib.skylarkbuildapi.platform.ToolchainInfoApi;
-import com.google.devtools.build.lib.syntax.Dict;
-import com.google.devtools.build.lib.syntax.EvalException;
-import com.google.devtools.build.lib.syntax.Location;
-import com.google.devtools.build.lib.syntax.Starlark;
-import com.google.devtools.build.lib.syntax.StarlarkThread;
+import com.google.devtools.build.lib.starlarkbuildapi.platform.ToolchainInfoApi;
 import java.util.Map;
+import net.starlark.java.eval.Dict;
+import net.starlark.java.eval.EvalException;
+import net.starlark.java.eval.Starlark;
+import net.starlark.java.eval.StarlarkThread;
+import net.starlark.java.syntax.Location;
 
 /**
  * A provider that supplies information about a specific language toolchain, including what platform
@@ -39,7 +38,7 @@ import java.util.Map;
  * additional fields to Starlark code. Also, these are not disjoint.
  */
 @Immutable
-public class ToolchainInfo extends NativeInfo implements ToolchainInfoApi {
+public final class ToolchainInfo extends NativeInfo implements ToolchainInfoApi {
 
   /** Name used in Starlark for accessing this provider. */
   public static final String STARLARK_NAME = "ToolchainInfo";
@@ -65,8 +64,17 @@ public class ToolchainInfo extends NativeInfo implements ToolchainInfoApi {
 
   /** Constructs a ToolchainInfo. The {@code values} map itself is not retained. */
   protected ToolchainInfo(Map<String, Object> values, Location location) {
-    super(PROVIDER, location);
+    super(location);
     this.values = copyValues(values);
+  }
+
+  public ToolchainInfo(Map<String, Object> values) {
+    this.values = copyValues(values);
+  }
+
+  @Override
+  public BuiltinProvider<ToolchainInfo> getProvider() {
+    return PROVIDER;
   }
 
   /**
@@ -100,7 +108,4 @@ public class ToolchainInfo extends NativeInfo implements ToolchainInfoApi {
     }
     return fieldNames;
   }
-
-  /** Add make variables to be exported to dependers. */
-  public void addGlobalMakeVariables(ImmutableMap.Builder<String, String> globalMakeEnvBuilder) {}
 }

@@ -67,8 +67,7 @@ public class LocalExecutionOptions extends OptionsBase {
       help =
           "When true, the local spawn runner does lock the output tree during dynamic execution. "
               + "Instead, spawns are allowed to execute until they are explicitly interrupted by a "
-              + "faster remote action. Requires --legacy_spawn_scheduler=false because of the need "
-              + "for this explicit cancellation.")
+              + "faster remote action.")
   public boolean localLockfreeOutput;
 
   @Option(
@@ -81,14 +80,6 @@ public class LocalExecutionOptions extends OptionsBase {
               + "to stop process trees) to the subprocesses themselves, giving them the grace "
               + "period in --local_termination_grace_seconds before forcibly sending a SIGKILL.")
   public boolean processWrapperGracefulSigterm;
-
-  @Option(
-      name = "experimental_process_wrapper_wait_fix",
-      defaultValue = "true",
-      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
-      effectTags = {OptionEffectTag.EXECUTION},
-      help = "Helper to roll out the process-wrapper's --wait_fix bug fix in a controlled manner.")
-  public boolean processWrapperWaitFix;
 
   @Option(
       name = "experimental_local_retries_on_crash",

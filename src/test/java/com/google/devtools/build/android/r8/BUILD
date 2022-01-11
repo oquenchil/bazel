@@ -22,6 +22,7 @@ java_library(
         "//external:has_androidsdk": glob(
             ["*Test.java"],
             exclude = [
+                "DexFileMergerTest.java",
                 "NoAndroidSdkStubTest.java",
                 "AllTests.java",
             ],
@@ -37,7 +38,6 @@ java_library(
         "@bazel_tools//tools/java/runfiles",
     ] + select({
         "//external:has_androidsdk": [
-            "//external:android/dx_jar_import",
             "//external:android/d8_jar_import",
         ],
         "//conditions:default": [],
@@ -89,21 +89,4 @@ java_library(
 java_library(
     name = "dexmergersample",
     srcs = glob(["testdata/dexmergersample/*.java"]),
-)
-
-test_suite(
-    name = "windows_tests",
-    tags = [
-        "-no_windows",
-        "-slow",
-    ],
-    visibility = ["//visibility:private"],
-)
-
-test_suite(
-    name = "all_windows_tests",
-    tests = [
-        ":windows_tests",
-    ],
-    visibility = ["//src/test/java/com/google/devtools/build/android:__pkg__"],
 )

@@ -1,16 +1,27 @@
 ---
 layout: documentation
 title: Build Tutorial - iOS
+category: getting-started
 ---
 
-# Introduction to Bazel: Building an iOS App
+# Bazel Tutorial: Build an iOS App
 
-In this tutorial, you will learn how to build a simple iOS app. You'll do the
-following:
+This tutorial covers how to build a simple iOS app using Bazel.
 
-* ToC
-{:toc}
+## What you'll learn
 
+In this tutorial, you learn how to:
+
+*   Set up the environment by installing Bazel and Xcode, and downloading the
+    sample project
+*   Set up a Bazel [workspace](workspace.md) that contained the source code
+    for the app and a `WORKSPACE` file that identifies the top level of the
+    workspace directory
+*   Update the `WORKSPACE` file to contain references to the required
+    external dependencies
+*   Create a `BUILD` file
+*   Run Bazel to build the app for the simulator and an iOS device
+*   Run the app in the simulator and on an iOS device
 
 ## Set up your environment
 
@@ -30,9 +41,9 @@ Apple applications.
 ### Get the sample project
 
 You also need to get the sample project for the tutorial from GitHub. The GitHub
-repo has two branches: `source-only` and `master`. The `source-only` branch
+repo has two branches: `source-only` and `main`. The `source-only` branch
 contains the source files for the project only. You'll use the files in this
-branch in this tutorial. The `master` branch contains both the source files
+branch in this tutorial. The `main` branch contains both the source files
 and completed Bazel `WORKSPACE` and `BUILD` files. You can use the files in this
 branch to check your work when you've completed the tutorial steps.
 
@@ -160,8 +171,8 @@ following load statement to the beginning of your `BUILD` file:
 load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application")
 ```
 
-We only need to load the `ios_application` rule because the `objc_library` rule
-is built into the Bazel package.
+You only need to load the `ios_application` rule because the `objc_library`
+rule is built into the Bazel package.
 
 ### Add an objc_library rule
 
@@ -224,8 +235,8 @@ Note how the `deps` attribute references the output of the `UrlGetClasses` rule
 you added to the `BUILD` file above.
 
 Now, save and close the file. You can compare your `BUILD` file to the
-[completed example](https://github.com/bazelbuild/examples/blob/master/tutorial/ios-app/BUILD)
-in the `master` branch of the GitHub repo.
+[completed example](https://github.com/bazelbuild/examples/blob/main/tutorial/ios-app/BUILD)
+in the `main` branch of the `GitHub repo.
 
 ## Build and deploy the app
 
@@ -235,6 +246,13 @@ iOS device.
 **NOTE:** The app launches standalone but requires a backend server in order to
 produce output. See the README file in the sample project directory to find out
 how to build the backend server.
+
+The built app is located in the `$WORKSPACE/bazel-bin` directory.
+
+Completed `WORKSPACE` and `BUILD` files for this tutorial are located in the
+[main branch](https://github.com/bazelbuild/examples/tree/HEAD/tutorial)
+of the GitHub repo. You can compare your work to the completed files for
+additional help or troubleshooting.
 
 ### Build the app for the simulator
 
@@ -267,7 +285,7 @@ The `.ipa` file and other outputs are located in the
 
 ### Run and debug the app in the simulator
 
-You can now run the app from Xcode using the iOS Simulator. First, [generate an Xcode project using Tulsi](http://tulsi.bazel.io/).
+You can now run the app from Xcode using the iOS Simulator. First, [generate an Xcode project using Tulsi](http://tulsi.bazel.build/).
 
 Then, open the project in Xcode, choose an iOS Simulator as the runtime scheme,
 and click **Run**.
@@ -316,7 +334,7 @@ build for a specific SDK version, use the `--ios_sdk_version` option. The
 To specify a minimum required iOS version, add the `minimum_os_version`
 parameter to the `ios_application` build rule in your `BUILD` file.
 
-You can also use [Tulsi](http://tulsi.bazel.io/docs/gettingstarted.html) to
+You can also use [Tulsi](http://tulsi.bazel.build/docs/gettingstarted.html) to
 build your app using a GUI rather than the command line.
 
 ### Install the app on a device
@@ -334,24 +352,9 @@ If your app fails to launch, make sure that your device is part of your
 provisioning profile. The `View Device Logs` button on the `Devices` screen in
 Xcode may provide other information as to what has gone wrong.
 
-## Review your work
+## Further reading
 
-In this tutorial, you used Bazel to build an iOS app. To accomplish that, you:
+For more details, see
+[main branch](https://github.com/bazelbuild/examples/tree/HEAD/tutorial)
+of the GitHub repo.
 
-*   Set up your environment by installing Bazel and Xcode, and downloading the
-    sample project
-*   Set up a Bazel [workspace](workspace.md) that contained the source code
-    for the app and a `WORKSPACE` file that identifies the top level of the
-    workspace directory
-*   Updated the `WORKSPACE` file to contain references to the required
-    external dependencies
-*   Created a `BUILD` file
-*   Ran Bazel to build the app for the simulator and an iOS device
-*   Ran the app in the simulator and on an iOS device
-
-The built app is located in the `$WORKSPACE/bazel-bin` directory.
-
-Completed `WORKSPACE` and `BUILD` files for this tutorial are located in the
-[master branch](https://github.com/bazelbuild/examples/tree/master/tutorial)
-of the GitHub repo. You can compare your work to the completed files for
-additional help or troubleshooting.

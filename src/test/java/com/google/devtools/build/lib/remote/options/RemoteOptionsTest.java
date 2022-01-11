@@ -20,6 +20,8 @@ import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Maps;
 import com.google.devtools.build.lib.actions.UserExecException;
 import com.google.devtools.common.options.Options;
+import com.google.devtools.common.options.OptionsParsingException;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.SortedMap;
 import org.junit.Test;
@@ -70,5 +72,35 @@ public class RemoteOptionsTest {
     } catch (UserExecException e) {
       // Intentionally left empty.
     }
+  }
+
+  @Test
+  public void testRemoteTimeoutOptionsConverterWithoutUnit() {
+    try {
+      int seconds = 60;
+      Duration convert =
+          new RemoteOptions.RemoteTimeoutConverter().convert(String.valueOf(seconds));
+      assertThat(Duration.ofSeconds(seconds)).isEqualTo(convert);
+    } catch (OptionsParsingException e) {
+      fail(e.getMessage());
+    }
+  }
+
+  @Test
+  public void testRemoteTimeoutOptionsConverterWithUnit() {
+    try {
+      int milliseconds = 60;
+      Duration convert = new RemoteOptions.RemoteTimeoutConverter().convert(milliseconds + "ms");
+      assertThat(Duration.ofMillis(milliseconds)).isEqualTo(convert);
+    } catch (OptionsParsingException e) {
+      fail(e.getMessage());
+    }
+  }
+
+  @Test
+  public void testRemoteMaximumOpenFilesDefault() {
+    RemoteOptions options = Options.getDefaults(RemoteOptions.class);
+    int defaultMax = options.maximumOpenFiles;
+    assertThat(defaultMax).isEqualTo(-1);
   }
 }

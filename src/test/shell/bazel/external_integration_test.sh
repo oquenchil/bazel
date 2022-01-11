@@ -311,7 +311,7 @@ function test_jar_download() {
   cat >> $(create_workspace_with_default_repos WORKSPACE) <<EOF
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_jar")
 http_jar(name = 'endangered', url = 'http://127.0.0.1:$nc_port/lib.jar',
-         sha256='$sha256')
+         sha256='$sha256', downloaded_file_name="foo.jar")
 EOF
 
   mkdir -p zoo
@@ -337,6 +337,9 @@ EOF
   bazel run //zoo:ball-pit >& $TEST_log || echo "Expected run to succeed"
   kill_nc
   expect_log "Tra-la!"
+  output_base=$(bazel info output_base)
+  jar_dir=$output_base/external/endangered/jar
+  [[ -f ${jar_dir}/foo.jar ]] || fail "${jar_dir}/foo.jar not found"
 }
 
 function test_http_to_https_redirect() {
@@ -937,7 +940,76 @@ EOF
   shutdown_server
 }
 
+function test_integrity_correct() {
+  REPO_PATH=$TEST_TMPDIR/repo
+  mkdir -p "$REPO_PATH"
+  cd "$REPO_PATH"
+  create_workspace_with_default_repos WORKSPACE
+  touch BUILD
+  zip -r repo.zip *
+  integrity="sha256-$(cat repo.zip | openssl dgst -sha256 -binary | openssl base64 -A)"
+  startup_server $PWD
+  cd -
 
+  cat >> $(create_workspace_with_default_repos WORKSPACE) <<EOF
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+http_archive(
+    name = "repo",
+    integrity = "$integrity",
+    url = "http://127.0.0.1:$fileserver_port/repo.zip",
+)
+EOF
+  bazel build @repo//... || fail "Expected integrity check to succeed"
+  shutdown_server
+}
+
+function test_integrity_weird() {
+  REPO_PATH=$TEST_TMPDIR/repo
+  mkdir -p "$REPO_PATH"
+  cd "$REPO_PATH"
+  create_workspace_with_default_repos WORKSPACE
+  touch BUILD
+  zip -r repo.zip *
+  startup_server $PWD
+  cd -
+
+  cat >> $(create_workspace_with_default_repos WORKSPACE) <<EOF
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+http_archive(
+    name = "repo",
+    integrity = "a random string",
+    url = "http://127.0.0.1:$fileserver_port/repo.zip",
+)
+EOF
+  bazel build @repo//... &> $TEST_log 2>&1 && fail "Expected to fail"
+  expect_log "Unsupported checksum algorithm: 'a random string'"
+  shutdown_server
+}
+
+function test_integrity_incorrect() {
+  REPO_PATH=$TEST_TMPDIR/repo
+  mkdir -p "$REPO_PATH"
+  cd "$REPO_PATH"
+  create_workspace_with_default_repos WORKSPACE
+  touch BUILD
+  zip -r repo.zip *
+  startup_server $PWD
+  cd -
+
+  cat >> $(create_workspace_with_default_repos WORKSPACE) <<EOF
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+http_archive(
+    name = "repo",
+    integrity = "sha256-Yab3Yqr2BlLL8zKHm43MLP2BviEpoGHalX0Dnq538LA=",
+    url = "http://127.0.0.1:$fileserver_port/repo.zip",
+)
+EOF
+  bazel build @repo//... &> $TEST_log 2>&1 && fail "Expected to fail"
+  expect_log "Error downloading \\[http://127.0.0.1:$fileserver_port/repo.zip\\] to"
+  # Bazel translates the integrity value back to the sha256 checksum.
+  expect_log "but wanted 61a6f762aaf60652cbf332879b8dcc2cfd81be2129a061da957d039eae77f0b0"
+  shutdown_server
+}
 
 function test_same_name() {
   mkdir ext
@@ -1385,6 +1457,10 @@ http_archive(
   sha256="${sha256}",
 )
 EOF
+
+  # Prime the repository cache.
+  bazel build '@ext//:foo' || fail "expected success"
+
   # Use `--repository_cache` with no path to explicitly disable repository cache
   bazel build --repository_cache= '@ext//:foo' || fail "expected success"
 
@@ -1399,10 +1475,14 @@ EOF
   rm -f "${TOPDIR}/ext.zip"
   bazel clean --expunge
 
+  # Do a noop build with the cache enabled to ensure the cache can be disabled
+  # after the server starts.
+  bazel build
+
   # The build should fail since we are not using the repository cache, but the
   # original file can no longer be "downloaded".
   bazel build --repository_cache= '@ext//:foo' \
-      && fail "Should fail for lack of fetchable faile" || :
+      && fail "Should fail for lack of fetchable archive" || :
 }
 
 function test_repository_cache() {
@@ -2049,7 +2129,6 @@ EOF
   bazel build //:it > "${TEST_log}" 2>&1 && fail "Expected failure" || :
 
   expect_log '@ext.*badargument'
-  expect_log 'SHA256 (.*/ext.tar) = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
 }
 
 function test_prefix_suggestions() {
@@ -2242,7 +2321,7 @@ def foo_repos():
     )
 EOF
 
-  bazel build --record_rule_instantiation_callstack @foo//... > "${TEST_log}" 2>&1 && fail "expected failure"
+  bazel build @foo//... > "${TEST_log}" 2>&1 && fail "expected failure"
   inplace-sed -e "s?$WRKDIR/?WRKDIR/?g" -e "s?$TEST_TMPDIR/?TEST_TMPDIR/?g" "${TEST_log}"
 
   expect_log 'error.*repository.*foo'
@@ -2318,7 +2397,7 @@ load("@a//:notabuildfile.bzl", "x")
 EOF
   touch BUILD
 
-  bazel build --record_rule_instantiation_callstack //... > "${TEST_log}" 2>&1 && fail "expected failure" || :
+  bazel build //... > "${TEST_log}" 2>&1 && fail "expected failure" || :
   inplace-sed -e 's?$(pwd)/?PWD/?g' "${TEST_log}"
 
   expect_not_log '[iI]nternal [eE]rror'
@@ -2370,15 +2449,14 @@ data_repo(
 load("@data//:value.bzl", "value")
 EOF
 
-  # TODO(adonovan): add a test that the error message contains a hint to set the flag if unset.
-  bazel build --record_rule_instantiation_callstack //... > "${TEST_log}" 2>&1 && fail "expected failure" || :
+  bazel build //... > "${TEST_log}" 2>&1 && fail "expected failure" || :
   inplace-sed -e 's?$(pwd)/?PWD/?g' "${TEST_log}"
 
   expect_log "you have to add.*this_repo_is_missing.*WORKSPACE"
   # Also verify that the repository class and its definition is reported, to
   # help finding out where the implict dependency comes from.
   expect_log "Repository data instantiated at:"
-  expect_log ".../WORKSPACE:47"
+  expect_log ".../WORKSPACE:[0-9]*"
   expect_log "Repository rule data_repo defined at:"
   expect_log ".../withimplicit.bzl:6"
 }
@@ -2455,6 +2533,137 @@ EOF
       cd ..
     done
   done
+}
+
+function test_external_java_target_depends_on_external_resources() {
+  local test_repo1=$TEST_TMPDIR/repo1
+  local test_repo2=$TEST_TMPDIR/repo2
+
+  mkdir -p $test_repo1/a
+  mkdir -p $test_repo2
+
+  cat >> $(create_workspace_with_default_repos WORKSPACE) <<EOF
+local_repository(name = 'repo1', path='$test_repo1')
+local_repository(name = 'repo2', path='$test_repo2')
+EOF
+  cat > BUILD <<'EOF'
+java_binary(
+    name = "a_bin",
+    runtime_deps = ["@repo1//a:a"],
+    main_class = "a.A",
+)
+EOF
+
+  touch $test_repo1/WORKSPACE
+  cat > $test_repo1/a/BUILD <<'EOF'
+package(default_visibility = ["//visibility:public"])
+
+java_library(
+    name = "a",
+    srcs = ["A.java"],
+    resources = ["@repo2//:resource_files"],
+)
+EOF
+  cat > $test_repo1/a/A.java <<EOF
+package a;
+
+public class A {
+    public static void main(String args[]) {
+    }
+}
+EOF
+
+  touch $test_repo2/WORKSPACE
+  cat > $test_repo2/BUILD <<'EOF'
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "resource_files",
+    srcs = ["resource.txt"]
+)
+EOF
+
+  cat > $test_repo2/resource.txt <<EOF
+RESOURCE
+EOF
+
+  bazel build a_bin >& $TEST_log  || fail "Expected build/run to succeed"
+}
+
+function test_query_external_packages() {
+  setup_skylib_support
+
+  mkdir -p external/nested
+  mkdir -p not-external
+
+  cat > external/BUILD <<EOF
+filegroup(
+    name = "a1",
+    srcs = [],
+)
+EOF
+  cat > external/nested/BUILD <<EOF
+filegroup(
+    name = "a2",
+    srcs = [],
+)
+EOF
+
+  cat > not-external/BUILD <<EOF
+filegroup(
+    name = "b",
+    srcs = [],
+)
+EOF
+
+  bazel query //... >& $TEST_log || fail "Expected build/run to succeed"
+  expect_log "//not-external:b"
+  expect_not_log "//external:a1"
+  expect_not_log "//external/nested:a2"
+
+  bazel query --experimental_sibling_repository_layout //... >& $TEST_log \ ||
+    fail "Expected build/run to succeed"
+  expect_log "//not-external:b"
+  # Targets in //external aren't supported yet.
+  expect_not_log "//external:a1"
+  expect_log "//external/nested:a2"
+}
+
+function test_query_external_all_targets() {
+  setup_skylib_support
+
+  mkdir -p external/nested
+  mkdir -p not-external
+
+  cat > external/nested/BUILD <<EOF
+filegroup(
+    name = "a",
+    srcs = glob(["**"]),
+)
+EOF
+  touch external/nested/A
+
+  cat > not-external/BUILD <<EOF
+filegroup(
+    name = "b",
+    srcs = glob(["**"]),
+)
+EOF
+  touch not-external/B
+
+  bazel query //...:all-targets >& $TEST_log \
+    || fail "Expected build/run to succeed"
+  expect_log "//not-external:b"
+  expect_log "//not-external:B"
+  expect_not_log "//external/nested:a"
+  expect_not_log "//external/nested:A"
+
+  bazel query --experimental_sibling_repository_layout //...:all-targets \
+    >& $TEST_log || fail "Expected build/run to succeed"
+  expect_log "//not-external:b"
+  expect_log "//not-external:B"
+  expect_log "//external/nested:a"
+  expect_log "//external/nested:A"
 }
 
 run_suite "external tests"

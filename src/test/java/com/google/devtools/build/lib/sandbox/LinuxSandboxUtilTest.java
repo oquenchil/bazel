@@ -20,8 +20,10 @@ import static org.junit.Assert.assertThrows;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedMap;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import java.time.Duration;
 import java.util.List;
@@ -37,7 +39,7 @@ public final class LinuxSandboxUtilTest {
 
   @Before
   public final void createFileSystem() {
-    testFS = new InMemoryFileSystem();
+    testFS = new InMemoryFileSystem(DigestHashFunction.SHA256);
   }
 
   @Test
@@ -57,7 +59,7 @@ public final class LinuxSandboxUtilTest {
   }
 
   @Test
-  public void testLinuxSandboxCommandLineBuilder_BuildsWithoutOptionalArguments() {
+  public void testLinuxSandboxCommandLineBuilder_buildsWithoutOptionalArguments() {
     Path linuxSandboxPath = testFS.getPath("/linux-sandbox");
 
     ImmutableList<String> commandArguments = ImmutableList.of("echo", "hello, max");
@@ -76,7 +78,7 @@ public final class LinuxSandboxUtilTest {
   }
 
   @Test
-  public void testLinuxSandboxCommandLineBuilder_BuildsWithOptionalArguments() {
+  public void testLinuxSandboxCommandLineBuilder_buildsWithOptionalArguments() {
     Path linuxSandboxPath = testFS.getPath("/linux-sandbox");
 
     ImmutableList<String> commandArguments = ImmutableList.of("echo", "hello, tom");
@@ -97,7 +99,7 @@ public final class LinuxSandboxUtilTest {
     boolean useFakeHostname = true;
     boolean useDebugMode = true;
 
-    FileSystem fileSystem = new InMemoryFileSystem();
+    FileSystem fileSystem = new InMemoryFileSystem(DigestHashFunction.SHA256);
     Path workDir = fileSystem.getPath("/work");
     Path concreteDir = workDir.getRelative("concrete");
     Path sandboxDir = workDir.getRelative("sandbox");
@@ -112,12 +114,12 @@ public final class LinuxSandboxUtilTest {
     Path writableDir1 = sandboxDir.getRelative("writable1");
     Path writableDir2 = sandboxDir.getRelative("writable2");
 
-    Path tmpfsDir1 = sandboxDir.getRelative("tmpfs1");
-    Path tmpfsDir2 = sandboxDir.getRelative("tmpfs2");
+    PathFragment tmpfsDir1 = sandboxDir.asFragment().getRelative("tmpfs1");
+    PathFragment tmpfsDir2 = sandboxDir.asFragment().getRelative("tmpfs2");
 
     ImmutableSet<Path> writableFilesAndDirectories = ImmutableSet.of(writableDir1, writableDir2);
 
-    ImmutableSet<Path> tmpfsDirectories = ImmutableSet.of(tmpfsDir1, tmpfsDir2);
+    ImmutableSet<PathFragment> tmpfsDirectories = ImmutableSet.of(tmpfsDir1, tmpfsDir2);
 
     ImmutableSortedMap<Path, Path> bindMounts =
         ImmutableSortedMap.<Path, Path>naturalOrder()

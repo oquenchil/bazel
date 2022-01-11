@@ -23,8 +23,7 @@ import static org.junit.Assert.assertThrows;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
-import com.google.devtools.build.lib.analysis.ConfiguredTarget;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.analysis.config.BuildOptionsView;
 import com.google.devtools.build.lib.analysis.config.ExecutionTransitionFactory;
@@ -33,12 +32,17 @@ import com.google.devtools.build.lib.analysis.config.HostTransition;
 import com.google.devtools.build.lib.analysis.config.TransitionFactories;
 import com.google.devtools.build.lib.analysis.config.transitions.PatchTransition;
 import com.google.devtools.build.lib.analysis.test.TestConfiguration.TestOptions;
+import com.google.devtools.build.lib.analysis.util.DummyTestFragment.DummyTestOptions;
 import com.google.devtools.build.lib.analysis.util.MockRule;
 import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.TargetParsingException;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.packages.BuildType;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.Setting;
 import com.google.devtools.build.lib.query2.engine.QueryException;
+import com.google.devtools.build.lib.server.FailureDetails;
+import com.google.devtools.build.lib.server.FailureDetails.ConfigurableQuery;
+import com.google.devtools.build.lib.server.FailureDetails.Query;
 import com.google.devtools.build.lib.util.FileTypeSet;
 import com.google.devtools.build.lib.vfs.Path;
 import java.util.Collection;
@@ -54,8 +58,6 @@ import org.junit.runners.JUnit4;
  *
  * <p>This tests core cquery behavior (behavior that doesn't depend on <code>--output</code>).
  * Output format-specific behavior is covered in dedicated test classes.
- *
- * <p>TODO(juliexxia): separate out tests in this file into one test per tested functionality.
  */
 @RunWith(JUnit4.class)
 public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTest {
@@ -73,16 +75,16 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
                 "rule_with_transitions",
                 attr("patch_dep", LABEL)
                     .allowedFileTypes(FileTypeSet.ANY_FILE)
-                    .cfg(TransitionFactories.of(new TestArgPatchTransition("SET BY PATCH"))),
+                    .cfg(TransitionFactories.of(new FooPatchTransition("SET BY PATCH"))),
                 attr("string_dep", STRING),
                 attr("split_dep", LABEL)
                     .allowedFileTypes(FileTypeSet.ANY_FILE)
                     .cfg(
                         TransitionFactories.of(
-                            new TestArgSplitTransition("SET BY SPLIT 1", "SET BY SPLIT 2"))),
+                            new FooSplitTransition("SET BY SPLIT 1", "SET BY SPLIT 2"))),
                 attr("patch_dep_list", LABEL_LIST)
                     .allowedFileTypes(FileTypeSet.ANY_FILE)
-                    .cfg(TransitionFactories.of(new TestArgPatchTransition("SET BY PATCH 2"))));
+                    .cfg(TransitionFactories.of(new FooPatchTransition("SET BY PATCH 2"))));
     MockRule noAttributeRule = () -> MockRule.define("no_attribute_rule");
 
     helper.useRuleClassProvider(
@@ -119,9 +121,9 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
     setUpLabelsFunctionTests();
 
     // Test that this retrieves the correctly configured version(s) of the dep(s).
-    ConfiguredTarget patchDep =
+    KeyedConfiguredTarget patchDep =
         Iterables.getOnlyElement(eval("labels('patch_dep', //test:my_rule)"));
-    ConfiguredTarget myRule = Iterables.getOnlyElement(eval("//test:my_rule"));
+    KeyedConfiguredTarget myRule = Iterables.getOnlyElement(eval("//test:my_rule"));
     String targetConfiguration = myRule.getConfigurationChecksum();
     assertThat(patchDep.getConfigurationChecksum()).doesNotMatch(targetConfiguration);
   }
@@ -130,13 +132,13 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
   public void testLabelsFunction_splitTransitionAttribute() throws Exception {
     setUpLabelsFunctionTests();
 
-    ConfiguredTarget myRule = Iterables.getOnlyElement(eval("//test:my_rule"));
+    KeyedConfiguredTarget myRule = Iterables.getOnlyElement(eval("//test:my_rule"));
     String targetConfiguration = myRule.getConfigurationChecksum();
 
-    Collection<ConfiguredTarget> splitDeps = eval("labels('split_dep', //test:my_rule)");
+    Collection<KeyedConfiguredTarget> splitDeps = eval("labels('split_dep', //test:my_rule)");
     assertThat(splitDeps).hasSize(2);
-    for (ConfiguredTarget ct : splitDeps) {
-      assertThat(ct.getConfigurationChecksum()).doesNotMatch(targetConfiguration);
+    for (KeyedConfiguredTarget kct : splitDeps) {
+      assertThat(kct.getConfigurationChecksum()).doesNotMatch(targetConfiguration);
     }
   }
 
@@ -144,14 +146,14 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
   public void testLabelsFunction_labelListAttribute() throws Exception {
     setUpLabelsFunctionTests();
 
-    ConfiguredTarget myRule = Iterables.getOnlyElement(eval("//test:my_rule"));
+    KeyedConfiguredTarget myRule = Iterables.getOnlyElement(eval("//test:my_rule"));
     String targetConfiguration = myRule.getConfigurationChecksum();
 
     // Test that this works for label_lists as well.
-    Set<ConfiguredTarget> deps = eval("labels('patch_dep_list', //test:my_rule)");
+    Set<KeyedConfiguredTarget> deps = eval("labels('patch_dep_list', //test:my_rule)");
     assertThat(deps).hasSize(2);
-    for (ConfiguredTarget ct : deps) {
-      assertThat(ct.getConfigurationChecksum()).doesNotMatch(targetConfiguration);
+    for (KeyedConfiguredTarget kct : deps) {
+      assertThat(kct.getConfigurationChecksum()).doesNotMatch(targetConfiguration);
     }
   }
 
@@ -159,22 +161,42 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
   public void testLabelsFunction_errorsOnBadAttribute() throws Exception {
     setUpLabelsFunctionTests();
 
-    ConfiguredTarget myRule = Iterables.getOnlyElement(eval("//test:my_rule"));
-    String targetConfiguration = myRule.getConfigurationChecksum();
-
     // Test that the proper error is thrown when requesting an attribute that doesn't exist.
-    assertThat(evalThrows("labels('fake_attr', //test:my_rule)", true))
+    EvalThrowsResult evalThrowsResult = evalThrows("labels('fake_attr', //test:my_rule)", true);
+    assertConfigurableQueryCode(
+        evalThrowsResult.getFailureDetail(), ConfigurableQuery.Code.ATTRIBUTE_MISSING);
+    assertThat(evalThrowsResult.getMessage())
         .isEqualTo(
-            String.format(
-                "in 'fake_attr' of rule //test:my_rule:  ConfiguredTarget(//test:my_rule, %s) "
-                    + "of type rule_with_transitions does not have attribute 'fake_attr'",
-                targetConfiguration));
+            "in 'fake_attr' of rule //test:my_rule: configured target of type"
+                + " rule_with_transitions does not have attribute 'fake_attr'");
   }
 
   @Test
   public void testLabelsFunction_nonLabelAttribute() throws Exception {
     setUpLabelsFunctionTests();
     assertThat(eval("labels('string_dep', //test:my_rule)")).isEmpty();
+  }
+
+  /**
+   * Regression test for b/162431514. the {@code labels} query operator uses {@link
+   * ConfiguredTargetAccessor#getPrerequisites} which is the actual logic being tested here.
+   */
+  @Test
+  public void testGetPrerequisitesFromAliasReturnsActualPrerequisites() throws Exception {
+    MockRule ruleWithDep =
+        () ->
+            MockRule.define(
+                "rule_with_dep", attr("dep", LABEL).allowedFileTypes(FileTypeSet.ANY_FILE));
+
+    helper.useRuleClassProvider(setRuleClassProviders(ruleWithDep).build());
+    writeFile(
+        "test/BUILD",
+        "alias(name = 'alias', actual = ':actual')",
+        "rule_with_dep(name = 'actual', dep = ':dep')",
+        "rule_with_dep(name = 'dep')");
+
+    KeyedConfiguredTarget dep = Iterables.getOnlyElement(eval("labels('dep', '//test:alias')"));
+    assertThat(dep.getLabel()).isEqualTo(Label.parseAbsoluteUnchecked("//test:dep"));
   }
 
   @Test
@@ -201,11 +223,12 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
         "alias(name = 'other_impl_dep', actual = 'impl_dep')",
         "simple_rule(name='impl_dep')");
 
-    ConfiguredTarget other = Iterables.getOnlyElement(eval("//test:other_my_rule"));
-    ConfiguredTarget myRule = Iterables.getOnlyElement(eval("//test:my_rule"));
-    // Note: {@link AliasConfiguredTarget#getLabel} returns the label of the "actual" value not the
-    // label of the alias.
-    assertThat(other.getLabel()).isEqualTo(myRule.getLabel());
+    KeyedConfiguredTarget other = Iterables.getOnlyElement(eval("//test:other_my_rule"));
+    KeyedConfiguredTarget myRule = Iterables.getOnlyElement(eval("//test:my_rule"));
+    // Note: {@link KeyedConfiguredTarget#getLabel} returns the label of the "actual" value not the
+    // label of the alias, so we need to check the underlying label.
+    assertThat(other.getConfiguredTarget().getLabel())
+        .isEqualTo(myRule.getConfiguredTarget().getLabel());
 
     // Regression test for b/73496081 in which alias-ed configured targets were skipping filtering.
     helper.setQuerySettings(Setting.ONLY_TARGET_DEPS, Setting.NO_IMPLICIT_DEPS);
@@ -219,17 +242,19 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
         () ->
             MockRule.define(
                 "rule_class_transition",
-                (builder, env) -> builder.cfg(new TestArgPatchTransition("SET BY PATCH")).build());
+                (builder, env) -> builder.cfg(new FooPatchTransition("SET BY PATCH")).build());
 
     helper.useRuleClassProvider(setRuleClassProviders(ruleClassTransition).build());
     helper.setUniverseScope("//test:rule_class");
 
     writeFile("test/BUILD", "rule_class_transition(name='rule_class')");
 
-    Set<ConfiguredTarget> ruleClass = eval("//test:rule_class");
-    TestOptions testOptions =
-        getConfiguration(Iterables.getOnlyElement(ruleClass)).getOptions().get(TestOptions.class);
-    assertThat(testOptions.testArguments).containsExactly("SET BY PATCH");
+    Set<KeyedConfiguredTarget> ruleClass = eval("//test:rule_class");
+    DummyTestOptions testOptions =
+        getConfiguration(Iterables.getOnlyElement(ruleClass))
+            .getOptions()
+            .get(DummyTestOptions.class);
+    assertThat(testOptions.foo).isEqualTo("SET BY PATCH");
   }
 
   private void createConfigRulesAndBuild() throws Exception {
@@ -267,7 +292,7 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
   }
 
   private void createConfigTransitioningRuleClass() throws Exception {
-    writeFile(
+    overwriteFile(
         "tools/allowlists/function_transition_allowlist/BUILD",
         "package_group(",
         "    name = 'function_transition_allowlist',",
@@ -314,12 +339,18 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
     getHelper().setWholeTestUniverseScope("test:my_rule");
 
     assertThat(eval("config(//test:target_dep, target)")).isEqualTo(eval("//test:target_dep"));
-    assertThat(evalThrows("config(//test:host_dep, target)", true))
+    EvalThrowsResult hostResult = evalThrows("config(//test:host_dep, target)", true);
+    assertThat(hostResult.getMessage())
         .isEqualTo("No target (in) //test:host_dep could be found in the 'target' configuration");
-    assertThat(evalThrows("config(//test:exec_dep, target)", true))
+    assertConfigurableQueryCode(
+        hostResult.getFailureDetail(), ConfigurableQuery.Code.TARGET_MISSING);
+    EvalThrowsResult execResult = evalThrows("config(//test:exec_dep, target)", true);
+    assertThat(execResult.getMessage())
         .isEqualTo("No target (in) //test:exec_dep could be found in the 'target' configuration");
+    assertConfigurableQueryCode(
+        execResult.getFailureDetail(), ConfigurableQuery.Code.TARGET_MISSING);
 
-    BuildConfiguration configuration =
+    BuildConfigurationValue configuration =
         getConfiguration(Iterables.getOnlyElement(eval("config(//test:dep, target)")));
 
     assertThat(configuration).isNotNull();
@@ -334,13 +365,19 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
 
     getHelper().setWholeTestUniverseScope("test:my_rule");
 
-    assertThat(evalThrows("config(//test:target_dep, host)", true))
+    EvalThrowsResult targetResult = evalThrows("config(//test:target_dep, host)", true);
+    assertThat(targetResult.getMessage())
         .isEqualTo("No target (in) //test:target_dep could be found in the 'host' configuration");
+    assertConfigurableQueryCode(
+        targetResult.getFailureDetail(), ConfigurableQuery.Code.TARGET_MISSING);
     assertThat(eval("config(//test:host_dep, host)")).isEqualTo(eval("//test:host_dep"));
-    assertThat(evalThrows("config(//test:exec_dep, host)", true))
+    EvalThrowsResult hostResult = evalThrows("config(//test:exec_dep, host)", true);
+    assertThat(hostResult.getMessage())
         .isEqualTo("No target (in) //test:exec_dep could be found in the 'host' configuration");
+    assertConfigurableQueryCode(
+        hostResult.getFailureDetail(), ConfigurableQuery.Code.TARGET_MISSING);
 
-    BuildConfiguration configuration =
+    BuildConfigurationValue configuration =
         getConfiguration(Iterables.getOnlyElement(eval("config(//test:dep, host)")));
 
     assertThat(configuration).isNotNull();
@@ -377,13 +414,14 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
     // setting --universe_scope we ensure only the transitioned version exists.
     helper.setUniverseScope("//test:buildme");
     helper.setQuerySettings(Setting.ONLY_TARGET_DEPS, Setting.NO_IMPLICIT_DEPS);
-    Set<ConfiguredTarget> result = eval("deps(//test:buildme, 1)");
+    Set<KeyedConfiguredTarget> result = eval("deps(//test:buildme, 1)");
     assertThat(result).hasSize(2);
 
-    ImmutableList<ConfiguredTarget> stableOrderList = ImmutableList.copyOf(result);
+    ImmutableList<KeyedConfiguredTarget> stableOrderList = ImmutableList.copyOf(result);
     int myDepIndex = stableOrderList.get(0).getLabel().toString().equals("//test:mydep") ? 0 : 1;
-    BuildConfiguration myDepConfig = getConfiguration(stableOrderList.get(myDepIndex));
-    BuildConfiguration stringFlagConfig = getConfiguration(stableOrderList.get(1 - myDepIndex));
+    BuildConfigurationValue myDepConfig = getConfiguration(stableOrderList.get(myDepIndex));
+    BuildConfigurationValue stringFlagConfig =
+        getConfiguration(stableOrderList.get(1 - myDepIndex));
 
     // Note: eval() resets the universe scope after each call. We have to xplicitly set it again.
     helper.setUniverseScope("//test:buildme");
@@ -400,13 +438,38 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
   }
 
   @Test
-  public void testConfig_badConfig() throws Exception {
+  public void testConfig_configHashPrefix() throws Exception {
     createConfigRulesAndBuild();
-    assertThat(evalThrows("config(//test:my_rule,foo)", true))
-        .isEqualTo(
-            "Unknown value 'foo'. The second argument of config() must be 'target', 'host', "
-                + "'null', or a valid configuration hash (i.e. one of the outputs of "
-                + "'blaze config')");
+    writeFile("mytest/BUILD", "simple_rule(name = 'mytarget')");
+
+    Set<KeyedConfiguredTarget> result = eval("//mytest:mytarget");
+    String configHash = getConfiguration(Iterables.getOnlyElement(result)).checksum();
+    String hashPrefix = configHash.substring(0, configHash.length() / 2);
+
+    Set<KeyedConfiguredTarget> resultFromPrefix =
+        eval("config(//mytest:mytarget," + hashPrefix + ")");
+    assertThat(resultFromPrefix).containsExactlyElementsIn(result);
+  }
+
+  @Test
+  public void testConfig_configHashUnknownPrefix() throws Exception {
+    createConfigRulesAndBuild();
+    writeFile("mytest/BUILD", "simple_rule(name = 'mytarget')");
+
+    Set<KeyedConfiguredTarget> result = eval("//mytest:mytarget");
+    String configHash = getConfiguration(Iterables.getOnlyElement(result)).checksum();
+    String rightPrefix = configHash.substring(0, configHash.length() / 2);
+    char lastChar = rightPrefix.charAt(rightPrefix.length() - 1);
+    String wrongPrefix = rightPrefix.substring(0, rightPrefix.length() - 1) + (lastChar + 1);
+
+    QueryException e =
+        assertThrows(
+            QueryException.class, () -> eval("config(//mytest:mytarget," + wrongPrefix + ")"));
+    assertConfigurableQueryCode(
+        e.getFailureDetail(), ConfigurableQuery.Code.INCORRECT_CONFIG_ARGUMENT_ERROR);
+    assertThat(e)
+        .hasMessageThat()
+        .contains("config()'s second argument must identify a unique configuration");
   }
 
   @Test
@@ -434,10 +497,29 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
 
     helper.setKeepGoing(false);
     getHelper().turnOffFailFast();
-    assertThat(evalThrows("//parent/...", true))
+    TargetParsingException e =
+        assertThrows(TargetParsingException.class, () -> eval("//parent/..."));
+    assertThat(e)
+        .hasMessageThat()
         .isEqualTo(
-            "no such package 'parent/child': Symlink cycle detected while trying to "
-                + "find BUILD file /workspace/parent/child/BUILD");
+            "error loading package under directory 'parent': no such package 'parent/child':"
+                + " Symlink cycle detected while trying to find BUILD file"
+                + " /workspace/parent/child/BUILD");
+    assertThat(e.getDetailedExitCode().getFailureDetail().getPackageLoading().getCode())
+        .isEqualTo(FailureDetails.PackageLoading.Code.SYMLINK_CYCLE_OR_INFINITE_EXPANSION);
+  }
+
+  // Regression test for b/175739699
+  @Test
+  public void testRecursiveTargetPatternOutsideOfScopeFailsGracefully() throws Exception {
+    writeFile("testA/BUILD", "sh_library(name = 'testA')");
+    writeFile("testB/BUILD", "sh_library(name = 'testB')");
+    writeFile("testB/testC/BUILD", "sh_library(name = 'testC')");
+    helper.setUniverseScope("//testA");
+    QueryException e = assertThrows(QueryException.class, () -> eval("//testB/..."));
+    assertThat(e.getFailureDetail().getQuery().getCode())
+        .isEqualTo(Query.Code.TARGET_NOT_IN_UNIVERSE_SCOPE);
+    assertThat(e).hasMessageThat().contains("package is not in scope");
   }
 
   @Override
@@ -445,12 +527,12 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
   public void testMultipleTopLevelConfigurations_nullConfigs() throws Exception {
     writeFile("test/BUILD", "java_library(name='my_java',", "  srcs = ['foo.java'],", ")");
 
-    Set<ConfiguredTarget> result = eval("//test:my_java+//test:foo.java");
+    Set<KeyedConfiguredTarget> result = eval("//test:my_java+//test:foo.java");
 
     assertThat(result).hasSize(2);
 
-    Iterator<ConfiguredTarget> resultIterator = result.iterator();
-    ConfiguredTarget first = resultIterator.next();
+    Iterator<KeyedConfiguredTarget> resultIterator = result.iterator();
+    KeyedConfiguredTarget first = resultIterator.next();
     if (first.getLabel().toString().equals("//test:foo.java")) {
       assertThat(getConfiguration(first)).isNull();
       assertThat(getConfiguration(resultIterator.next())).isNotNull();
@@ -461,7 +543,7 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
   }
 
   @Test
-  public void testSomePath_DepInCustomConfiguration() throws Exception {
+  public void testSomePath_depInCustomConfiguration() throws Exception {
     createConfigTransitioningRuleClass();
     writeFile(
         "test/BUILD",
@@ -480,8 +562,8 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
     // cases cquery prefers the top-level configured one, which won't produce a match since that's
     // not the one down this dependency path.
     helper.setUniverseScope("//test:buildme");
-    Set<ConfiguredTarget> result = eval("somepath(//test:buildme, //test:mydep)");
-    assertThat(result.stream().map(ct -> ct.getLabel().toString()).collect(Collectors.toList()))
+    Set<KeyedConfiguredTarget> result = eval("somepath(//test:buildme, //test:mydep)");
+    assertThat(result.stream().map(kct -> kct.getLabel().toString()).collect(Collectors.toList()))
         .contains("//test:mydep");
   }
 
@@ -526,7 +608,7 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
         "simple_rule(name='foo', deps = [':bar'])",
         "simple_rule(name='bar')");
 
-    Set<ConfiguredTarget> result =
+    Set<KeyedConfiguredTarget> result =
         eval("somepath(//test:top, filter(//test:bar, deps(//test:top)))");
     assertThat(result).isNotEmpty();
   }
@@ -546,7 +628,7 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
         "simple_rule(name = 'simple')");
 
     helper.setUniverseScope("//test:transitioner,//test:simple");
-    Set<ConfiguredTarget> result = eval("//test:simple");
+    Set<KeyedConfiguredTarget> result = eval("//test:simple");
     assertThat(result.size()).isEqualTo(2);
   }
 
@@ -568,7 +650,7 @@ public class ConfiguredTargetQuerySemanticsTest extends ConfiguredTargetQueryTes
         "simple_rule(name = 'simple')");
 
     helper.setUniverseScope("//test:transitioner,//test:simple");
-    Set<ConfiguredTarget> result = eval("config(//test:simple, target)");
+    Set<KeyedConfiguredTarget> result = eval("config(//test:simple, target)");
     assertThat(result.size()).isEqualTo(1);
   }
 }

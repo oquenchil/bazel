@@ -38,7 +38,6 @@ import com.google.devtools.build.lib.shell.Command;
 import com.google.devtools.build.lib.shell.CommandException;
 import com.google.devtools.build.lib.shell.CommandResult;
 import com.google.devtools.build.lib.util.OS;
-import com.google.devtools.build.lib.util.ProcessUtils;
 import com.google.devtools.build.lib.util.SingleLineFormatter;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.DigestHashFunction.DigestFunctionConverter;
@@ -191,10 +190,10 @@ public final class RemoteWorker {
       return;
     }
 
-    final Path pidFile = getFileSystem().getPath(workerOptions.pidFile);
+    Path pidFile = getFileSystem().getPath(workerOptions.pidFile);
     try (Writer writer =
         new OutputStreamWriter(pidFile.getOutputStream(), StandardCharsets.UTF_8)) {
-      writer.write(Integer.toString(ProcessUtils.getpid()));
+      writer.write(Long.toString(ProcessHandle.current().pid()));
       writer.write("\n");
     }
 
@@ -300,7 +299,8 @@ public final class RemoteWorker {
     }
   }
 
-  private static Path prepareSandboxRunner(FileSystem fs, RemoteWorkerOptions remoteWorkerOptions) {
+  private static Path prepareSandboxRunner(FileSystem fs, RemoteWorkerOptions remoteWorkerOptions)
+      throws InterruptedException {
     if (OS.getCurrent() != OS.LINUX) {
       logger.atSevere().log("Sandboxing requested, but it is currently only available on Linux");
       System.exit(1);

@@ -21,17 +21,18 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
-import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
-import com.google.devtools.build.lib.syntax.Location;
+import com.google.devtools.build.lib.skyframe.DetailedException;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.ExitCode;
+import javax.annotation.Nullable;
+import net.starlark.java.syntax.Location;
 
 /**
  * This exception gets thrown if {@link Action#execute(ActionExecutionContext)} is unsuccessful.
  * Typically these are re-raised ExecException throwables.
  */
 @ThreadSafe
-public class ActionExecutionException extends Exception {
+public class ActionExecutionException extends Exception implements DetailedException {
 
   private final ActionAnalysisMetadata action;
   private final NestedSet<Cause> rootCauses;
@@ -115,6 +116,47 @@ public class ActionExecutionException extends Exception {
                 detailedExitCode));
   }
 
+  public static ActionExecutionException fromExecException(ExecException exception, Action action) {
+    return fromExecException(exception, null, action);
+  }
+
+  /**
+   * Returns a new ActionExecutionException given an optional action subtask describing which part
+   * of the action failed (should be null for standard action failures). When appropriate (we use
+   * some heuristics to decide), produces an abbreviated message incorporating just the termination
+   * status if available.
+   *
+   * @param exception initial ExecException
+   * @param actionSubtask additional information about the action
+   * @param action failed action
+   * @return ActionExecutionException object describing the action failure
+   */
+  public static ActionExecutionException fromExecException(
+      ExecException exception, @Nullable String actionSubtask, Action action) {
+    // Message from ActionExecutionException will be prepended with action.describe() where
+    // necessary: because not all ActionExecutionExceptions come from this codepath, it is safer
+    // for consumers to manually prepend. We still put action.describe() in the failure detail
+    // message argument.
+    String message =
+        (actionSubtask == null ? "" : actionSubtask + ": ")
+            + exception.getMessageForActionExecutionException();
+
+    DetailedExitCode code =
+        DetailedExitCode.of(exception.getFailureDetail(action.describe() + " failed: " + message));
+
+    if (exception instanceof LostInputsExecException) {
+      return ((LostInputsExecException) exception).fromExecException(message, action, code);
+    }
+
+    return fromExecException(exception, message, action, code);
+  }
+
+  public static ActionExecutionException fromExecException(
+      ExecException exception, String message, Action action, DetailedExitCode code) {
+    return new ActionExecutionException(
+        message, exception, action, exception.isCatastrophic(), code);
+  }
+
   /** Returns the action that failed. */
   public ActionAnalysisMetadata getAction() {
     return action;
@@ -150,10 +192,7 @@ public class ActionExecutionException extends Exception {
     return detailedExitCode.getExitCode();
   }
 
-  /**
-   * Returns the pair of {@link ExitCode} and optional {@link FailureDetail} to return from this
-   * Bazel invocation because of this action execution failure.
-   */
+  @Override
   public DetailedExitCode getDetailedExitCode() {
     return detailedExitCode;
   }

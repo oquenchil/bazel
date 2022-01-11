@@ -18,8 +18,8 @@ import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.FeatureConfiguration;
-import com.google.devtools.build.lib.skylarkbuildapi.cpp.FeatureConfigurationApi;
-import com.google.devtools.build.lib.syntax.Printer;
+import com.google.devtools.build.lib.starlarkbuildapi.cpp.FeatureConfigurationApi;
+import net.starlark.java.eval.Printer;
 
 /**
  * Wrapper for {@link FeatureConfiguration}, {@link CppConfiguration}, and {@link BuildOptions}.
@@ -55,6 +55,16 @@ public class FeatureConfigurationForStarlark implements FeatureConfigurationApi 
 
   public FeatureConfiguration getFeatureConfiguration() {
     return featureConfiguration;
+  }
+
+  @Override
+  public void str(Printer printer) {
+    printer.append("<FeatureConfiguration(");
+    printer.append("ENABLED:");
+    printer.append(Joiner.on(", ").join(featureConfiguration.getEnabledFeatureNames()));
+    printer.append(";REQUESTED:");
+    printer.append(Joiner.on(", ").join(featureConfiguration.getRequestedFeatures()));
+    printer.append(")>");
   }
 
   @Override

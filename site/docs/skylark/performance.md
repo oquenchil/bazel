@@ -1,9 +1,11 @@
 ---
 layout: documentation
 title: Optimizing performance
+category: extending
 ---
 
-# Optimizing performance
+# Optimizing Performance
+
 
 When writing rules, the most common performance pitfall is to traverse or copy
 data that is accumulated from dependencies. When aggregated over the whole
@@ -108,7 +110,7 @@ transitive = []
 for i in inputs:
     transitive.append(i.deps)
 
-x = depset(transitive = transitive])
+x = depset(transitive = transitive)
 ```
 
 This can sometimes be reduced using a list comprehension:
@@ -117,7 +119,7 @@ This can sometimes be reduced using a list comprehension:
 x = depset(transitive = [i.deps for i in inputs])
 ```
 
-## Use `ctx.actions.args()` for command lines
+## Use ctx.actions.args() for command lines
 
 When building command lines you should use [ctx.actions.args()](lib/Args.html).
 This defers expansion of any depsets to the execution phase.
@@ -192,10 +194,21 @@ ctx.actions.run(
 )
 ```
 
+## Hanging
+
+If Bazel appears to be hung, you can hit <kbd>Ctrl-&#92;</kbd> or send
+Bazel a `SIGQUIT` signal (`kill -3 $(bazel info server_pid)`) to get a thread
+dump in the file `$(bazel info output_base)/server/jvm.out`.
+
+Since you may not be able to run `bazel info` if bazel is hung, the
+`output_base` directory is usually the parent of the `bazel-<workspace>`
+symlink in your workspace directory.
+
 ## Performance profiling
 
 Bazel writes a JSON profile to `command.profile.gz` in the output base by
-default. You can configure the location with the `--profile` flag, for example
+default. You can configure the location with the
+[`--profile`](user-manual.html#flag--profile) flag, for example
 `--profile=/tmp/profile.gz`. Location ending with `.gz` are compressed with
 GZIP.
 
@@ -312,7 +325,7 @@ $ bazel analyze-profile /tmp/prof
 ```
 
 By default, it prints summary analysis information for the specified profile
-datafile. This includes cummaltive statistics for different task types for each
+datafile. This includes cumulative statistics for different task types for each
 build phase and an analysis of the critical path.
 
 The first section of the default output is an overview of the time spent
@@ -349,39 +362,39 @@ Bazel comes with a built-in memory profiler that can help you check your rule's
 memory use. If there is a problem you can dump the heap to find the
 exact line of code that is causing the problem.
 
-### Enabling Memory Tracking
+### Enabling memory tracking
 
 You must pass these two startup flags to *every* Bazel invocation:
 
   ```
   STARTUP_FLAGS=\
-  --host_jvm_args=-javaagent:$(BAZEL)/third_party/allocation_instrumenter/java-allocation-instrumenter-3.0.1.jar \
+  --host_jvm_args=-javaagent:$(BAZEL)/third_party/allocation_instrumenter/java-allocation-instrumenter-3.3.0.jar \
   --host_jvm_args=-DRULE_MEMORY_TRACKER=1
   ```
   **NOTE**: The bazel repository comes with an allocation instrumenter.
-  Make sure to adjust '$(BAZEL)' for your repository location.
+  Make sure to adjust `$(BAZEL)` for your repository location.
 
 These start the server in memory tracking mode. If you forget these for even
 one Bazel invocation the server will restart and you will have to start over.
 
 ### Using the Memory Tracker
 
-Let's have a look at the target `foo` and see what it's up to. We add
-`--nobuild` since it doesn't matter to memory consumption if we actually build
-or not, we just have to run the analysis phase.
+As an example, look at the target `foo` and see what it does. To only
+run the analysis and not run the build execution phase, add the
+`--nobuild` flag.
 
 ```
 $ bazel $(STARTUP_FLAGS) build --nobuild //foo:foo
 ```
 
-Let's see how much memory the whole Bazel instance consumes:
+Next, see how much memory the whole Bazel instance consumes:
 
 ```
 $ bazel $(STARTUP_FLAGS) info used-heap-size-after-gc
 > 2594MB
 ```
 
-Let's break it down by rule class by using `bazel dump --rules`:
+Break it down by rule class by using `bazel dump --rules`:
 
 ```
 $ bazel $(STARTUP_FLAGS) dump --rules
@@ -400,20 +413,20 @@ _check_proto_library_deps              719         668      1,835,288        2,5
 ... (more output)
 ```
 
-And finally let's have a look at where the memory is going by producing a
-`pprof` file using `bazel dump --skylark_memory`:
+Look at where the memory is going by producing a `pprof` file
+using `bazel dump --skylark_memory`:
 
 ```
 $ bazel $(STARTUP_FLAGS) dump --skylark_memory=$HOME/prof.gz
 > Dumping Starlark heap to: /usr/local/google/home/$USER/prof.gz
 ```
 
-Next, we use the `pprof` tool to investigate the heap. A good starting point is
+Use the `pprof` tool to investigate the heap. A good starting point is
 getting a flame graph by using `pprof -flame $HOME/prof.gz`.
 
-  You can get `pprof` from [https://github.com/google/pprof](https://github.com/google/pprof).
+Get `pprof` from [https://github.com/google/pprof](https://github.com/google/pprof).
 
-In this case we get a text dump of the hottest call sites annotated with lines:
+Get a text dump of the hottest call sites annotated with lines:
 
 ```
 $ pprof -text -lines $HOME/prof.gz

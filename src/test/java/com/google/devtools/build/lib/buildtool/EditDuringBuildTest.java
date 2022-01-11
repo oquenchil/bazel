@@ -17,9 +17,6 @@ import static com.google.common.truth.Truth.assertThat;
 
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.buildtool.util.BuildIntegrationTestCase;
-import com.google.devtools.build.lib.packages.util.MockGenruleSupport;
-import com.google.devtools.build.lib.testutil.Suite;
-import com.google.devtools.build.lib.testutil.TestSpec;
 import com.google.devtools.build.lib.vfs.Path;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -39,13 +36,11 @@ import org.junit.runners.JUnit4;
  * build that is exposed to the problem, and the odds of editing a sourcefile just as it is being
  * compiled is much smaller in a clean (long) build than in an incremental (short) build.
  */
-@TestSpec(size = Suite.MEDIUM_TESTS)
 @RunWith(JUnit4.class)
 public class EditDuringBuildTest extends BuildIntegrationTestCase {
 
   @Test
   public void testEditDuringBuild() throws Exception {
-    MockGenruleSupport.setup(mockToolsConfig);
     // The "echo" effects editing of the source file during the build:
     write("edit/BUILD",
           "genrule(name = 'edit',",

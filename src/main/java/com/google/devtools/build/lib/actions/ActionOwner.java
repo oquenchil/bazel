@@ -24,8 +24,8 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.AspectDescriptor;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
-import com.google.devtools.build.lib.syntax.Location;
 import javax.annotation.Nullable;
+import net.starlark.java.syntax.Location;
 
 /**
  * Contains metadata used for reporting the progress and status of an action.
@@ -145,7 +145,6 @@ public abstract class ActionOwner {
    * Returns the {@link PlatformInfo} platform this action should be executed on. If the execution
    * platform is {@code null}, then the host platform is assumed.
    */
-  @VisibleForTesting
   @Nullable
   public abstract PlatformInfo getExecutionPlatform();
 }

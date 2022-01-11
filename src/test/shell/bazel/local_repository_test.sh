@@ -302,8 +302,8 @@ EOF
 }
 
 function test_default_ws() {
-  bazel fetch //external:java || fail "Fetch failed"
-  bazel build //external:java >& $TEST_log || fail "Failed to build java"
+  bazel fetch //external:main || fail "Fetch failed"
+  bazel build //external:main >& $TEST_log || fail "Failed to build java"
 }
 
 function test_external_hdrs() {
@@ -1153,7 +1153,7 @@ local_repository(
 )
 EOF
   bazel build @r//... &> $TEST_log && fail "Build succeeded unexpectedly"
-  expect_log "(absolute: \"$TEST_TMPDIR/r\") but this directory does not exist"
+  expect_log "(absolute: \"$TEST_TMPDIR/r\") but it does not exist"
 }
 
 # Regression test for #2841.

@@ -16,10 +16,10 @@ package com.google.devtools.build.lib.rules.java.proto;
 
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.analysis.RuleContext;
-import com.google.devtools.build.lib.analysis.TransitionMode;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.rules.cpp.CcInfo;
-import com.google.devtools.build.lib.rules.java.JavaCcLinkParamsProvider;
+import com.google.devtools.build.lib.rules.java.JavaCcInfoProvider;
+import com.google.devtools.build.lib.rules.java.JavaInfo;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -36,27 +36,28 @@ public class JplCcLinkParams {
    *     dependency's aspect node.
    * @param protoRuntimes a list of java_library.
    */
-  public static JavaCcLinkParamsProvider createCcLinkingInfo(
+  public static JavaCcInfoProvider createCcLinkingInfo(
       final RuleContext ruleContext, final ImmutableList<TransitiveInfoCollection> protoRuntimes) {
     List<CcInfo> providers = new ArrayList<>();
-    for (TransitiveInfoCollection t : ruleContext.getPrerequisites("deps", TransitionMode.TARGET)) {
-      JavaCcLinkParamsProvider javaCcLinkParamsProvider = t.get(JavaCcLinkParamsProvider.PROVIDER);
-      if (javaCcLinkParamsProvider != null) {
-        providers.add(javaCcLinkParamsProvider.getCcInfo());
+    for (TransitiveInfoCollection t : ruleContext.getPrerequisites("deps")) {
+      JavaCcInfoProvider javaCcInfoProvider = JavaInfo.getProvider(JavaCcInfoProvider.class, t);
+      if (javaCcInfoProvider != null) {
+        providers.add(javaCcInfoProvider.getCcInfo());
       }
     }
 
     for (TransitiveInfoCollection t : protoRuntimes) {
-      JavaCcLinkParamsProvider javaCcLinkParamsProvider = t.get(JavaCcLinkParamsProvider.PROVIDER);
-      if (javaCcLinkParamsProvider != null) {
-        providers.add(javaCcLinkParamsProvider.getCcInfo());
-      }
       CcInfo ccInfo = t.get(CcInfo.PROVIDER);
       if (ccInfo != null) {
         providers.add(ccInfo);
       }
+
+      JavaCcInfoProvider javaCcInfoProvider = JavaInfo.getProvider(JavaCcInfoProvider.class, t);
+      if (javaCcInfoProvider != null) {
+        providers.add(javaCcInfoProvider.getCcInfo());
+      }
     }
 
-    return new JavaCcLinkParamsProvider(CcInfo.merge(providers));
+    return new JavaCcInfoProvider(CcInfo.merge(providers));
   }
 }

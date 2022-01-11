@@ -20,7 +20,7 @@ import com.google.devtools.build.lib.analysis.AnalysisRootCauseEvent;
 import com.google.devtools.build.lib.analysis.DependencyKind;
 import com.google.devtools.build.lib.analysis.DependencyResolver;
 import com.google.devtools.build.lib.analysis.TargetAndConfiguration;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEventId.ConfigurationId;
 import com.google.devtools.build.lib.causes.AnalysisFailedCause;
 import com.google.devtools.build.lib.causes.Cause;
@@ -37,6 +37,7 @@ import com.google.devtools.build.lib.packages.Package;
 import com.google.devtools.build.lib.packages.RepositoryFetchException;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.packages.TargetUtils;
+import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.OrderedSetMultimap;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
 import com.google.devtools.build.skyframe.SkyKey;
@@ -126,9 +127,7 @@ public final class SkyframeDependencyResolver extends DependencyResolver {
           Label repositoryLabel;
           try {
             repositoryLabel =
-                Label.create(
-                    EXTERNAL_PACKAGE_IDENTIFIER,
-                    label.getPackageIdentifier().getRepository().strippedName());
+                Label.create(EXTERNAL_PACKAGE_IDENTIFIER, label.getRepository().strippedName());
           } catch (LabelSyntaxException lse) {
             // We're taking the repository name from something that was already
             // part of a label, so it should be valid. If we really get into this
@@ -136,26 +135,23 @@ public final class SkyframeDependencyResolver extends DependencyResolver {
             // label.
             repositoryLabel = label;
           }
-          rootCauses.add(new LoadingFailedCause(repositoryLabel, e.getMessage()));
+          rootCauses.add(new LoadingFailedCause(repositoryLabel, e.getDetailedExitCode()));
           env.getListener()
               .handle(
                   Event.error(
                       TargetUtils.getLocationMaybe(fromTarget),
                       String.format(
                           "%s depends on %s in repository %s which failed to fetch. %s",
-                          fromTarget.getLabel(),
-                          label,
-                          label.getPackageIdentifier().getRepository(),
-                          e.getMessage())));
+                          fromTarget.getLabel(), label, label.getRepository(), e.getMessage())));
           continue;
         }
-        @Nullable BuildConfiguration configuration = fromNode.getConfiguration();
+        @Nullable BuildConfigurationValue configuration = fromNode.getConfiguration();
         @Nullable ConfigurationId configId = null;
         if (configuration != null) {
           configId =  configuration.getEventId().getConfiguration();
         }
         env.getListener().post(new AnalysisRootCauseEvent(configuration, label, e.getMessage()));
-        rootCauses.add(new AnalysisFailedCause(label, configId, e.getMessage()));
+        rootCauses.add(new AnalysisFailedCause(label, configId, e.getDetailedExitCode()));
         missingEdgeHook(fromTarget, entry.getKey(), label, e);
         continue;
       }
@@ -166,11 +162,13 @@ public final class SkyframeDependencyResolver extends DependencyResolver {
         if (pkg.containsErrors()) {
           NoSuchTargetException e = new NoSuchTargetException(target);
           missingEdgeHook(fromTarget, entry.getKey(), label, e);
-          rootCauses.add(new LoadingFailedCause(label, e.getMessage()));
+          rootCauses.add(
+              new LoadingFailedCause(
+                  label, DetailedExitCode.of(pkg.contextualizeFailureDetailForTarget(target))));
         }
         result.put(label, target);
       } catch (NoSuchTargetException e) {
-        rootCauses.add(new LoadingFailedCause(label, e.getMessage()));
+        rootCauses.add(new LoadingFailedCause(label, e.getDetailedExitCode()));
         missingEdgeHook(fromTarget, entry.getKey(), label, e);
       }
     }

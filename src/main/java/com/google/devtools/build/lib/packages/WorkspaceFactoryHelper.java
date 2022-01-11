@@ -23,14 +23,16 @@ import com.google.common.collect.Maps;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
+import com.google.devtools.build.lib.cmdline.TargetParsingException;
+import com.google.devtools.build.lib.cmdline.TargetPattern;
 import com.google.devtools.build.lib.events.StoredEventHandler;
 import com.google.devtools.build.lib.packages.RuleFactory.BuildLangTypedAttributeValuesMap;
-import com.google.devtools.build.lib.syntax.Dict;
-import com.google.devtools.build.lib.syntax.EvalException;
-import com.google.devtools.build.lib.syntax.StarlarkSemantics;
-import com.google.devtools.build.lib.syntax.StarlarkThread;
 import java.util.Map;
 import java.util.stream.Collectors;
+import net.starlark.java.eval.Dict;
+import net.starlark.java.eval.EvalException;
+import net.starlark.java.eval.StarlarkSemantics;
+import net.starlark.java.eval.StarlarkThread;
 
 /** A helper for the {@link WorkspaceFactory} to create repository rules */
 public class WorkspaceFactoryHelper {
@@ -56,7 +58,18 @@ public class WorkspaceFactoryHelper {
       Label nameLabel = Label.parseAbsolute("//external:" + entry.getKey(), ImmutableMap.of());
       addBindRule(pkg, bindRuleClass, nameLabel, entry.getValue(), semantics, callstack);
     }
-    pkg.addRegisteredToolchains(ruleClass.getToolchainsToRegisterFunction().apply(rule));
+    // NOTE(wyv): What is this madness?? This is the only instance where a repository rule can
+    // register toolchains upon being instantiated. We should look into converting
+    // android_{s,n}dk_repository into module extensions.
+    ImmutableList.Builder<TargetPattern> toolchains = new ImmutableList.Builder<>();
+    for (String pattern : ruleClass.getToolchainsToRegisterFunction().apply(rule)) {
+      try {
+        toolchains.add(TargetPattern.defaultParser().parse(pattern));
+      } catch (TargetParsingException e) {
+        throw new LabelSyntaxException(e.getMessage());
+      }
+    }
+    pkg.addRegisteredToolchains(toolchains.build());
     return rule;
   }
 
@@ -152,10 +165,9 @@ public class WorkspaceFactoryHelper {
       if (old instanceof Rule) {
         Verify.verify(((Rule) old).getOutputFiles().isEmpty());
       }
-
-      pkg.removeTarget(rule);
+      pkg.replaceTarget(rule);
+    } else {
+      pkg.addRule(rule);
     }
-
-    pkg.addRule(rule);
   }
 }

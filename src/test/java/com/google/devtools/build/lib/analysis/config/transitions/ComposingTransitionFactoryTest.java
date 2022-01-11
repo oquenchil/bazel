@@ -49,7 +49,7 @@ public class ComposingTransitionFactoryTest {
   }
 
   @Test
-  public void compose_patch_patch() {
+  public void compose_patch_patch() throws Exception {
     // Same flag, will overwrite.
     TransitionFactory<StubData> composed =
         ComposingTransitionFactory.of(
@@ -72,7 +72,7 @@ public class ComposingTransitionFactoryTest {
   }
 
   @Test
-  public void compose_patch_split() {
+  public void compose_patch_split() throws Exception {
     // Different flags, will combine.
     TransitionFactory<StubData> composed =
         ComposingTransitionFactory.of(
@@ -100,7 +100,7 @@ public class ComposingTransitionFactoryTest {
   }
 
   @Test
-  public void compose_split_patch() {
+  public void compose_split_patch() throws Exception {
     // Different flags, will combine.
     TransitionFactory<StubData> composed =
         ComposingTransitionFactory.of(
@@ -202,7 +202,7 @@ public class ComposingTransitionFactoryTest {
     assertThat(NullTransition.isInstance(composed)).isTrue();
   }
 
-  private static final class StubData {}
+  private static final class StubData implements TransitionFactory.Data {}
 
   // Helper methods and classes for the tests.
   private static BuildOptions updateOptions(BuildOptions source, Label flag, String value) {

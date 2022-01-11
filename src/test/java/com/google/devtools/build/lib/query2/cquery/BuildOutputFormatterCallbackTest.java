@@ -19,7 +19,6 @@ import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
 import static com.google.devtools.build.lib.packages.BuildType.OUTPUT;
 
 import com.google.common.eventbus.EventBus;
-import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.util.MockRule;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.Reporter;
@@ -58,7 +57,12 @@ public class BuildOutputFormatterCallbackTest extends ConfiguredTargetQueryTest 
   @Before
   public final void setUpCqueryOptions() throws Exception {
     this.options = new CqueryOptions();
+    // TODO(bazel-team): reduce the confusion about these two seemingly similar settings.
+    // options.aspectDeps impacts how proto and similar output formatters output aspect results.
+    // Setting.INCLUDE_ASPECTS impacts whether or not aspect dependencies are included when
+    // following target deps. See CommonQueryOptions for further flag details.
     options.aspectDeps = Mode.OFF;
+    helper.setQuerySettings(Setting.INCLUDE_ASPECTS);
     this.reporter = new Reporter(new EventBus(), events::add);
     helper.useRuleClassProvider(
         setRuleClassProviders(BuildOutputFormatterCallbackTest::simpleRule).build());
@@ -69,7 +73,7 @@ public class BuildOutputFormatterCallbackTest extends ConfiguredTargetQueryTest 
     Set<String> targetPatternSet = new LinkedHashSet<>();
     expression.collectTargetPatterns(targetPatternSet);
     helper.setQuerySettings(Setting.NO_IMPLICIT_DEPS);
-    PostAnalysisQueryEnvironment<ConfiguredTarget> env =
+    PostAnalysisQueryEnvironment<KeyedConfiguredTarget> env =
         ((ConfiguredTargetQueryHelper) helper).getPostAnalysisQueryEnvironment(targetPatternSet);
 
     ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -97,27 +101,31 @@ public class BuildOutputFormatterCallbackTest extends ConfiguredTargetQueryTest 
         ")",
         "config_setting(",
         "  name = 'garfield',",
-        "  values = {'test_arg': 'cat'}",
+        "  values = {'foo': 'cat'}",
         ")");
 
-    getHelper().useConfiguration("--test_arg=cat");
+    getHelper().useConfiguration("--foo=cat");
     assertThat(getOutput("//test:my_rule"))
         .containsExactly(
             "# /workspace/test/BUILD:1:8",
             "my_rule(",
             "  name = \"my_rule\",",
             "  deps = [\"//test:lasagna.java\", \"//test:naps.java\"],",
-            ")")
+            ")",
+            "# Rule my_rule instantiated at (most recent call last):",
+            "#   /workspace/test/BUILD:1:8 in <toplevel>")
         .inOrder();
 
-    getHelper().useConfiguration("--test_arg=hound");
+    getHelper().useConfiguration("--foo=hound");
     assertThat(getOutput("//test:my_rule"))
         .containsExactly(
             "# /workspace/test/BUILD:1:8",
             "my_rule(",
             "  name = \"my_rule\",",
             "  deps = [\"//test:mondays.java\"],",
-            ")")
+            ")",
+            "# Rule my_rule instantiated at (most recent call last):",
+            "#   /workspace/test/BUILD:1:8 in <toplevel>")
         .inOrder();
   }
 
@@ -134,12 +142,14 @@ public class BuildOutputFormatterCallbackTest extends ConfiguredTargetQueryTest 
         ")",
         "config_setting(",
         "  name = 'garfield',",
-        "  values = {'test_arg': 'cat'}",
+        "  values = {'foo': 'cat'}",
         ")",
         "alias(",
         "  name = 'my_alias',",
         "  actual = ':my_rule'",
-        ")");
+        ")",
+        "# Rule my_alias instantiated at (most recent call last):",
+        "#   /workspace/test/BUILD:12:6 in <toplevel>");
 
     assertThat(getOutput("//test:my_alias"))
         .containsExactly(
@@ -147,7 +157,9 @@ public class BuildOutputFormatterCallbackTest extends ConfiguredTargetQueryTest 
             "alias(",
             "  name = \"my_alias\",",
             "  actual = \"//test:my_rule\",",
-            ")")
+            ")",
+            "# Rule my_alias instantiated at (most recent call last):",
+            "#   /workspace/test/BUILD:12:6 in <toplevel>")
         .inOrder();
   }
 
@@ -165,7 +177,7 @@ public class BuildOutputFormatterCallbackTest extends ConfiguredTargetQueryTest 
         ")",
         "config_setting(",
         "  name = 'garfield',",
-        "  values = {'test_arg': 'cat'}",
+        "  values = {'foo': 'cat'}",
         ")",
         "alias(",
         "  name = 'my_alias',",
@@ -175,24 +187,28 @@ public class BuildOutputFormatterCallbackTest extends ConfiguredTargetQueryTest 
         "  })",
         ")");
 
-    getHelper().useConfiguration("--test_arg=cat");
+    getHelper().useConfiguration("--foo=cat");
     assertThat(getOutput("//test:my_alias"))
         .containsExactly(
             "# /workspace/test/BUILD:13:6",
             "alias(",
             "  name = \"my_alias\",",
             "  actual = \"//test:my_first_rule\",",
-            ")")
+            ")",
+            "# Rule my_alias instantiated at (most recent call last):",
+            "#   /workspace/test/BUILD:13:6 in <toplevel>")
         .inOrder();
 
-    getHelper().useConfiguration("--test_arg=hound");
+    getHelper().useConfiguration("--foo=hound");
     assertThat(getOutput("//test:my_alias"))
         .containsExactly(
             "# /workspace/test/BUILD:13:6",
             "alias(",
             "  name = \"my_alias\",",
             "  actual = \"//test:my_second_rule\",",
-            ")")
+            ")",
+            "# Rule my_alias instantiated at (most recent call last):",
+            "#   /workspace/test/BUILD:13:6 in <toplevel>")
         .inOrder();
   }
 
@@ -209,7 +225,7 @@ public class BuildOutputFormatterCallbackTest extends ConfiguredTargetQueryTest 
         ")",
         "config_setting(",
         "  name = 'garfield',",
-        "  values = {'test_arg': 'cat'}",
+        "  values = {'foo': 'cat'}",
         ")");
 
     assertThat(getOutput("//test:lasagna.java")).containsExactly("");
@@ -229,10 +245,10 @@ public class BuildOutputFormatterCallbackTest extends ConfiguredTargetQueryTest 
         ")",
         "config_setting(",
         "  name = 'garfield',",
-        "  values = {'test_arg': 'cat'}",
+        "  values = {'foo': 'cat'}",
         ")");
 
-    getHelper().useConfiguration("--test_arg=cat");
+    getHelper().useConfiguration("--foo=cat");
     assertThat(getOutput("//test:output.txt"))
         .containsExactly(
             "# /workspace/test/BUILD:1:8",
@@ -240,10 +256,12 @@ public class BuildOutputFormatterCallbackTest extends ConfiguredTargetQueryTest 
             "  name = \"my_rule\",",
             "  deps = [\"//test:lasagna.java\", \"//test:naps.java\"],",
             "  out = \"//test:output.txt\",",
-            ")")
+            ")",
+            "# Rule my_rule instantiated at (most recent call last):",
+            "#   /workspace/test/BUILD:1:8 in <toplevel>")
         .inOrder();
 
-    getHelper().useConfiguration("--test_arg=hound");
+    getHelper().useConfiguration("--foo=hound");
     assertThat(getOutput("//test:output.txt"))
         .containsExactly(
             "# /workspace/test/BUILD:1:8",
@@ -251,7 +269,9 @@ public class BuildOutputFormatterCallbackTest extends ConfiguredTargetQueryTest 
             "  name = \"my_rule\",",
             "  deps = [\"//test:mondays.java\"],",
             "  out = \"//test:output.txt\",",
-            ")")
+            ")",
+            "# Rule my_rule instantiated at (most recent call last):",
+            "#   /workspace/test/BUILD:1:8 in <toplevel>")
         .inOrder();
   }
 }

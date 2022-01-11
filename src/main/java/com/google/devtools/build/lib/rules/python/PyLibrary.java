@@ -21,7 +21,6 @@ import com.google.devtools.build.lib.analysis.RuleConfiguredTargetFactory;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.Runfiles;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
-import com.google.devtools.build.lib.analysis.TransitionMode;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
@@ -41,11 +40,12 @@ public abstract class PyLibrary implements RuleConfiguredTargetFactory {
   public ConfiguredTarget create(RuleContext ruleContext)
       throws InterruptedException, RuleErrorException, ActionConflictException {
     PythonSemantics semantics = createSemantics();
-    PyCommon common = new PyCommon(ruleContext, semantics);
-    common.validatePackageName();
+    PyCommon common =
+        new PyCommon(
+            ruleContext, semantics, /*validateSources=*/ true, /*requiresMainFile=*/ false);
     semantics.validate(ruleContext, common);
 
-    List<Artifact> srcs = common.validateSrcs();
+    List<Artifact> srcs = common.getPythonSources();
     List<Artifact> allOutputs =
         new ArrayList<>(semantics.precompiledPythonFiles(ruleContext, srcs, common));
     if (ruleContext.hasErrors()) {
@@ -58,12 +58,7 @@ public abstract class PyLibrary implements RuleConfiguredTargetFactory {
 
     Runfiles.Builder runfilesBuilder = new Runfiles.Builder(
         ruleContext.getWorkspaceName(), ruleContext.getConfiguration().legacyExternalRunfiles());
-    if (common.getConvertedFiles() != null) {
-      runfilesBuilder.addSymlinks(common.getConvertedFiles());
-    } else {
-      runfilesBuilder.addTransitiveArtifacts(filesToBuild);
-    }
-    runfilesBuilder.add(ruleContext, PythonRunfilesProvider.TO_RUNFILES);
+    runfilesBuilder.addTransitiveArtifacts(filesToBuild);
     runfilesBuilder.addRunfiles(ruleContext, RunfilesProvider.DEFAULT_RUNFILES);
 
     RuleConfiguredTargetBuilder builder = new RuleConfiguredTargetBuilder(ruleContext);
@@ -73,8 +68,7 @@ public abstract class PyLibrary implements RuleConfiguredTargetFactory {
         .setFilesToBuild(filesToBuild)
         .addNativeDeclaredProvider(
             new PyCcLinkParamsProvider(
-                semantics.buildCcInfoProvider(
-                    ruleContext.getPrerequisites("deps", TransitionMode.TARGET))))
+                semantics.buildCcInfoProvider(ruleContext.getPrerequisites("deps"))))
         .add(RunfilesProvider.class, RunfilesProvider.simple(runfilesBuilder.build()))
         .build();
   }

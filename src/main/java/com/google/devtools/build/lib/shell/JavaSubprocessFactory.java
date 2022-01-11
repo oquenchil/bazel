@@ -23,14 +23,10 @@ import java.lang.ProcessBuilder.Redirect;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * A subprocess factory that uses {@link java.lang.ProcessBuilder}.
- */
+/** A subprocess factory that uses {@link java.lang.ProcessBuilder}. */
 public class JavaSubprocessFactory implements SubprocessFactory {
 
-  /**
-   * A subprocess backed by a {@link java.lang.Process}.
-   */
+  /** A subprocess backed by a {@link java.lang.Process}. */
   private static class JavaSubprocess implements Subprocess {
     private final Process process;
     private final long deadlineMillis;
@@ -63,6 +59,11 @@ public class JavaSubprocessFactory implements SubprocessFactory {
       }
       // this seems to be the only non-blocking call for checking liveness
       return !process.isAlive();
+    }
+
+    @Override
+    public boolean isAlive() {
+      return process.isAlive();
     }
 
     @Override
@@ -111,6 +112,11 @@ public class JavaSubprocessFactory implements SubprocessFactory {
       // java.lang.Process doesn't give us a way to clean things up other than #destroy(), which was
       // already called by this point.
     }
+
+    @Override
+    public long getProcessId() {
+      return process.pid();
+    }
   }
 
   public static final JavaSubprocessFactory INSTANCE = new JavaSubprocessFactory();
@@ -156,9 +162,10 @@ public class JavaSubprocessFactory implements SubprocessFactory {
     builder.directory(params.getWorkingDirectory());
 
     // Deadline is now + given timeout.
-    long deadlineMillis = params.getTimeoutMillis() > 0
-        ? Math.addExact(System.currentTimeMillis(), params.getTimeoutMillis())
-        : 0;
+    long deadlineMillis =
+        params.getTimeoutMillis() > 0
+            ? Math.addExact(System.currentTimeMillis(), params.getTimeoutMillis())
+            : 0;
     return new JavaSubprocess(start(builder), deadlineMillis);
   }
 

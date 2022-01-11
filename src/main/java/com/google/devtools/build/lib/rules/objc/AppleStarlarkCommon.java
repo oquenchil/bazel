@@ -21,14 +21,16 @@ import com.google.common.collect.Maps;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.analysis.RuleContext;
+import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.analysis.config.transitions.StarlarkExposedRuleTransitionFactory;
 import com.google.devtools.build.lib.analysis.platform.ConstraintValueInfo;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkRuleContext;
 import com.google.devtools.build.lib.collect.nestedset.Depset;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
-import com.google.devtools.build.lib.packages.NativeProvider;
+import com.google.devtools.build.lib.packages.BuiltinProvider;
 import com.google.devtools.build.lib.packages.Provider;
 import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
-import com.google.devtools.build.lib.packages.StarlarkAspect;
 import com.google.devtools.build.lib.packages.StarlarkInfo;
 import com.google.devtools.build.lib.packages.StructImpl;
 import com.google.devtools.build.lib.rules.apple.AppleConfiguration;
@@ -38,20 +40,22 @@ import com.google.devtools.build.lib.rules.apple.AppleToolchain;
 import com.google.devtools.build.lib.rules.apple.DottedVersion;
 import com.google.devtools.build.lib.rules.apple.XcodeConfigInfo;
 import com.google.devtools.build.lib.rules.apple.XcodeVersionProperties;
-import com.google.devtools.build.lib.rules.objc.AppleBinary.AppleBinaryOutput;
-import com.google.devtools.build.lib.rules.objc.ObjcProvider.Key;
-import com.google.devtools.build.lib.skylarkbuildapi.SplitTransitionProviderApi;
-import com.google.devtools.build.lib.skylarkbuildapi.apple.AppleCommonApi;
-import com.google.devtools.build.lib.syntax.Dict;
-import com.google.devtools.build.lib.syntax.EvalException;
-import com.google.devtools.build.lib.syntax.Location;
-import com.google.devtools.build.lib.syntax.Sequence;
-import com.google.devtools.build.lib.syntax.Starlark;
-import com.google.devtools.build.lib.syntax.StarlarkSemantics;
-import com.google.devtools.build.lib.syntax.StarlarkThread;
-import com.google.devtools.build.lib.syntax.StarlarkValue;
+import com.google.devtools.build.lib.rules.cpp.CcModule;
+import com.google.devtools.build.lib.rules.cpp.CppSemantics;
+import com.google.devtools.build.lib.rules.objc.ObjcProvider.Flag;
+import com.google.devtools.build.lib.starlarkbuildapi.SplitTransitionProviderApi;
+import com.google.devtools.build.lib.starlarkbuildapi.apple.AppleCommonApi;
 import java.util.Map;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.Dict;
+import net.starlark.java.eval.EvalException;
+import net.starlark.java.eval.Sequence;
+import net.starlark.java.eval.Starlark;
+import net.starlark.java.eval.StarlarkInt;
+import net.starlark.java.eval.StarlarkList;
+import net.starlark.java.eval.StarlarkThread;
+import net.starlark.java.eval.StarlarkValue;
+import net.starlark.java.syntax.Location;
 
 /** A class that exposes apple rule implementation internals to Starlark. */
 public class AppleStarlarkCommon
@@ -63,23 +67,18 @@ public class AppleStarlarkCommon
         XcodeConfigInfo,
         ApplePlatform> {
 
+  @Override
+  public StarlarkExposedRuleTransitionFactory getAppleCrosstoolTransition() {
+    return new AppleCrosstoolTransition.AppleCrosstoolTransitionFactory();
+  }
+
   @VisibleForTesting
   public static final String DEPRECATED_KEY_ERROR =
       "Key '%s' no longer supported in ObjcProvider (use CcInfo instead).";
 
   @VisibleForTesting
-  public static final String BAD_DIRECT_DEP_PROVIDERS_ERROR =
-      "Argument 'direct_dep_providers' no longer supported.  Please use 'strict_include' field "
-          + "in ObjcProvider.";
-
-  @VisibleForTesting
   public static final String BAD_KEY_ERROR =
-      "Argument %s not a recognized key,"
-          + " 'strict_include', 'providers', or 'direct_dep_providers'.";
-
-  @VisibleForTesting
-  public static final String BAD_FRAMEWORK_PATH_ERROR =
-      "Value for key framework_search_paths must end in .framework; instead found %s.";
+      "Argument %s not a recognized key, 'strict_include', or 'providers'.";
 
   @VisibleForTesting
   public static final String BAD_PROVIDERS_ITER_ERROR =
@@ -91,22 +90,15 @@ public class AppleStarlarkCommon
           + "iterable with %s.";
 
   @VisibleForTesting
-  public static final String BAD_DIRECT_DEPENDENCY_KEY_ERROR =
-      "Key %s not allowed to be in direct_dep_provider.";
-
-  @VisibleForTesting
   public static final String NOT_SET_ERROR = "Value for key %s must be a set, instead found %s.";
-
-  @VisibleForTesting
-  public static final String MISSING_KEY_ERROR = "No value for required key %s was present.";
 
   @Nullable private StructImpl platformType;
   @Nullable private StructImpl platform;
 
-  private ObjcProtoAspect objcProtoAspect;
+  private final CppSemantics cppSemantics;
 
-  public AppleStarlarkCommon(ObjcProtoAspect objcProtoAspect) {
-    this.objcProtoAspect = objcProtoAspect;
+  public AppleStarlarkCommon(CppSemantics cppSemantics) {
+    this.cppSemantics = cppSemantics;
   }
 
   @Override
@@ -196,28 +188,42 @@ public class AppleStarlarkCommon
 
   @Override
   // This method is registered statically for Starlark, and never called directly.
-  public ObjcProvider newObjcProvider(Boolean usesSwift, Dict<?, ?> kwargs, StarlarkThread thread)
+  public ObjcProvider newObjcProvider(Dict<String, Object> kwargs, StarlarkThread thread)
       throws EvalException {
-    StarlarkSemantics semantics = thread.getSemantics();
-    ObjcProvider.StarlarkBuilder resultBuilder = new ObjcProvider.StarlarkBuilder(semantics);
-    if (usesSwift) {
-      resultBuilder.add(ObjcProvider.FLAG, ObjcProvider.Flag.USES_SWIFT);
-    }
-    for (Map.Entry<?, ?> entry : kwargs.entrySet()) {
-      Key<?> key = ObjcProvider.getStarlarkKeyForString((String) entry.getKey());
+    ObjcProvider.StarlarkBuilder resultBuilder =
+        new ObjcProvider.StarlarkBuilder(thread.getSemantics());
+    for (Map.Entry<String, Object> entry : kwargs.entrySet()) {
+      ObjcProvider.Key<?> key = ObjcProvider.getStarlarkKeyForString(entry.getKey());
       if (key != null) {
         resultBuilder.addElementsFromStarlark(key, entry.getValue());
-      } else if (entry.getKey().equals("strict_include")) {
-        resultBuilder.addStrictIncludeFromStarlark(entry.getValue());
-      } else if (entry.getKey().equals("providers")) {
-        resultBuilder.addProvidersFromStarlark(entry.getValue());
-      } else if (entry.getKey().equals("direct_dep_providers")) {
-        if (semantics.incompatibleObjcProviderRemoveCompileInfo()) {
-          throw new EvalException(null, BAD_DIRECT_DEP_PROVIDERS_ERROR);
-        }
-        resultBuilder.addDirectDepProvidersFromStarlark(entry.getValue());
       } else {
-        throw new EvalException(null, String.format(BAD_KEY_ERROR, entry.getKey()));
+        switch (entry.getKey()) {
+          case "cc_library":
+            CcModule.checkPrivateStarlarkificationAllowlist(thread);
+            resultBuilder.uncheckedAddTransitive(
+                ObjcProvider.CC_LIBRARY,
+                ObjcProviderStarlarkConverters.convertToJava(
+                    ObjcProvider.CC_LIBRARY, entry.getValue()));
+            break;
+          case "linkstamp":
+            CcModule.checkPrivateStarlarkificationAllowlist(thread);
+            resultBuilder.uncheckedAddTransitive(
+                ObjcProvider.LINKSTAMP,
+                ObjcProviderStarlarkConverters.convertToJava(
+                    ObjcProvider.LINKSTAMP, entry.getValue()));
+            break;
+          case "flag":
+            resultBuilder.add(ObjcProvider.FLAG, Flag.USES_CPP);
+            break;
+          case "strict_include":
+            resultBuilder.addStrictIncludeFromStarlark(entry.getValue());
+            break;
+          case "providers":
+            resultBuilder.addProvidersFromStarlark(entry.getValue());
+            break;
+          default:
+            throw Starlark.errorf(BAD_KEY_ERROR, entry.getKey());
+        }
       }
     }
     return resultBuilder.build();
@@ -236,27 +242,47 @@ public class AppleStarlarkCommon
         Depset.noneableCast(dynamicFrameworkFiles, Artifact.class, "framework_files");
     Artifact binary = (dylibBinary != Starlark.NONE) ? (Artifact) dylibBinary : null;
 
-    return new AppleDynamicFrameworkInfo(
-        binary, depsObjcProvider, frameworkDirs, frameworkFiles);
+    return new AppleDynamicFrameworkInfo(binary, depsObjcProvider, frameworkDirs, frameworkFiles);
+  }
+
+  @Override
+  public AppleExecutableBinaryInfo newExecutableBinaryProvider(
+      Object executableBinary, ObjcProvider depsObjcProvider) throws EvalException {
+    Artifact binary = (executableBinary != Starlark.NONE) ? (Artifact) executableBinary : null;
+    return new AppleExecutableBinaryInfo(binary, depsObjcProvider);
   }
 
   @Override
   public StructImpl linkMultiArchBinary(
       StarlarkRuleContext starlarkRuleContext,
+      Object avoidDeps,
       Sequence<?> extraLinkopts,
       Sequence<?> extraLinkInputs,
+      StarlarkInt stamp,
+      Boolean shouldLipo,
       StarlarkThread thread)
       throws EvalException, InterruptedException {
     try {
       RuleContext ruleContext = starlarkRuleContext.getRuleContext();
-      AppleBinaryOutput appleBinaryOutput =
+      ImmutableList<TransitiveInfoCollection> avoidDepsList =
+          (avoidDeps != Starlark.NONE)
+              ? ImmutableList.copyOf(
+                  Sequence.cast(avoidDeps, TransitiveInfoCollection.class, "avoid_deps"))
+              : ImmutableList.of();
+      boolean isStampingEnabled =
+          isStampingEnabled(stamp.toInt("stamp"), ruleContext.getConfiguration());
+      AppleLinkingOutputs linkingOutputs =
           AppleBinary.linkMultiArchBinary(
               ruleContext,
+              cppSemantics,
+              avoidDepsList,
               ImmutableList.copyOf(Sequence.cast(extraLinkopts, String.class, "extra_linkopts")),
-              Sequence.cast(extraLinkInputs, Artifact.class, "extra_link_inputs"));
-      return createAppleBinaryOutputStarlarkStruct(appleBinaryOutput, thread);
+              Sequence.cast(extraLinkInputs, Artifact.class, "extra_link_inputs"),
+              isStampingEnabled,
+              shouldLipo);
+      return createStarlarkLinkingOutputs(linkingOutputs, thread, shouldLipo);
     } catch (RuleErrorException | ActionConflictException exception) {
-      throw new EvalException(null, exception);
+      throw new EvalException(exception);
     }
   }
 
@@ -265,35 +291,85 @@ public class AppleStarlarkCommon
     try {
       return DottedVersion.fromString(version);
     } catch (DottedVersion.InvalidDottedVersionException e) {
-      throw new EvalException(null, e.getMessage());
+      throw new EvalException(e.getMessage());
     }
   }
 
-  @Override
-  public StarlarkAspect getObjcProtoAspect() {
-    return objcProtoAspect;
+  /**
+   * Returns the given value unless it is null, in which case the Starlark value {@code NONE} is
+   * returned.
+   */
+  private Object valueOrNone(Object value) {
+    if (value != null) {
+      return value;
+    }
+    return Starlark.NONE;
   }
 
   /**
    * Creates a Starlark struct that contains the results of the {@code link_multi_arch_binary}
    * function.
    */
-  private StructImpl createAppleBinaryOutputStarlarkStruct(
-      AppleBinaryOutput output, StarlarkThread thread) {
-    Provider constructor =
-        new NativeProvider<StructImpl>(StructImpl.class, "apple_binary_output") {};
-    // We have to transform the output group dictionary into one that contains StarlarkValues
-    // instead
-    // of plain NestedSets because the Starlark caller may want to return this directly from their
-    // implementation function.
-    Map<String, StarlarkValue> outputGroups =
-        Maps.transformValues(output.getOutputGroups(), v -> Depset.of(Artifact.TYPE, v));
+  private StructImpl createStarlarkLinkingOutputs(
+      AppleLinkingOutputs linkingOutputs, StarlarkThread thread, boolean shouldLipo) {
+    Provider linkingOutputConstructor =
+        new BuiltinProvider<StructImpl>("apple_linking_output", StructImpl.class) {};
+    ImmutableList.Builder<StarlarkInfo> outputStructs = ImmutableList.builder();
 
-    ImmutableMap<String, Object> fields =
-        ImmutableMap.of(
-            "binary_provider", output.getBinaryInfoProvider(),
-            "debug_outputs_provider", output.getDebugOutputsProvider(),
-            "output_groups", Dict.copyOf(thread.mutability(), outputGroups));
-    return StarlarkInfo.create(constructor, fields, Location.BUILTIN);
+    for (AppleLinkingOutputs.LinkingOutput linkingOutput : linkingOutputs.getOutputs()) {
+      outputStructs.add(
+          StarlarkInfo.create(
+              linkingOutputConstructor,
+              ImmutableMap.<String, Object>builder()
+                  .put("platform", linkingOutput.getPlatform())
+                  .put("architecture", linkingOutput.getArchitecture())
+                  .put("environment", linkingOutput.getEnvironment())
+                  .put("binary", linkingOutput.getBinary())
+                  .put("bitcode_symbols", valueOrNone(linkingOutput.getBitcodeSymbols()))
+                  .put("dsym_binary", valueOrNone(linkingOutput.getDsymBinary()))
+                  .put("linkmap", valueOrNone(linkingOutput.getLinkmap()))
+                  .build(),
+              Location.BUILTIN));
+    }
+
+    // We have to transform the output group dictionary into one that contains StarlarkValues
+    // instead of plain NestedSets because the Starlark caller may want to return this directly from
+    // their implementation function.
+    Map<String, StarlarkValue> outputGroups =
+        Maps.transformValues(linkingOutputs.getOutputGroups(), v -> Depset.of(Artifact.TYPE, v));
+
+    ImmutableMap.Builder<String, Object> fields = ImmutableMap.builder();
+    fields.put("objc", linkingOutputs.getDepsObjcProvider());
+    fields.put("output_groups", Dict.copyOf(thread.mutability(), outputGroups));
+    fields.put("outputs", StarlarkList.copyOf(thread.mutability(), outputStructs.build()));
+
+    // TODO(b/110264170): Remove this field after clients have been migrated to use a provider
+    // defined in Starlark and propagated by rules_apple instead.
+    fields.put("debug_outputs_provider", linkingOutputs.getLegacyDebugOutputsProvider());
+
+    if (shouldLipo) {
+      fields.put("binary", linkingOutputs.getLegacyBinaryArtifact());
+      fields.put("binary_provider", linkingOutputs.getLegacyBinaryInfoProvider());
+    }
+
+    Provider linkingOutputsConstructor =
+        new BuiltinProvider<StructImpl>("apple_linking_outputs", StructImpl.class) {};
+    return StarlarkInfo.create(linkingOutputsConstructor, fields.build(), Location.BUILTIN);
+  }
+
+  private static boolean isStampingEnabled(int stamp, BuildConfigurationValue config)
+      throws EvalException {
+    if (stamp == 0) {
+      return false;
+    }
+    if (stamp == 1) {
+      return true;
+    }
+    if (stamp == -1) {
+      return config.stampBinaries();
+    }
+    throw Starlark.errorf(
+        "stamp value %d is not supported; must be 0 (disabled), 1 (enabled), or -1 (default)",
+        stamp);
   }
 }

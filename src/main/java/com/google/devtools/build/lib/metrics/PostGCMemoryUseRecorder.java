@@ -14,11 +14,13 @@
 
 package com.google.devtools.build.lib.metrics;
 
+import com.google.auto.value.AutoValue;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.flogger.GoogleLogger;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.runtime.BlazeModule;
@@ -33,11 +35,14 @@ import com.google.devtools.common.options.OptionEffectTag;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParsingResult;
 import com.sun.management.GarbageCollectionNotificationInfo;
+import com.sun.management.GcInfo;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryUsage;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import javax.annotation.concurrent.GuardedBy;
 import javax.management.Notification;
 import javax.management.NotificationEmitter;
 import javax.management.NotificationListener;
@@ -57,6 +62,7 @@ import javax.management.openmbean.CompositeData;
  * <p>This allows us to measure sizeof(data) by measuring sizeof(heap used) immediately after a full
  * GC.
  */
+@SuppressWarnings("GoodTime") // Using long timestamps for consistency with code base.
 public final class PostGCMemoryUseRecorder implements NotificationListener {
   private static PostGCMemoryUseRecorder instance = null;
 
@@ -69,12 +75,30 @@ public final class PostGCMemoryUseRecorder implements NotificationListener {
 
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
 
-  // Protected by PostGCMemoryUseRecorder's lock.
-  private Optional<Long> peakPostGCHeapMemoryUsed = Optional.empty();
+  /** The memory use and time of a build's peak post-GC heap. */
+  @AutoValue
+  public abstract static class PeakHeap {
 
-  // Protected by PostGcMemoryUseRecorder's lock. Set to true iff a GarbageCollectionNotification
-  // reported that we were using no memory.
+    PeakHeap() {}
+
+    public abstract long bytes();
+
+    public abstract long timestampMillis();
+
+    static PeakHeap create(long bytes, long timestampMillis) {
+      return new AutoValue_PostGCMemoryUseRecorder_PeakHeap(bytes, timestampMillis);
+    }
+  }
+
+  @GuardedBy("this")
+  private Optional<PeakHeap> peakHeap = Optional.empty();
+
+  // Set to true iff a GarbageCollectionNotification reported that we were using no memory.
+  @GuardedBy("this")
   private boolean memoryUsageReportedZero = false;
+
+  @GuardedBy("this")
+  private Map<String, Long> garbageStats = new HashMap<>();
 
   @VisibleForTesting
   PostGCMemoryUseRecorder(Iterable<GarbageCollectorMXBean> mxBeans) {
@@ -88,24 +112,30 @@ public final class PostGCMemoryUseRecorder implements NotificationListener {
     }
   }
 
-  public synchronized Optional<Long> getPeakPostGCHeapMemoryUsed() {
-    return peakPostGCHeapMemoryUsed;
+  public synchronized Optional<PeakHeap> getPeakPostGcHeap() {
+    return peakHeap;
   }
 
   public synchronized boolean wasMemoryUsageReportedZero() {
     return memoryUsageReportedZero;
   }
 
-  public synchronized void reset() {
-    peakPostGCHeapMemoryUsed = Optional.empty();
-    memoryUsageReportedZero = false;
+  /**
+   * Returns the number of bytes garbage collected during this invocation. Broken down by GC space.
+   */
+  public synchronized ImmutableMap<String, Long> getGarbageStats() {
+    return ImmutableMap.copyOf(garbageStats);
   }
 
-  private synchronized void updatePostGCHeapMemoryUsed(long used) {
-    if (peakPostGCHeapMemoryUsed.isPresent()) {
-      peakPostGCHeapMemoryUsed = Optional.of(Math.max(used, peakPostGCHeapMemoryUsed.get()));
-    } else {
-      peakPostGCHeapMemoryUsed = Optional.of(used);
+  public synchronized void reset() {
+    peakHeap = Optional.empty();
+    memoryUsageReportedZero = false;
+    garbageStats = new HashMap<>();
+  }
+
+  private synchronized void updatePostGCHeapMemoryUsed(long used, long timestampMillis) {
+    if (!peakHeap.isPresent() || used > peakHeap.get().bytes()) {
+      peakHeap = Optional.of(PeakHeap.create(used, timestampMillis));
     }
   }
 
@@ -115,10 +145,6 @@ public final class PostGCMemoryUseRecorder implements NotificationListener {
 
   @Override
   public void handleNotification(Notification notification, Object handback) {
-    doHandleNotification(notification, handback);
-  }
-
-  public void doHandleNotification(Notification notification, Object handback) {
     if (!notification
         .getType()
         .equals(GarbageCollectionNotificationInfo.GARBAGE_COLLECTION_NOTIFICATION)) {
@@ -127,9 +153,29 @@ public final class PostGCMemoryUseRecorder implements NotificationListener {
 
     GarbageCollectionNotificationInfo info =
         GarbageCollectionNotificationInfo.from((CompositeData) notification.getUserData());
-    long durationNs = info.getGcInfo().getDuration() * 1_000_000;
-    long end = Profiler.nanoTimeMaybe();
+
+    Map<String, Long> gcBefore = new HashMap<>();
+    GcInfo gcInfo = info.getGcInfo();
+    for (Map.Entry<String, MemoryUsage> memoryUsage : gcInfo.getMemoryUsageBeforeGc().entrySet()) {
+      String kind = memoryUsage.getKey();
+      gcBefore.put(kind, memoryUsage.getValue().getUsed());
+    }
+    synchronized (this) {
+      for (Map.Entry<String, MemoryUsage> memoryUsage : gcInfo.getMemoryUsageAfterGc().entrySet()) {
+        String kind = memoryUsage.getKey();
+        long before = gcBefore.containsKey(kind) ? gcBefore.get(kind) : 0;
+        long diff = before - memoryUsage.getValue().getUsed();
+        // The difference is potentially negative when the JVM propagates objects from one GC space
+        // to another. Discard these cases.
+        if (diff > 0) {
+          garbageStats.compute(kind, (k, v) -> v == null ? diff : v + diff);
+        }
+      }
+    }
+
     if (wasStopTheWorldGc(info)) {
+      long durationNs = info.getGcInfo().getDuration() * 1_000_000;
+      long end = Profiler.nanoTimeMaybe();
       Profiler.instance()
           .logSimpleTask(
               end - durationNs,
@@ -146,7 +192,7 @@ public final class PostGCMemoryUseRecorder implements NotificationListener {
     for (MemoryUsage mu : mem.values()) {
       used += mu.getUsed();
     }
-    updatePostGCHeapMemoryUsed(used);
+    updatePostGCHeapMemoryUsed(used, notification.getTimeStamp());
     if (used > 0) {
       logger.atInfo().log("Memory use after full GC: %d", used);
     } else {
@@ -158,7 +204,7 @@ public final class PostGCMemoryUseRecorder implements NotificationListener {
   }
 
   /** Module to support "blaze info peak-heap-size". */
-  public static class PostGCMemoryUseRecorderModule extends BlazeModule {
+  public static final class PostGCMemoryUseRecorderModule extends BlazeModule {
     @Override
     public void serverInit(OptionsParsingResult startupOptions, ServerBuilder builder) {
       builder.addInfoItems(new PeakMemInfoItem());
@@ -172,28 +218,26 @@ public final class PostGCMemoryUseRecorder implements NotificationListener {
     }
   }
 
-  static class PeakMemInfoItem extends InfoItem {
+  private static final class PeakMemInfoItem extends InfoItem {
     PeakMemInfoItem() {
       super(
           "peak-heap-size",
           "The peak amount of used memory in bytes after any call to System.gc().",
-          true);
+          /*hidden=*/ true);
     }
 
     @Override
-    public byte[] get(Supplier<BuildConfiguration> configurationSupplier, CommandEnvironment env) {
-      if (PostGCMemoryUseRecorder.get().getPeakPostGCHeapMemoryUsed().isPresent()) {
-        return print(
-            StringUtilities.prettyPrintBytes(
-                PostGCMemoryUseRecorder.get().getPeakPostGCHeapMemoryUsed().get()));
-      } else {
-        return print("unknown");
-      }
+    public byte[] get(
+        Supplier<BuildConfigurationValue> configurationSupplier, CommandEnvironment env) {
+      return PostGCMemoryUseRecorder.get()
+          .getPeakPostGcHeap()
+          .map(peak -> print(StringUtilities.prettyPrintBytes(peak.bytes())))
+          .orElseGet(() -> print("unknown"));
     }
   }
 
   /** Module to run a full GC after a build is complete on a Blaze server. * */
-  public static class GcAfterBuildModule extends BlazeModule {
+  public static final class GcAfterBuildModule extends BlazeModule {
 
     private boolean forceGc = false;
 
@@ -211,7 +255,7 @@ public final class PostGCMemoryUseRecorder implements NotificationListener {
     }
 
     @Override
-    public Iterable<Class<? extends OptionsBase>> getCommandOptions(Command command) {
+    public ImmutableList<Class<? extends OptionsBase>> getCommandOptions(Command command) {
       return ImmutableList.of(Options.class);
     }
 
@@ -228,7 +272,7 @@ public final class PostGCMemoryUseRecorder implements NotificationListener {
 
     @Override
     public void afterCommand() {
-      if (forceGc && !PostGCMemoryUseRecorder.get().getPeakPostGCHeapMemoryUsed().isPresent()) {
+      if (forceGc && !PostGCMemoryUseRecorder.get().getPeakPostGcHeap().isPresent()) {
         System.gc();
       }
     }

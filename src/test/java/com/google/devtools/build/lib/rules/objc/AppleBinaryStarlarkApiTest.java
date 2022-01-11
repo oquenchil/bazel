@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.rules.objc;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.testutil.Scratch;
 import com.google.devtools.build.lib.testutil.TestConstants;
 import java.io.IOException;
@@ -54,7 +55,7 @@ public class AppleBinaryStarlarkApiTest extends AppleBinaryTest {
   @Before
   public final void setup() throws Exception  {
     scratch.file("test_starlark/BUILD");
-    String toolsRepo = TestConstants.TOOLS_REPOSITORY;
+    RepositoryName toolsRepo = TestConstants.TOOLS_REPOSITORY;
     String toolsLoc = toolsRepo + "//tools/objc";
 
     scratch.file(
@@ -76,34 +77,24 @@ public class AppleBinaryStarlarkApiTest extends AppleBinaryTest {
         "            default=Label('" + toolsRepo + "//tools/cpp:current_cc_toolchain'),),",
         "        '_cc_toolchain': attr.label(",
         "            default=Label('" + toolsRepo + "//tools/cpp:current_cc_toolchain'),),",
-        "        '_googlemac_proto_compiler': attr.label(",
-        "            cfg='host',",
-        "            default=Label('" + toolsLoc + ":protobuf_compiler_wrapper')),",
-        "        '_googlemac_proto_compiler_support': attr.label(",
-        "            cfg='host',",
-        "            default=Label('" + toolsLoc + ":protobuf_compiler_support')),",
-        "        '_lib_protobuf': attr.label(",
-        "            default=Label('" + toolsLoc + ":protobuf_lib')),",
-        "        '_protobuf_well_known_types': attr.label(",
-        "            cfg='host',",
-        "            default=Label('" + toolsLoc + ":protobuf_well_known_types')),",
         "        '_xcode_config': attr.label(",
         "            default=configuration_field(",
         "                fragment='apple', name='xcode_config_label'),),",
         "        '_xcrunwrapper': attr.label(",
         "            executable=True,",
-        "            cfg='host',",
+        "            cfg='exec',",
         "            default=Label('" + toolsLoc + ":xcrunwrapper')),",
         "        'binary_type': attr.string(),",
-        "        'bundle_loader': attr.label(aspects=[apple_common.objc_proto_aspect],),",
+        "        'bundle_loader': attr.label(),",
         "        'deps': attr.label_list(",
         "             cfg=apple_common.multi_arch_split,",
-        "             aspects=[apple_common.objc_proto_aspect],",
         "        ),",
-        "        'dylibs': attr.label_list(aspects=[apple_common.objc_proto_aspect],),",
+        "        'dylibs': attr.label_list(),",
         "        'linkopts': attr.string_list(),",
         "        'platform_type': attr.string(),",
         "        'minimum_os_version': attr.string(),",
+        "        'should_lipo': attr.bool(),",
+        "        'stamp': attr.int(values=[-1,0,1],default=-1),",
         "    },",
         "    fragments = ['apple', 'objc', 'cpp',],",
         ")");

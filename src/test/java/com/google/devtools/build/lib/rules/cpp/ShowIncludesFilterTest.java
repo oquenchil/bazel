@@ -17,6 +17,7 @@ package com.google.devtools.build.lib.rules.cpp;
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 import java.io.ByteArrayOutputStream;
@@ -41,7 +42,7 @@ public class ShowIncludesFilterTest {
     showIncludesFilter = new ShowIncludesFilter("foo.cpp");
     output = new ByteArrayOutputStream();
     filterOutputStream = showIncludesFilter.getFilteredOutputStream(output);
-    fs = new InMemoryFileSystem();
+    fs = new InMemoryFileSystem(DigestHashFunction.SHA256);
     fs.getPath("/out").createDirectory();
   }
 
@@ -94,7 +95,7 @@ public class ShowIncludesFilterTest {
 
   @Test
   // Regression tests for https://github.com/bazelbuild/bazel/issues/9172
-  public void testFindHeaderFromAbsolutePathUnderExecroot() throws IOException {
+  public void testFindHeaderFromAbsolutePathUnderExecrootBase() throws IOException {
     // "Note: including file:" is the prefix
     filterOutputStream.write(
         getBytes("Note: including file: C:\\tmp\\xxxx\\execroot\\__main__\\foo\\bar\\bar.h"));
@@ -104,7 +105,7 @@ public class ShowIncludesFilterTest {
     filterOutputStream.write(getBytes("\n"));
     // It's a match, output should be filtered, dependency on bar.h should be found.
     assertThat(output.toString()).isEmpty();
-    assertThat(showIncludesFilter.getDependencies()).contains("foo\\bar\\bar.h");
+    assertThat(showIncludesFilter.getDependencies()).contains("..\\__main__\\foo\\bar\\bar.h");
   }
 
   @Test

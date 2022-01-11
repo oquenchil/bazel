@@ -22,6 +22,7 @@ import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.platform.ConstraintValueInfo;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkRuleContext;
+import com.google.devtools.build.lib.packages.RuleClass.ConfiguredTargetFactory.RuleErrorException;
 import com.google.devtools.build.lib.rules.java.JavaCompilationArgsProvider;
 import com.google.devtools.build.lib.rules.java.JavaInfo;
 import com.google.devtools.build.lib.rules.proto.ProtoCompileActionBuilder;
@@ -29,8 +30,8 @@ import com.google.devtools.build.lib.rules.proto.ProtoCompileActionBuilder.Expor
 import com.google.devtools.build.lib.rules.proto.ProtoCompileActionBuilder.Services;
 import com.google.devtools.build.lib.rules.proto.ProtoInfo;
 import com.google.devtools.build.lib.rules.proto.ProtoLangToolchainProvider;
-import com.google.devtools.build.lib.skylarkbuildapi.java.JavaProtoCommonApi;
-import com.google.devtools.build.lib.syntax.EvalException;
+import com.google.devtools.build.lib.starlarkbuildapi.java.JavaProtoCommonApi;
+import net.starlark.java.eval.EvalException;
 
 /** A class that exposes Java common methods for proto compilation. */
 public class JavaProtoStarlarkCommon
@@ -45,19 +46,22 @@ public class JavaProtoStarlarkCommon
       String flavour)
       throws EvalException, InterruptedException {
     ProtoInfo protoInfo = target.get(ProtoInfo.PROVIDER);
-    ProtoCompileActionBuilder.registerActions(
-        starlarkRuleContext.getRuleContext(),
-        ImmutableList.of(
-            new ProtoCompileActionBuilder.ToolchainInvocation(
-                flavour,
-                getProtoToolchainProvider(starlarkRuleContext, protoToolchainAttr),
-                sourceJar.getExecPathString())),
-        protoInfo,
-        starlarkRuleContext.getLabel(),
-        ImmutableList.of(sourceJar),
-        "JavaLite",
-        Exports.DO_NOT_USE,
-        Services.ALLOW);
+    try {
+      ProtoCompileActionBuilder.registerActions(
+          starlarkRuleContext.getRuleContext(),
+          ImmutableList.of(
+              new ProtoCompileActionBuilder.ToolchainInvocation(
+                  flavour,
+                  getProtoToolchainProvider(starlarkRuleContext, protoToolchainAttr),
+                  sourceJar.getExecPathString())),
+          protoInfo,
+          ImmutableList.of(sourceJar),
+          "Generating JavaLite proto_library %{label}",
+          Exports.DO_NOT_USE,
+          Services.ALLOW);
+    } catch (RuleErrorException e) {
+      throw new EvalException(e);
+    }
   }
 
   @Override

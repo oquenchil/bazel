@@ -26,8 +26,8 @@ import com.google.devtools.build.lib.actions.ActionAnalysisMetadata;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.ActionLookupData;
+import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.ActionLookupValue;
-import com.google.devtools.build.lib.actions.ActionLookupValue.ActionLookupKey;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.ActionTemplate;
 import com.google.devtools.build.lib.actions.Actions;
@@ -39,12 +39,14 @@ import com.google.devtools.build.lib.actions.Artifact.TreeFileArtifact;
 import com.google.devtools.build.lib.actions.ArtifactOwner;
 import com.google.devtools.build.lib.actions.ArtifactPrefixConflictException;
 import com.google.devtools.build.lib.actions.ArtifactRoot;
+import com.google.devtools.build.lib.actions.ArtifactRoot.RootType;
+import com.google.devtools.build.lib.actions.BasicActionLookupValue;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
+import com.google.devtools.build.lib.actions.MiddlemanType;
 import com.google.devtools.build.lib.actions.MutableActionGraph.ActionConflictException;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.actions.util.InjectedActionLookupKey;
 import com.google.devtools.build.lib.actions.util.TestAction.DummyAction;
-import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.actions.CustomCommandLine;
 import com.google.devtools.build.lib.analysis.actions.SpawnActionTemplate;
 import com.google.devtools.build.lib.analysis.actions.SpawnActionTemplate.OutputPathMapper;
@@ -61,11 +63,12 @@ import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.skyframe.EvaluationContext;
 import com.google.devtools.build.skyframe.EvaluationResult;
 import com.google.devtools.build.skyframe.InMemoryMemoizingEvaluator;
+import com.google.devtools.build.skyframe.MemoizingEvaluator;
 import com.google.devtools.build.skyframe.SequencedRecordingDifferencer;
-import com.google.devtools.build.skyframe.SequentialBuildDriver;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -75,7 +78,6 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
-import org.mockito.Mockito;
 
 /** Tests for {@link ActionTemplateExpansionFunction}. */
 @RunWith(JUnit4.class)
@@ -83,15 +85,14 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
 
   private final Map<Artifact, TreeArtifactValue> artifactValueMap = new LinkedHashMap<>();
   private final SequencedRecordingDifferencer differencer = new SequencedRecordingDifferencer();
-  private final SequentialBuildDriver driver =
-      new SequentialBuildDriver(
-          new InMemoryMemoizingEvaluator(
-              ImmutableMap.of(
-                  Artifact.ARTIFACT,
-                  new DummyArtifactFunction(artifactValueMap),
-                  SkyFunctions.ACTION_TEMPLATE_EXPANSION,
-                  new ActionTemplateExpansionFunction(new ActionKeyContext())),
-              differencer));
+  private final MemoizingEvaluator evaluator =
+      new InMemoryMemoizingEvaluator(
+          ImmutableMap.of(
+              Artifact.ARTIFACT,
+              new DummyArtifactFunction(artifactValueMap),
+              SkyFunctions.ACTION_TEMPLATE_EXPANSION,
+              new ActionTemplateExpansionFunction(new ActionKeyContext())),
+          differencer);
 
   @Before
   public void setUp() {
@@ -134,12 +135,7 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
         createAndPopulateTreeArtifact("inputTreeArtifact", "child0", "child1", "child2");
     SpecialArtifact outputTreeArtifact = createTreeArtifact("outputTreeArtifact");
 
-    OutputPathMapper mapper = new OutputPathMapper() {
-      @Override
-      public PathFragment parentRelativeOutputPath(TreeFileArtifact inputTreeFileArtifact) {
-        return PathFragment.create("conflict_path");
-      }
-    };
+    OutputPathMapper mapper = artifact -> PathFragment.create("conflict_path");
     SpawnActionTemplate spawnActionTemplate =
         new SpawnActionTemplate.Builder(inputTreeArtifact, outputTreeArtifact)
             .setExecutable(PathFragment.create("/bin/cp"))
@@ -204,7 +200,7 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
           public ImmutableSet<Artifact> getOutputs() {
             return ImmutableSet.of(
                 outputTree,
-                new DerivedArtifact(
+                DerivedArtifact.create(
                     outputTree.getRoot(),
                     outputTree.getRoot().getExecPath().getRelative("not_tree"),
                     outputTree.getArtifactOwner()));
@@ -260,7 +256,7 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
               ActionLookupKey artifactOwner) {
             TreeFileArtifact input = Iterables.getOnlyElement(inputTreeFileArtifacts);
             Artifact notTreeFileArtifact =
-                new DerivedArtifact(
+                DerivedArtifact.create(
                     input.getRoot(),
                     input.getRoot().getExecPath().getRelative("a.txt"),
                     artifactOwner);
@@ -337,10 +333,10 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
     evaluate(template);
   }
 
-  private static final ActionLookupValue.ActionLookupKey CTKEY = new InjectedActionLookupKey("key");
+  private static final ActionLookupKey CTKEY = new InjectedActionLookupKey("key");
 
   private ImmutableList<Action> evaluate(ActionTemplate<?> actionTemplate) throws Exception {
-    ConfiguredTargetValue ctValue = createConfiguredTargetValue(actionTemplate);
+    ActionLookupValue ctValue = createActionLookupValue(actionTemplate);
 
     differencer.inject(CTKEY, ctValue);
     ActionTemplateExpansionKey templateKey = ActionTemplateExpansionValue.key(CTKEY, 0);
@@ -348,10 +344,10 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
         EvaluationContext.newBuilder()
             .setKeepGoing(false)
             .setNumThreads(SkyframeExecutor.DEFAULT_THREAD_COUNT)
-            .setEventHander(NullEventHandler.INSTANCE)
+            .setEventHandler(NullEventHandler.INSTANCE)
             .build();
     EvaluationResult<ActionTemplateExpansionValue> result =
-        driver.evaluate(ImmutableList.of(templateKey), evaluationContext);
+        evaluator.evaluate(ImmutableList.of(templateKey), evaluationContext);
     if (result.hasError()) {
       throw result.getError().getException();
     }
@@ -363,18 +359,17 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
     return actionList.build();
   }
 
-  private static ConfiguredTargetValue createConfiguredTargetValue(
-      ActionTemplate<?> actionTemplate) {
-    return new NonRuleConfiguredTargetValue(
-        Mockito.mock(ConfiguredTarget.class),
-        Actions.GeneratingActions.fromSingleAction(actionTemplate, CTKEY),
-        NestedSetBuilder.emptySet(Order.STABLE_ORDER));
+  private static ActionLookupValue createActionLookupValue(ActionTemplate<?> actionTemplate)
+      throws ActionConflictException, InterruptedException {
+    return new BasicActionLookupValue(
+        Actions.assignOwnersAndFindAndThrowActionConflict(
+            new ActionKeyContext(), ImmutableList.of(actionTemplate), CTKEY));
   }
 
   private SpecialArtifact createTreeArtifact(String path) {
     PathFragment execPath = PathFragment.create("out").getRelative(path);
-    return new SpecialArtifact(
-        ArtifactRoot.asDerivedRoot(rootDirectory, "out"),
+    return SpecialArtifact.create(
+        ArtifactRoot.asDerivedRoot(rootDirectory, RootType.Output, "out"),
         execPath,
         CTKEY,
         SpecialArtifactType.TREE);
@@ -384,20 +379,17 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
       throws Exception {
     SpecialArtifact treeArtifact = createTreeArtifact(path);
     treeArtifact.setGeneratingActionKey(ActionLookupData.create(CTKEY, /*actionIndex=*/ 0));
-    Map<TreeFileArtifact, FileArtifactValue> treeFileArtifactMap = new LinkedHashMap<>();
+    TreeArtifactValue.Builder tree = TreeArtifactValue.newBuilder(treeArtifact);
 
     for (String childRelativePath : childRelativePaths) {
       TreeFileArtifact treeFileArtifact =
           TreeFileArtifact.createTreeOutput(treeArtifact, childRelativePath);
       scratch.file(treeFileArtifact.getPath().toString(), childRelativePath);
       // We do not care about the FileArtifactValues in this test.
-      treeFileArtifactMap.put(
-          treeFileArtifact, FileArtifactValue.createForTesting(treeFileArtifact));
+      tree.putChild(treeFileArtifact, FileArtifactValue.createForTesting(treeFileArtifact));
     }
 
-    artifactValueMap.put(
-        treeArtifact, TreeArtifactValue.create(ImmutableMap.copyOf(treeFileArtifactMap)));
-
+    artifactValueMap.put(treeArtifact, tree.build());
     return treeArtifact;
   }
 
@@ -411,11 +403,6 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
     @Override
     public SkyValue compute(SkyKey skyKey, Environment env) {
       return Preconditions.checkNotNull(artifactValueMap.get(skyKey));
-    }
-
-    @Override
-    public String extractTag(SkyKey skyKey) {
-      return null;
     }
   }
 
@@ -470,6 +457,11 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
     }
 
     @Override
+    public String describe() {
+      return prettyPrint();
+    }
+
+    @Override
     public NestedSet<Artifact> getTools() {
       return NestedSetBuilder.emptySet(Order.STABLE_ORDER);
     }
@@ -480,7 +472,7 @@ public final class ActionTemplateExpansionFunctionTest extends FoundationTestCas
     }
 
     @Override
-    public Iterable<String> getClientEnvironmentVariables() {
+    public Collection<String> getClientEnvironmentVariables() {
       return ImmutableList.of();
     }
 

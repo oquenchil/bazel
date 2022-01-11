@@ -18,7 +18,7 @@ import static com.google.common.truth.Truth.assertAbout;
 import com.google.common.truth.FailureMetadata;
 import com.google.common.truth.Subject;
 import com.google.devtools.build.lib.analysis.platform.ToolchainInfo;
-import com.google.devtools.build.lib.syntax.EvalException;
+import net.starlark.java.eval.EvalException;
 
 /** A Truth {@link Subject} for {@link ToolchainInfo}. */
 public class ToolchainInfoSubject extends Subject {
@@ -26,16 +26,13 @@ public class ToolchainInfoSubject extends Subject {
 
   /** Entry point for test assertions related to {@link ToolchainInfo}. */
   public static ToolchainInfoSubject assertThat(ToolchainInfo toolchainInfo) {
-    return assertAbout(TOOLCHAIN_INFO_SUBJECT_FACTORY).that(toolchainInfo);
+    return assertAbout(ToolchainInfoSubject::new).that(toolchainInfo);
   }
 
   /** Static method for getting the subject factory (for use with assertAbout()). */
   public static Factory<ToolchainInfoSubject, ToolchainInfo> toolchainInfos() {
-    return TOOLCHAIN_INFO_SUBJECT_FACTORY;
+    return ToolchainInfoSubject::new;
   }
-
-  static final Factory<ToolchainInfoSubject, ToolchainInfo> TOOLCHAIN_INFO_SUBJECT_FACTORY =
-      ToolchainInfoSubject::new;
 
   // Instance fields.
 

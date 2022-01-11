@@ -20,8 +20,7 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
-import com.google.devtools.build.lib.skylarkbuildapi.FileProviderApi;
+import com.google.devtools.build.lib.starlarkbuildapi.FileProviderApi;
 
 /**
  * A representation of the concept "this transitive info provider builds these files".
@@ -29,7 +28,6 @@ import com.google.devtools.build.lib.skylarkbuildapi.FileProviderApi;
  * <p>Every transitive info collection contains at least this provider.
  */
 @Immutable
-@AutoCodec
 public final class FileProvider implements TransitiveInfoProvider, FileProviderApi {
   public static final FileProvider EMPTY =
       new FileProvider(NestedSetBuilder.<Artifact>emptySet(Order.STABLE_ORDER));

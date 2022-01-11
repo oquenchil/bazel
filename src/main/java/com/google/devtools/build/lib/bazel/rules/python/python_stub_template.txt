@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+%shebang%
 
 # This script must retain compatibility with a wide variety of Python versions
 # since it is run for every py_binary target. Currently we guarantee support
@@ -37,8 +37,13 @@ def GetWindowsPathWithUNCPrefix(path):
   path = path.strip()
 
   # No need to add prefix for non-Windows platforms.
-  # And \\?\ doesn't work in python 2
+  # And \\?\ doesn't work in python 2 or on mingw
   if not IsWindows() or sys.version_info[0] < 3:
+    return path
+
+  # import sysconfig only now to maintain python 2.6 compatibility
+  import sysconfig
+  if sysconfig.get_platform() == 'mingw':
     return path
 
   # Lets start the unicode fun
@@ -153,6 +158,7 @@ def CreateModuleSpace():
 def GetRepositoriesImports(module_space, import_all):
   if import_all:
     repo_dirs = [os.path.join(module_space, d) for d in os.listdir(module_space)]
+    repo_dirs.sort()
     return [d for d in repo_dirs if os.path.isdir(d)]
   return [os.path.join(module_space, '%workspace_name%')]
 

@@ -8,18 +8,6 @@ title: Using the Android Native Development Kit with Bazel
 _If you're new to Bazel, please start with the [Building Android with
 Bazel](tutorial/android-app.html) tutorial._
 
-## Table of contents
-
-- [Overview](#overview)
-- [Prerequisites](#prerequisites)
-- [Quick start](#quick-start)
-- [Example setup](#example-setup)
-- [Configuring the STL](#configuring-the-stl)
-- [Configuring the target ABI](#configuring-the-target-abi)
-- [Selecting a C++ standard](#selecting-a-c-standard)
-- [How it works: introducing Android configuration transitions](#how-it-works-introducing-android-configuration-transitions)
-- [Building a `cc_library` for Android without using `android_binary`](#building-a-cc_library-for-android-without-using-android_binary)
-
 ## Overview
 
 Bazel can run in many different build configurations, including several that use
@@ -46,7 +34,7 @@ android_ndk_repository(
 )
 ```
 
-For more information on the `android_ndk_repository` rule, see its the [Build
+For more information on the `android_ndk_repository` rule, see the [Build
 Encyclopedia entry](be/android.html#android_ndk_repository).
 
 ## Quick start
@@ -54,7 +42,7 @@ Encyclopedia entry](be/android.html#android_ndk_repository).
 To build C++ for Android, simply add `cc_library` dependencies to your
 `android_binary` or `android_library` rules.
 
-For example, given the following BUILD file for an Android app:
+For example, given the following `BUILD` file for an Android app:
 
 ```python
 # In <project>/app/src/main/BUILD.bazel
@@ -80,7 +68,7 @@ android_binary(
 )
 ```
 
-This BUILD file results in the following target graph:
+This `BUILD` file results in the following target graph:
 
 <img src="/assets/android_ndk.png" alt="Build graph of Android project with cc_library dependencies" width="600px"/>
 
@@ -116,10 +104,10 @@ ABI](#configuring-the-target-abi).
 ## Example setup
 
 This example is available in the [Bazel examples
-repository](https://github.com/bazelbuild/examples/tree/master/android/ndk).
+repository](https://github.com/bazelbuild/examples/tree/HEAD/android/ndk).
 
-In the `BUILD.bazel` file, we define three targets with the `android_binary`,
-`android_library` and `cc_library` rules.
+In the `BUILD.bazel` file, three targets are defined with the `android_binary`,
+`android_library`, and `cc_library` rules.
 
 The `android_binary` top-level target builds the APK.
 
@@ -258,8 +246,8 @@ cc_library(
 ## Integration with platforms and toolchains
 
 Bazel's configuration model is moving towards
-[platforms](https://docs.bazel.build/versions/master/platforms.html) and
-[toolchains](https://docs.bazel.build/versions/master/toolchains.html). If your
+[platforms](https://docs.bazel.build/versions/main/platforms.html) and
+[toolchains](https://docs.bazel.build/versions/main/toolchains.html). If your
 build uses the `--platforms` flag to select for the architecture or operating system
 to build for, you will need to pass the `--extra_toolchains` flag to Bazel in
 order to use the NDK.
@@ -281,8 +269,8 @@ android_ndk_repository(name = "androidndk")
 register_toolchains("@androidndk//:all")
 ```
 
-Registering these toolchains tells Bazel to look for them in the NDK BUILD file
-(for NDK 20) when resolving architecture and operating system constraints:
+Registering these toolchains tells Bazel to look for them in the NDK `BUILD`
+file (for NDK 20) when resolving architecture and operating system constraints:
 
 ```python
 toolchain(
@@ -388,12 +376,12 @@ bazel build //my/cc/jni:target \
       --host_crosstool_top=@bazel_tools//tools/cpp:toolchain
 ```
 
-Here, we specify that top-level `cc_library` and `cc_binary` targets are built
+In this example, the top-level `cc_library` and `cc_binary` targets are built
 using the NDK toolchain. However, this causes Bazel's own host tools to be built
 with the NDK toolchain (and thus for Android), because the host toolchain is
-copied from the target toolchain. To work around this, we specify the value of
-`--host_crosstool_top` to be `@bazel_tools//tools/cpp:toolchain` to explicitly
-set the host's C++ toolchain.
+copied from the target toolchain. To work around this, specify the value of
+`--host_crosstool_top` to be `@bazel_tools//tools/cpp:toolchain` to
+explicitly set the host's C++ toolchain.
 
 With this approach, the entire build tree is affected.
 

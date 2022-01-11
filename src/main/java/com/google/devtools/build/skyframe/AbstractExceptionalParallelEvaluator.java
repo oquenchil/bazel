@@ -35,8 +35,8 @@ import com.google.devtools.build.skyframe.QueryableGraph.Reason;
 import com.google.devtools.build.skyframe.SkyFunctionException.ReifiedSkyFunctionException;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -85,8 +85,8 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
   AbstractExceptionalParallelEvaluator(
       ProcessableGraph graph,
       Version graphVersion,
-      ImmutableMap<SkyFunctionName, ? extends SkyFunction> skyFunctions,
-      final ExtendedEventHandler reporter,
+      ImmutableMap<SkyFunctionName, SkyFunction> skyFunctions,
+      ExtendedEventHandler reporter,
       EmittedEventState emittedEventState,
       EventFilter storedEventFilter,
       ErrorInfoManager errorInfoManager,
@@ -95,7 +95,8 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
       GraphInconsistencyReceiver graphInconsistencyReceiver,
       Supplier<ExecutorService> executorService,
       CycleDetector cycleDetector,
-      EvaluationVersionBehavior evaluationVersionBehavior) {
+      int cpuHeavySkyKeysThreadPoolSize,
+      int executionJobsThreadPoolSize) {
     super(
         graph,
         graphVersion,
@@ -109,49 +110,53 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
         graphInconsistencyReceiver,
         executorService,
         cycleDetector,
-        evaluationVersionBehavior);
+        cpuHeavySkyKeysThreadPoolSize,
+        executionJobsThreadPoolSize);
   }
 
   private void informProgressReceiverThatValueIsDone(SkyKey key, NodeEntry entry)
       throws InterruptedException {
-    if (evaluatorContext.getProgressReceiver() != null) {
-      Preconditions.checkState(entry.isDone(), entry);
-      SkyValue value = entry.getValue();
-      Version valueVersion = entry.getVersion();
-      Preconditions.checkState(
-          valueVersion.atMost(evaluatorContext.getGraphVersion()),
-          "%s should be at most %s in the version partial ordering",
-          valueVersion,
-          evaluatorContext.getGraphVersion());
-
-      if (value != null) {
-        ValueWithMetadata valueWithMetadata =
-            ValueWithMetadata.wrapWithMetadata(entry.getValueMaybeWithMetadata());
-        replay(valueWithMetadata);
-      }
-
-      // For most nodes we do not inform the progress receiver if they were already done when we
-      // retrieve them, but top-level nodes are presumably of more interest.
-      // If valueVersion is not equal to graphVersion, it must be less than it (by the
-      // Preconditions check above), and so the node is clean.
-      EvaluationState evaluationState =
-          valueVersion.equals(evaluatorContext.getGraphVersion())
-              ? EvaluationState.BUILT
-              : EvaluationState.CLEAN;
-      evaluatorContext
-          .getProgressReceiver()
-          .evaluated(
-              key,
-              evaluationState == EvaluationState.BUILT ? value : null,
-              value != null
-                  ? EvaluationSuccessState.SUCCESS.supplier()
-                  : EvaluationSuccessState.FAILURE.supplier(),
-              evaluationState);
+    if (evaluatorContext.getProgressReceiver() == null) {
+      return;
     }
+    Preconditions.checkState(entry.isDone(), entry);
+    SkyValue value = entry.getValue();
+    Version valueVersion = entry.getVersion();
+    Preconditions.checkState(
+        valueVersion.atMost(evaluatorContext.getGraphVersion()),
+        "%s should be at most %s in the version partial ordering",
+        valueVersion,
+        evaluatorContext.getGraphVersion());
+
+    ErrorInfo error = null;
+    SkyValue valueMaybeWithMetadata = entry.getValueMaybeWithMetadata();
+    if (valueMaybeWithMetadata != null) {
+      replay(ValueWithMetadata.wrapWithMetadata(valueMaybeWithMetadata));
+      error = ValueWithMetadata.getMaybeErrorInfo(valueMaybeWithMetadata);
+    }
+
+    // For most nodes we do not inform the progress receiver if they were already done when we
+    // retrieve them, but top-level nodes are presumably of more interest.
+    // If valueVersion is not equal to graphVersion, it must be less than it (by the
+    // Preconditions check above), and so the node is clean.
+    EvaluationState evaluationState =
+        valueVersion.equals(evaluatorContext.getGraphVersion())
+            ? EvaluationState.BUILT
+            : EvaluationState.CLEAN;
+    evaluatorContext
+        .getProgressReceiver()
+        .evaluated(
+            key,
+            evaluationState == EvaluationState.BUILT ? value : null,
+            evaluationState == EvaluationState.BUILT ? error : null,
+            value != null
+                ? EvaluationSuccessState.SUCCESS.supplier()
+                : EvaluationSuccessState.FAILURE.supplier(),
+            evaluationState);
   }
 
-  <T extends SkyValue> EvaluationResult<T> evalExceptionally(Iterable<? extends SkyKey> skyKeys)
-      throws InterruptedException, E {
+  protected <T extends SkyValue> EvaluationResult<T> evalExceptionally(
+      Iterable<? extends SkyKey> skyKeys) throws InterruptedException, E {
     ImmutableSet<SkyKey> skyKeySet = ImmutableSet.copyOf(skyKeys);
 
     // Optimization: if all required node values are already present in the cache, return them
@@ -171,7 +176,7 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
         informProgressReceiverThatValueIsDone(skyKey, batch.get(skyKey));
       }
       // Note that the 'catastrophe' parameter doesn't really matter here (it's only used for
-      // sanity checking).
+      // checking).
       return constructResultExceptionally(skyKeySet, null, /*catastrophe=*/ false);
     }
 
@@ -191,7 +196,7 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
       // Errors, even cached ones, should halt evaluations not in keepGoing mode.
       if (!cachedErrorKeys.isEmpty()) {
         // Note that the 'catastrophe' parameter doesn't really matter here (it's only used for
-        // sanity checking).
+        // checking).
         return constructResultExceptionally(cachedErrorKeys, null, /*catastrophe=*/ false);
       }
     }
@@ -211,7 +216,8 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
           graph.createIfAbsentBatch(null, Reason.PRE_OR_POST_EVALUATION, skyKeys).entrySet()) {
         SkyKey skyKey = e.getKey();
         NodeEntry entry = e.getValue();
-        // This must be equivalent to the code in enqueueChild above, in order to be thread-safe.
+        // This must be equivalent to the code in AbstractParallelEvaluator.Evaluate#enqueueChild,
+        // in order to be thread-safe.
         switch (entry.addReverseDepAndCheckIfDone(null)) {
           case NEEDS_SCHEDULING:
             // Low priority because this node is not needed by any other currently evaluating node.
@@ -363,9 +369,13 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
       Iterable<SkyKey> roots,
       Set<SkyKey> rdepsToBubbleUpTo)
       throws InterruptedException {
+    // Remove all the compute states so as to give the SkyFunctions a chance to do fresh
+    // computations during error bubbling.
+    stateCache.invalidateAll();
+
     Set<SkyKey> rootValues = ImmutableSet.copyOf(roots);
     ErrorInfo error = leafFailure;
-    Map<SkyKey, ValueWithMetadata> bubbleErrorInfo = new HashMap<>();
+    LinkedHashMap<SkyKey, ValueWithMetadata> bubbleErrorInfo = new LinkedHashMap<>();
     boolean externalInterrupt = false;
     boolean firstIteration = true;
     while (true) {
@@ -402,6 +412,10 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
             "Current key %s has to be a top-level key: %s",
             errorKey,
             rootValues);
+        SkyValue valueMaybeWithMetadata = errorEntry.getValueMaybeWithMetadata();
+        if (valueMaybeWithMetadata != null) {
+          replay(ValueWithMetadata.wrapWithMetadata(valueMaybeWithMetadata));
+        }
         break;
       }
       SkyKey parent = Preconditions.checkNotNull(Iterables.getFirst(reverseDeps, null));
@@ -478,11 +492,11 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
       SkyKey childErrorKey = errorKey;
       errorKey = parent;
       SkyFunctionEnvironment env =
-          new SkyFunctionEnvironment(
+          SkyFunctionEnvironment.createForError(
               parent,
               parentEntry.getTemporaryDirectDeps(),
               bubbleErrorInfo,
-              ImmutableSet.<SkyKey>of(),
+              ImmutableSet.of(),
               evaluatorContext);
       externalInterrupt = externalInterrupt || Thread.currentThread().isInterrupted();
       boolean completedRun = false;
@@ -492,6 +506,7 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
         factory.compute(parent, env);
         completedRun = true;
       } catch (InterruptedException interruptedException) {
+        logger.atInfo().withCause(interruptedException).log("Interrupted during %s eval", parent);
         // Do nothing.
         // This throw happens if the builder requested the failed node, and then checked the
         // interrupted state later -- getValueOrThrow sets the interrupted bit after the failed
@@ -500,28 +515,36 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
         // Clear interrupted status. We're not listening to interrupts here.
         Thread.interrupted();
         ReifiedSkyFunctionException reifiedBuilderException =
-            new ReifiedSkyFunctionException(builderException, parent);
-        if (reifiedBuilderException.getRootCauseSkyKey().equals(parent)) {
-          error =
-              ErrorInfo.fromException(reifiedBuilderException, /*isTransitivelyTransient=*/ false);
-          Pair<NestedSet<TaggedEvents>, NestedSet<Postable>> eventsAndPostables =
-              env.buildAndReportEventsAndPostables(parentEntry, /*expectDoneDeps=*/ false);
-          bubbleErrorInfo.put(
-              errorKey,
-              ValueWithMetadata.error(
-                  ErrorInfo.fromChildErrors(errorKey, ImmutableSet.of(error)),
-                  eventsAndPostables.first,
-                  eventsAndPostables.second));
-          continue;
+            new ReifiedSkyFunctionException(builderException);
+        error =
+            ErrorInfo.fromException(reifiedBuilderException, /*isTransitivelyTransient=*/ false);
+        Pair<NestedSet<TaggedEvents>, NestedSet<Postable>> eventsAndPostables =
+            env.buildAndReportEventsAndPostables(parentEntry, /*expectDoneDeps=*/ false);
+        ValueWithMetadata valueWithMetadata =
+            ValueWithMetadata.error(
+                ErrorInfo.fromChildErrors(errorKey, ImmutableSet.of(error)),
+                eventsAndPostables.first,
+                eventsAndPostables.second);
+        replay(valueWithMetadata);
+        bubbleErrorInfo.put(errorKey, valueWithMetadata);
+        continue;
+      } catch (RuntimeException e) {
+        // About to crash. Print debugging to INFO log.
+        logger.atSevere().log("Crashing on %s. Contents of bubbleErrorInfo:", parent);
+        for (Map.Entry<SkyKey, ValueWithMetadata> bubbleEntry : bubbleErrorInfo.entrySet()) {
+          logger.atSevere().log(
+              "  %.1000s -> %.1000s", bubbleEntry.getKey(), bubbleEntry.getValue());
         }
+        throw e;
       } finally {
         // Clear interrupted status. We're not listening to interrupts here.
         Thread.interrupted();
       }
-      // TODO(b/149495181): remove when resolved.
+      // TODO(b/166268889, b/172223413): remove when fixed.
       if (completedRun
           && error.getException() != null
-          && error.getException() instanceof IOException) {
+          && (error.getException() instanceof IOException
+              || error.getException().getClass().getName().endsWith("SourceArtifactException"))) {
         logger.atInfo().log(
             "SkyFunction did not rethrow error, may be a bug that it did not expect one: %s"
                 + " via %s, %s (%s)",
@@ -530,12 +553,13 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
       // Builder didn't throw its own exception, so just propagate this one up.
       Pair<NestedSet<TaggedEvents>, NestedSet<Postable>> eventsAndPostables =
           env.buildAndReportEventsAndPostables(parentEntry, /*expectDoneDeps=*/ false);
-      bubbleErrorInfo.put(
-          errorKey,
+      ValueWithMetadata valueWithMetadata =
           ValueWithMetadata.error(
               ErrorInfo.fromChildErrors(errorKey, ImmutableSet.of(error)),
               eventsAndPostables.first,
-              eventsAndPostables.second));
+              eventsAndPostables.second);
+      replay(valueWithMetadata);
+      bubbleErrorInfo.put(errorKey, valueWithMetadata);
     }
 
     // Reset the interrupt bit if there was an interrupt from outside this evaluator interrupt.
@@ -574,7 +598,9 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
         bubbleErrorInfo);
     EvaluationResult.Builder<T> result = EvaluationResult.builder();
     List<SkyKey> cycleRoots = new ArrayList<>();
+    boolean haveKeys = false;
     for (SkyKey skyKey : skyKeys) {
+      haveKeys = true;
       SkyValue unwrappedValue =
           maybeGetValueFromError(
               skyKey, graph.get(null, Reason.PRE_OR_POST_EVALUATION, skyKey), bubbleErrorInfo);
@@ -589,8 +615,6 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
         }
         continue;
       }
-      // Replaying here is necessary for error bubbling and other cases.
-      replay(valueWithMetadata);
       SkyValue value = valueWithMetadata.getValue();
       ErrorInfo errorInfo = valueWithMetadata.getErrorInfo();
       Preconditions.checkState(value != null || errorInfo != null, skyKey);
@@ -611,22 +635,12 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
     if (!cycleRoots.isEmpty()) {
       cycleDetector.checkForCycles(cycleRoots, result, evaluatorContext);
     }
-    if (catastrophe && bubbleErrorInfo != null) {
-      // We may not have a top-level node completed. Inform the caller of at least one catastrophic
-      // exception that shut down the evaluation so that it has some context.
-      for (ValueWithMetadata valueWithMetadata : bubbleErrorInfo.values()) {
-        ErrorInfo errorInfo =
-            Preconditions.checkNotNull(
-                valueWithMetadata.getErrorInfo(),
-                "bubbleErrorInfo should have contained element with errorInfo: %s",
-                bubbleErrorInfo);
-        Preconditions.checkState(
-            errorInfo.isCatastrophic(),
-            "bubbleErrorInfo should have contained element with catastrophe: %s",
-            bubbleErrorInfo);
-        result.setCatastrophe(errorInfo.getException());
-      }
-    }
+    Preconditions.checkState(
+        !result.isEmpty() || !haveKeys,
+        "No result for keys %s (%s %s)",
+        skyKeys,
+        bubbleErrorInfo,
+        catastrophe);
     EvaluationResult<T> builtResult = result.build();
     Preconditions.checkState(
         bubbleErrorInfo == null || builtResult.hasError(),
@@ -638,7 +652,7 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
   }
 
   @Nullable
-  static SkyValue maybeGetValueFromError(
+  private static SkyValue maybeGetValueFromError(
       SkyKey key,
       @Nullable NodeEntry entry,
       @Nullable Map<SkyKey, ValueWithMetadata> bubbleErrorInfo)
@@ -678,7 +692,7 @@ public abstract class AbstractExceptionalParallelEvaluator<E extends Exception>
             prevEntry.noDepsLastBuild(), "existing entry for %s has deps: %s", key, prevEntry);
       }
       prevEntry.markRebuilding();
-      prevEntry.setValue(value, version);
+      prevEntry.setValue(value, version, /*maxTransitiveSourceVersion=*/ null);
       // Now that this key's injected value is set, it is no longer dirty.
       progressReceiver.injected(key);
     }

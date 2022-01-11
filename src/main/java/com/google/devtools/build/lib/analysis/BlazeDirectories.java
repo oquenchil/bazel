@@ -18,8 +18,8 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Ascii;
 import com.google.common.hash.HashCode;
 import com.google.devtools.build.lib.actions.ArtifactRoot;
+import com.google.devtools.build.lib.actions.ArtifactRoot.RootType;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.util.StringCanonicalizer;
 import com.google.devtools.build.lib.vfs.Path;
 import java.util.Objects;
@@ -44,7 +44,6 @@ import javax.annotation.Nullable;
  *
  * <p>Do not put shortcuts to specific files here!
  */
-@AutoCodec
 @Immutable
 public final class BlazeDirectories {
   // Include directory name, relative to execRoot/blaze-out/configuration. Only one segment allowed.
@@ -68,7 +67,6 @@ public final class BlazeDirectories {
   private final Path localOutputPath;
   private final String productName;
 
-  @AutoCodec.Instantiator
   public BlazeDirectories(
       ServerDirectories serverDirectories,
       Path workspace,
@@ -85,9 +83,9 @@ public final class BlazeDirectories {
       if (useDefaultExecRootName) {
         // TODO(bazel-team): if workspace is null execRoot should be null, but at the moment there
         // is a lot of code that depends on it being non-null.
-        this.blazeExecRoot = serverDirectories.getExecRootBase().getChild(DEFAULT_EXEC_ROOT);
+        this.blazeExecRoot = getExecRootBase().getChild(DEFAULT_EXEC_ROOT);
       } else {
-        this.blazeExecRoot = serverDirectories.getExecRootBase().getChild(workspace.getBaseName());
+        this.blazeExecRoot = getExecRootBase().getChild(workspace.getBaseName());
       }
       this.blazeOutputPath = blazeExecRoot.getRelative(getRelativeOutputPath());
     } else {
@@ -101,16 +99,26 @@ public final class BlazeDirectories {
     return serverDirectories;
   }
 
-  /**
-   * Returns the base of the output tree, which hosts all build and scratch output for a user and
-   * workspace.
-   */
+  /** Returns the installation base directory. */
   public Path getInstallBase() {
     return serverDirectories.getInstallBase();
   }
 
-  /** Returns the workspace directory, which is also the working dir of the server. */
+  /**
+   * Returns the workspace directory to use for build artifacts.
+   *
+   * <p>It may effectively differ from the working directory. Please use {@link
+   * #getWorkingDirectory()} for writes within the working directory.
+   */
   public Path getWorkspace() {
+    // Make sure to use the same file system as exec root.
+    return workspace != null
+        ? getExecRootBase().getFileSystem().getPath(workspace.asFragment())
+        : null;
+  }
+
+  /** Returns working directory of the server. */
+  public Path getWorkingDirectory() {
     return workspace;
   }
 
@@ -156,7 +164,7 @@ public final class BlazeDirectories {
    * specified with --package_path.
    */
   public Path getExecRoot(String workspaceName) {
-    return serverDirectories.getExecRootBase().getRelative(workspaceName);
+    return getExecRootBase().getRelative(workspaceName);
   }
 
   /**
@@ -206,7 +214,7 @@ public final class BlazeDirectories {
    */
   public ArtifactRoot getBuildDataDirectory(String workspaceName) {
     return ArtifactRoot.asDerivedRoot(
-        getExecRoot(workspaceName), getRelativeOutputPath(productName));
+        getExecRoot(workspaceName), RootType.Output, getRelativeOutputPath(productName));
   }
 
   /**

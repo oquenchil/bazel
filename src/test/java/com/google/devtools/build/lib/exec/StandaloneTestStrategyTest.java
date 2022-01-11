@@ -32,11 +32,14 @@ import com.google.devtools.build.lib.actions.ActionExecutionException;
 import com.google.devtools.build.lib.actions.ActionInputPrefetcher;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.DiscoveredModulesPruner;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnContinuation;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.SpawnResult.Status;
 import com.google.devtools.build.lib.actions.SpawnStrategy;
+import com.google.devtools.build.lib.actions.ThreadStateReceiver;
+import com.google.devtools.build.lib.actions.cache.MetadataHandler;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.test.TestActionContext;
@@ -52,19 +55,22 @@ import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.Tes
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.TestStatus;
 import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.clock.Clock;
-import com.google.devtools.build.lib.collect.nestedset.NestedSetExpander;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventKind;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.events.StoredEventHandler;
 import com.google.devtools.build.lib.exec.StandaloneTestStrategy.StandaloneFailedAttemptResult;
 import com.google.devtools.build.lib.exec.util.TestExecutorBuilder;
+import com.google.devtools.build.lib.server.FailureDetails;
+import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
+import com.google.devtools.build.lib.server.FailureDetails.Spawn.Code;
 import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.UnixGlob;
 import com.google.devtools.build.lib.view.test.TestStatus.BlazeTestStatus;
 import com.google.devtools.build.lib.view.test.TestStatus.TestResultData;
 import com.google.devtools.common.options.Options;
@@ -85,6 +91,10 @@ import org.mockito.MockitoAnnotations;
 /** Unit tests for {@link StandaloneTestStrategy}. */
 @RunWith(JUnit4.class)
 public final class StandaloneTestStrategyTest extends BuildViewTestCase {
+  private static final FailureDetail NON_ZERO_EXIT_DETAILS =
+      FailureDetail.newBuilder()
+          .setSpawn(FailureDetails.Spawn.newBuilder().setCode(Code.NON_ZERO_EXIT))
+          .build();
 
   private static class TestedStandaloneTestStrategy extends StandaloneTestStrategy {
     TestResult postedResult = null;
@@ -121,27 +131,31 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
 
     public FakeActionExecutionContext(
         FileOutErr fileOutErr, SpawnStrategy spawnStrategy, BinTools binTools) {
-      this(fileOutErr, toContextRegistry(spawnStrategy, binTools, fileSystem, directories));
+      this(fileOutErr, toContextRegistry(spawnStrategy, binTools, fileSystem, directories), null);
     }
 
     public FakeActionExecutionContext(
-        FileOutErr fileOutErr, ActionContext.ActionContextRegistry actionContextRegistry) {
+        FileOutErr fileOutErr,
+        ActionContext.ActionContextRegistry actionContextRegistry,
+        MetadataHandler metadataHandler) {
       super(
           /*executor=*/ null,
           /*actionInputFileCache=*/ null,
           ActionInputPrefetcher.NONE,
           new ActionKeyContext(),
-          /*metadataHandler=*/ null,
+          /*metadataHandler=*/ metadataHandler,
           /*rewindingEnabled=*/ false,
           LostInputsCheck.NONE,
           fileOutErr,
           /*eventHandler=*/ null,
-          /*clientEnv=*/ ImmutableMap.of(),
+          /*clientEnv=*/ ImmutableMap.of("PATH", "/usr/bin:/bin"),
           /*topLevelFilesets=*/ ImmutableMap.of(),
           /*artifactExpander=*/ null,
           /*actionFileSystem=*/ null,
           /*skyframeDepsResult=*/ null,
-          NestedSetExpander.DEFAULT);
+          DiscoveredModulesPruner.DEFAULT,
+          UnixGlob.DEFAULT_SYSCALLS,
+          ThreadStateReceiver.NULL_INSTANCE);
       this.actionContextRegistry = actionContextRegistry;
     }
 
@@ -168,7 +182,14 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
 
     @Override
     public ActionExecutionContext withFileOutErr(FileOutErr fileOutErr) {
-      return new FakeActionExecutionContext(fileOutErr, actionContextRegistry);
+      return new FakeActionExecutionContext(
+          fileOutErr, actionContextRegistry, getMetadataHandler());
+    }
+
+    @Override
+    public ActionExecutionContext withMetadataHandler(MetadataHandler metadataHandler) {
+      return new FakeActionExecutionContext(
+          getFileOutErr(), actionContextRegistry, metadataHandler);
     }
   }
 
@@ -327,6 +348,7 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
         new SpawnResult.Builder()
             .setStatus(Status.NON_ZERO_EXIT)
             .setExitCode(1)
+            .setFailureDetail(NON_ZERO_EXIT_DETAILS)
             .setWallTime(Duration.ofMillis(10))
             .setRunnerName("test")
             .build();
@@ -522,6 +544,7 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
         new SpawnResult.Builder()
             .setStatus(Status.NON_ZERO_EXIT)
             .setExitCode(1)
+            .setFailureDetail(NON_ZERO_EXIT_DETAILS)
             .setRunnerName("test")
             .build();
     when(spawnStrategy.beginExecution(any(), any()))
@@ -614,6 +637,7 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
         new SpawnResult.Builder()
             .setStatus(Status.NON_ZERO_EXIT)
             .setExitCode(1)
+            .setFailureDetail(NON_ZERO_EXIT_DETAILS)
             .setRunnerName("test")
             .build();
     SpawnResult xmlGeneratorSpawnResult =
@@ -893,6 +917,7 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
         new SpawnResult.Builder()
             .setStatus(Status.NON_ZERO_EXIT)
             .setExitCode(1)
+            .setFailureDetail(NON_ZERO_EXIT_DETAILS)
             .setRunnerName("test")
             .build();
     when(spawnStrategy.beginExecution(any(), any()))
@@ -983,6 +1008,7 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
         new SpawnResult.Builder()
             .setStatus(Status.NON_ZERO_EXIT)
             .setExitCode(1)
+            .setFailureDetail(NON_ZERO_EXIT_DETAILS)
             .setRunnerName("test")
             .build();
     when(spawnStrategy.beginExecution(any(), any()))

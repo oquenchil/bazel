@@ -25,7 +25,7 @@ import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
 public class SearchPathTest {
-  private FileSystem fs = new InMemoryFileSystem();
+  private FileSystem fs = new InMemoryFileSystem(DigestHashFunction.SHA256);
 
   @Test
   public void testNull() throws Exception {
@@ -39,7 +39,7 @@ public class SearchPathTest {
     assertThat(SearchPath.parse(fs, "/:/bin")).isEqualTo(searchPath);
     assertThat(SearchPath.parse(fs, ".:/:/bin")).isEqualTo(searchPath);
 
-    try (OutputStream out = fs.getOutputStream(fs.getPath("/bin/exe"))) {
+    try (OutputStream out = fs.getPath("/bin/exe").getOutputStream()) {
       out.write(new byte[5]);
     }
 

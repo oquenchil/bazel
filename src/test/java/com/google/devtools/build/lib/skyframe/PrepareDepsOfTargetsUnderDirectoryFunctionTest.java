@@ -15,6 +15,7 @@
 package com.google.devtools.build.lib.skyframe;
 
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.devtools.build.skyframe.EvaluationResultSubjectFactory.assertThatEvaluationResult;
 import static com.google.devtools.build.skyframe.WalkableGraphUtils.exists;
 
 import com.google.common.base.Preconditions;
@@ -53,7 +54,7 @@ public class PrepareDepsOfTargetsUnderDirectoryFunctionTest extends BuildViewTes
   }
 
   private static SkyKey createPrepDepsKey(Path root, PathFragment rootRelativePath) {
-    return createPrepDepsKey(root, rootRelativePath, ImmutableSet.<PathFragment>of());
+    return createPrepDepsKey(root, rootRelativePath, ImmutableSet.of());
   }
 
   private static SkyKey createPrepDepsKey(
@@ -78,11 +79,11 @@ public class PrepareDepsOfTargetsUnderDirectoryFunctionTest extends BuildViewTes
         EvaluationContext.newBuilder()
             .setKeepGoing(false)
             .setNumThreads(SequencedSkyframeExecutor.DEFAULT_THREAD_COUNT)
-            .setEventHander(reporter)
+            .setEventHandler(reporter)
             .build();
     EvaluationResult<PrepareDepsOfTargetsUnderDirectoryValue> evaluationResult =
-        skyframeExecutor.getDriver().evaluate(ImmutableList.copyOf(keys), evaluationContext);
-    Preconditions.checkState(!evaluationResult.hasError());
+        skyframeExecutor.getEvaluator().evaluate(ImmutableList.copyOf(keys), evaluationContext);
+    assertThatEvaluationResult(evaluationResult).hasNoError();
     return evaluationResult;
   }
 
@@ -117,8 +118,12 @@ public class PrepareDepsOfTargetsUnderDirectoryFunctionTest extends BuildViewTes
     createPackages();
 
     // When package "a" is evaluated under a test-only filtering policy,
-    SkyKey key = createPrepDepsKey(rootDirectory, PathFragment.create("a"),
-        ImmutableSet.<PathFragment>of(), FilteringPolicies.FILTER_TESTS);
+    SkyKey key =
+        createPrepDepsKey(
+            rootDirectory,
+            PathFragment.create("a"),
+            ImmutableSet.of(),
+            FilteringPolicies.FILTER_TESTS);
     EvaluationResult<?> evaluationResult = getEvaluationResult(key);
     WalkableGraph graph = Preconditions.checkNotNull(evaluationResult.getWalkableGraph());
 
@@ -186,17 +191,14 @@ public class PrepareDepsOfTargetsUnderDirectoryFunctionTest extends BuildViewTes
     WalkableGraph graph = Preconditions.checkNotNull(evaluationResult.getWalkableGraph());
     assertThat(
             exists(
-                createPrepDepsKey(
-                    rootDirectory, excludedPathFragment, ImmutableSet.<PathFragment>of()),
-                graph))
+                createPrepDepsKey(rootDirectory, excludedPathFragment, ImmutableSet.of()), graph))
         .isFalse();
 
     // And the computation graph does contain a cached value for "a/c" with the empty set excluded,
     // because that key was evaluated.
     assertThat(
             exists(
-                createPrepDepsKey(
-                    rootDirectory, PathFragment.create("a/c"), ImmutableSet.<PathFragment>of()),
+                createPrepDepsKey(rootDirectory, PathFragment.create("a/c"), ImmutableSet.of()),
                 graph))
         .isTrue();
   }

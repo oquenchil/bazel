@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.unsafe;
 import static com.google.common.truth.Truth.assertThat;
 
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -23,13 +24,10 @@ import org.junit.runners.JUnit4;
 
 /** Tests for {@link StringUnsafe}. */
 @RunWith(JUnit4.class)
-public class StringUnsafeTest {
+public final class StringUnsafeTest {
 
   @Test
   public void testGetCoder() {
-    if (!StringUnsafe.canUse()) {
-      return;
-    }
     StringUnsafe stringUnsafe = StringUnsafe.getInstance();
     assertThat(stringUnsafe.getCoder("")).isEqualTo(StringUnsafe.LATIN1);
     assertThat(stringUnsafe.getCoder("hello")).isEqualTo(StringUnsafe.LATIN1);
@@ -38,21 +36,21 @@ public class StringUnsafeTest {
 
   @Test
   public void testGetBytes() {
-    if (!StringUnsafe.canUse()) {
-      return;
-    }
     StringUnsafe stringUnsafe = StringUnsafe.getInstance();
     assertThat(ByteBuffer.wrap(stringUnsafe.getByteArray("hello")))
         .isEqualTo(StandardCharsets.ISO_8859_1.encode("hello"));
-    assertThat(ByteBuffer.wrap(stringUnsafe.getByteArray("lambda λ")))
-        .isEqualTo(StandardCharsets.UTF_16LE.encode("lambda λ"));
+
+    if (ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN)) {
+      assertThat(ByteBuffer.wrap(stringUnsafe.getByteArray("lambda λ")))
+          .isEqualTo(StandardCharsets.UTF_16BE.encode("lambda λ"));
+    } else {
+      assertThat(ByteBuffer.wrap(stringUnsafe.getByteArray("lambda λ")))
+          .isEqualTo(StandardCharsets.UTF_16LE.encode("lambda λ"));
+    }
   }
 
   @Test
   public void testNewInstance() throws Exception {
-    if (!StringUnsafe.canUse()) {
-      return;
-    }
     StringUnsafe stringUnsafe = StringUnsafe.getInstance();
     String s = "hello";
     assertThat(stringUnsafe.newInstance(stringUnsafe.getByteArray(s), stringUnsafe.getCoder(s)))

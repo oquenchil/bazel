@@ -26,8 +26,6 @@ import com.google.devtools.build.lib.actions.RunfilesSupplier;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
-import com.google.devtools.build.lib.syntax.Sequence;
-import com.google.devtools.build.lib.syntax.StarlarkList;
 import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -36,6 +34,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.Sequence;
+import net.starlark.java.eval.StarlarkList;
 
 /**
  * Provides shared functionality for parameterized command-line launching.
@@ -79,7 +79,7 @@ public final class CommandHelper {
      */
     public Builder addHostToolDependencies(String toolAttributeName) {
       List<? extends TransitiveInfoCollection> dependencies =
-          ruleContext.getPrerequisites(toolAttributeName, TransitionMode.HOST);
+          ruleContext.getPrerequisites(toolAttributeName);
       addToolDependencies(dependencies);
       return this;
     }
@@ -90,7 +90,7 @@ public final class CommandHelper {
      */
     public Builder addToolDependencies(String toolAttributeName) {
       List<? extends TransitiveInfoCollection> dependencies =
-          ruleContext.getPrerequisites(toolAttributeName, TransitionMode.TARGET);
+          ruleContext.getPrerequisites(toolAttributeName);
       return addToolDependencies(dependencies);
     }
 
@@ -174,18 +174,6 @@ public final class CommandHelper {
 
     for (Iterable<? extends TransitiveInfoCollection> tools : toolsList) {
       for (TransitiveInfoCollection dep : tools) { // (Note: host configuration)
-        Label label = AliasProvider.getDependencyLabel(dep);
-        MiddlemanProvider toolMiddleman = dep.getProvider(MiddlemanProvider.class);
-        if (toolMiddleman != null) {
-          resolvedToolsBuilder.addTransitive(toolMiddleman.getMiddlemanArtifact());
-          // It is not obviously correct to skip potentially adding getFilesToRun of the
-          // FilesToRunProvider. However, for all tools that we know of that provide a middleman,
-          // the middleman is equivalent to the list of files coming out of getFilesToRun().
-          // Just adding all the files creates a substantial performance bottleneck. E.g. a C++
-          // toolchain might consist of thousands of files and tracking them one by one for each
-          // action that uses them is inefficient.
-          continue;
-        }
 
         FilesToRunProvider tool = dep.getProvider(FilesToRunProvider.class);
         if (tool == null) {
@@ -194,6 +182,8 @@ public final class CommandHelper {
 
         NestedSet<Artifact> files = tool.getFilesToRun();
         resolvedToolsBuilder.addTransitive(files);
+
+        Label label = AliasProvider.getDependencyLabel(dep);
         Artifact executableArtifact = tool.getExecutable();
         // If the label has an executable artifact add that to the multimaps.
         if (executableArtifact != null) {

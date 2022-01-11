@@ -1,5 +1,3 @@
-load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
-
 filegroup(
     name = "srcs",
     srcs = glob(["**"]),
@@ -26,6 +24,9 @@ cc_library(
     hdrs = [
         "file.h",
         "util.h",
+    ],
+    linkopts = [
+        "-DEFAULTLIB:advapi32.lib",  # RegGetValueW
     ],
     visibility = [
         "//src/main/cpp:__subpackages__",
@@ -56,33 +57,23 @@ cc_binary(
         "file-jni.cc",
         "jni-util.cc",
         "jni-util.h",
-        "memory_pressure_jni.cc",
         "processes-jni.cc",
         "sleep_prevention_jni.cc",
-        "suspend_counter_jni.cc",
+        "system_disk_space_monitor_jni.cc",
+        "system_load_advisory_monitor_jni.cc",
+        "system_memory_pressure_jni.cc",
+        "system_suspension_monitor_jni.cc",
+        "system_thermal_monitor_jni.cc",
         "//src/main/native:jni.h",
         "//src/main/native:jni_md.h",
     ],
     linkshared = 1,
-    # :target-os-native-lib should be used outside of this package
-    visibility = ["//visibility:private"],
+    visibility = [
+        "//src/main/java/com/google/devtools/build/lib/jni:__pkg__",
+    ],
     deps = [
         ":lib-file",
         ":lib-process",
-    ],
-)
-
-# Platform-independent holder for native JNI libraries (empty for non-Windows systems).
-# Targets should depend on this filegroup rather then on Platform-dependent libraries directly!
-filegroup(
-    name = "target-os-native-lib",
-    srcs = select({
-        "//src/conditions:windows": ["//src/main/native/windows:windows_jni.dll"],
-        "//conditions:default": [],
-    }),
-    visibility = [
-        "//src:__pkg__",
-        "//src/main/java/com/google/devtools/build/lib/windows/jni:__pkg__",
     ],
 )
 

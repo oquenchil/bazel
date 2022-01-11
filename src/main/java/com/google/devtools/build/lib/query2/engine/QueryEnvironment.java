@@ -16,8 +16,11 @@ package com.google.devtools.build.lib.query2.engine;
 import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
-import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
+import com.google.devtools.build.lib.packages.Target;
+import com.google.devtools.build.lib.util.DetailedExitCode;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
@@ -158,30 +161,26 @@ public interface QueryEnvironment<T> {
     public abstract int getExpressionToFilterIndex();
   }
 
+  /** Functional interface for classes that need to look up a Target from a Label. */
+  @FunctionalInterface
+  interface TargetLookup {
+    Target getTarget(Label label) throws TargetNotFoundException, InterruptedException;
+  }
+
   /**
    * Exception type for the case where a target cannot be found. It's basically a wrapper for
    * whatever exception is internally thrown.
    */
   final class TargetNotFoundException extends Exception {
-    @Nullable private final FailureDetail failureDetail;
+    private final DetailedExitCode detailedExitCode;
 
-    public TargetNotFoundException(String msg) {
-      super(msg);
-      this.failureDetail = null;
-    }
-
-    public TargetNotFoundException(Throwable cause) {
-      this(cause, null);
-    }
-
-    public TargetNotFoundException(Throwable cause, FailureDetail failureDetail) {
+    public TargetNotFoundException(Throwable cause, DetailedExitCode detailedExitCode) {
       super(cause.getMessage(), cause);
-      this.failureDetail = failureDetail;
+      this.detailedExitCode = Preconditions.checkNotNull(detailedExitCode);
     }
 
-    @Nullable
-    public FailureDetail getFailureDetail() {
-      return failureDetail;
+    public DetailedExitCode getDetailedExitCode() {
+      return detailedExitCode;
     }
   }
 
@@ -190,6 +189,23 @@ public interface QueryEnvironment<T> {
    * implementations of various operators.
    */
   interface CustomFunctionQueryEnvironment<T> extends QueryEnvironment<T> {
+    /**
+     * Returns a {@link QueryTaskFuture} representing the asynchronous evaluation of the given
+     * {@code expr} and passing of the results to the given {@code callback}.
+     *
+     * <p>This provides callers the option to decide whether or not to batch futures resulting from
+     * the given {@code expr}.
+     *
+     * @param expr The expression to evaluate
+     * @param callback The caller's callback to notify when results are available
+     * @param batch Whether or not to invoke the callback with a single batch of the result set
+     */
+    QueryTaskFuture<Void> eval(
+        QueryExpression expr,
+        QueryExpressionContext<T> context,
+        Callback<T> callback,
+        boolean batch);
+
     /**
      * Computes the transitive closure of dependencies at most maxDepth away from the given targets,
      * and calls the given callback with the results.
@@ -482,7 +498,14 @@ public interface QueryEnvironment<T> {
    */
   MinDepthUniquifier<T> createMinDepthUniquifier();
 
-  void reportBuildFileError(QueryExpression expression, String msg) throws QueryException;
+  /**
+   * Handle an error during evaluation of {@code expression} by either throwing {@link
+   * QueryException} or emitting an event, depending on whether the evaluation is running in a "keep
+   * going" mode.
+   */
+  void handleError(
+      QueryExpression expression, String message, @Nullable DetailedExitCode detailedExitCode)
+      throws QueryException;
 
   /**
    * Returns the set of BUILD, and optionally Starlark files that define the given set of targets.
@@ -536,7 +559,10 @@ public interface QueryEnvironment<T> {
     ONLY_TARGET_DEPS,
 
     /** Do not consider nodep attributes when traversing dependency edges. */
-    NO_NODEP_DEPS;
+    NO_NODEP_DEPS,
+
+    /** Include aspect-generated output. No-op for query, which always follows aspects. */
+    INCLUDE_ASPECTS;
   }
 
   /**
@@ -620,7 +646,8 @@ public interface QueryEnvironment<T> {
      * Returns the set of package specifications the given target is visible from, represented as
      * {@link QueryVisibility}s.
      */
-    Set<QueryVisibility<T>> getVisibility(T from) throws QueryException, InterruptedException;
+    ImmutableSet<QueryVisibility<T>> getVisibility(QueryExpression caller, T from)
+        throws QueryException, InterruptedException;
   }
 
   /** List of the default query functions. */

@@ -26,9 +26,9 @@ import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
 import com.google.devtools.build.lib.packages.RuleClass;
 import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
-import com.google.devtools.build.lib.syntax.Sequence;
-import com.google.devtools.build.lib.syntax.StarlarkThread;
 import com.google.devtools.build.lib.util.FileTypeSet;
+import net.starlark.java.eval.Sequence;
+import net.starlark.java.eval.StarlarkThread;
 
 /**
  * The rule that parses the Ninja graph and symlinks inputs into output_root.
@@ -41,7 +41,7 @@ import com.google.devtools.build.lib.util.FileTypeSet;
  * action graph changes.
  *
  * <p>Important aspect is relation to non-symlinked-under-execroot-directories: {@link
- * com.google.devtools.build.lib.skylarkbuildapi.WorkspaceGlobalsApi#dontSymlinkDirectoriesInExecroot(Sequence,
+ * com.google.devtools.build.lib.starlarkbuildapi.WorkspaceGlobalsApi#dontSymlinkDirectoriesInExecroot(Sequence,
  * StarlarkThread)} All the outputs of Ninja actions are expected to be under the directory,
  * specified in output_root of this rule. All the input files under output_root should be listed in
  * output_root_inputs attribute, this rule will create the SymlinkAction actions to symlink listed
@@ -78,13 +78,14 @@ public class NinjaGraphRule implements RuleDefinition {
                         + " <execroot>/<output_root> will be a separate directory, not a"
                         + " symlink.</p>"))
         .add(
-            attr("output_root_symlinks", STRING_LIST)
+            attr("output_root_input_dirs", STRING_LIST)
                 .value(ImmutableList.of())
                 .setDoc(
-                    "<p>Output paths under output_root, that should be treated as symlink"
-                        + " artifacts.</p><p>In combination with"
-                        + " --experimental_allow_unresolved_symlinks flag, this allows Ninja"
-                        + " actions to create symlinks, not pointing to the existing file.</p>"))
+                    "<p>Directory paths under output_root that contain files (and subdirectories"
+                        + " of files) to be used as inputs to the Ninja file.</p><p>For each child"
+                        + " path of an input directory which is referenced in the ninja file, an"
+                        + " action to symlink under <execroot>/<output_root> will be created by"
+                        + " this rule.</p>"))
         .add(
             attr("working_directory", STRING)
                 .value("")
@@ -100,7 +101,7 @@ public class NinjaGraphRule implements RuleDefinition {
     return RuleDefinition.Metadata.builder()
         .name("ninja_graph")
         .type(RuleClassType.NORMAL)
-        .ancestors(BaseRuleClasses.BaseRule.class)
+        .ancestors(BaseRuleClasses.NativeBuildRule.class)
         .factoryClass(NinjaGraph.class)
         .build();
   }

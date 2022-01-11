@@ -17,7 +17,7 @@ import com.google.devtools.build.lib.buildtool.util.BuildIntegrationTestCase;
 import com.google.devtools.build.lib.unix.UnixFileSystem;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystem;
-import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -38,11 +38,11 @@ public class InconsistentFilesystemTest extends BuildIntegrationTestCase {
 
   @Override
   protected FileSystem createFileSystem() {
-    return new UnixFileSystem(DigestHashFunction.getDefaultUnchecked()) {
+    return new UnixFileSystem(DigestHashFunction.SHA256, /*hashAttributeName=*/ "") {
       boolean threwException = false;
 
       @Override
-      public boolean createDirectory(Path path) throws IOException {
+      public boolean createDirectory(PathFragment path) throws IOException {
         String pathString = path.getPathString();
         if (pathString.endsWith("foo") && pathString.contains("blaze-out") && !threwException) {
           threwException = true;

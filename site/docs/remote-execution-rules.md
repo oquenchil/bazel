@@ -3,17 +3,19 @@ layout: documentation
 title: Adapting Bazel rules for remote execution
 ---
 
-# Adapting Bazel rules for remote execution
+# Adapting Bazel Rules for Remote Execution
+
+This page is intended for Bazel users writing custom build and test rules
+who want to understand the requirements for Bazel rules in the context of
+remote execution.
 
 Remote execution allows Bazel to execute actions on a separate platform, such as
-a datacenter. A [gRPC protocol](https://github.com/bazelbuild/remote-apis/blob/master/build/bazel/remote/execution/v2/remote_execution.proto)
+a datacenter. A [gRPC protocol](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto)
 is currently in development. You can try remote execution with [bazel-buildfarm](https://github.com/bazelbuild/bazel-buildfarm),
 an open-source project that aims to provide a distributed remote execution
-platform. This document is intended for Bazel users writing custom build and
-test rules who want to understand the requirements for Bazel rules in
-the context of remote execution.
+platform.
 
-This document uses the following terminology when referring to different
+This page uses the following terminology when referring to different
 environment types or *platforms*:
 
 *   **Host platform** - where Bazel runs.
@@ -23,7 +25,7 @@ environment types or *platforms*:
 ## Overview
 
 When configuring a Bazel build for remote execution, you must follow the
-guidelines described in this document to ensure the build executes remotely
+guidelines described in this page to ensure the build executes remotely
 error-free. This is due to the nature of remote execution, namely:
 
 *   **Isolated build actions.** Build tools do not retain state and dependencies
@@ -32,12 +34,12 @@ error-free. This is due to the nature of remote execution, namely:
 *   **Diverse execution environments.** Local build configuration is not always
     suitable for remote execution environments.
 
-This document describes the issues that can arise when implementing custom Bazel
+This page describes the issues that can arise when implementing custom Bazel
 build and test rules for remote execution and how to avoid them. It covers the
 following topics:
 
 *  [Invoking build tools through toolchain rules](#invoking-build-tools-through-toolchain-rules)
-*  [Managing dependencies](#managing-dependencies)
+*  [Managing implicit dependencies](#managing-implicit-dependencies)
 *  [Managing platform-dependent binaries](#managing-platform-dependent-binaries)
 *  [Managing configure-style WORKSPACE rules](#managing-configure-style-workspace-rules)
 
@@ -55,7 +57,7 @@ execution environment.
 Toolchain rules currently exist for Bazel build and test rules for
 [Scala](https://github.com/bazelbuild/rules_scala/blob/master/scala/scala_toolch
 ain.bzl),
-[Rust](https://github.com/bazelbuild/rules_rust/blob/master/rust/toolchain.bzl),
+[Rust](https://github.com/bazelbuild/rules_rust/blob/main/rust/toolchain.bzl),
 and [Go](https://github.com/bazelbuild/rules_go/blob/master/go/toolchains.rst),
 and new toolchain rules are under way for other languages and tools such as
 [bash](https://docs.google.com/document/d/e/2PACX-1vRCSB_n3vctL6bKiPkIa_RN_ybzoAccSe0ic8mxdFNZGNBJ3QGhcKjsL7YKf-ngVyjRZwCmhi_5KhcX/pub).
@@ -106,7 +108,7 @@ one of the following:
     toolchain container) if it's stable enough and use toolchain rules to run it
     in your build.
 
-## Managing `configure`-style WORKSPACE rules
+## Managing configure-style WORKSPACE rules
 
 Bazel's `WORKSPACE` rules can be used for probing the host platform for tools
 and libraries required by the build, which, for local builds, is also Bazel's
@@ -142,7 +144,7 @@ remote execution:
 To help find potential non-hermetic behavior you can use [Workspace rules log](/workspace-log.md).
 
 If an external dependency executes specific operations dependent on the host
-platform, we recommend splitting those operations between `WORKSPACE` and build
+platform, you should split those operations between `WORKSPACE` and build
 rules as follows:
 
 *   **Platform inspection and dependency enumeration.** These operations are
@@ -166,7 +168,7 @@ outputs of your remote execution build in to your source repo to reference.
 
 For example, for Tensorflow's rules for [`cuda`](https://github.com/tensorflow/tensorflow/blob/master/third_party/gpus/cuda_configure.bzl)
 and [`python`](https://github.com/tensorflow/tensorflow/blob/master/third_party/py/python_configure.bzl),
-the `WORKSPACE` rules produce the following [`BUILD files`](https://github.com/tensorflow/tensorflow/tree/master/third_party/toolchains/cpus/py).
+the `WORKSPACE` rules produce the following [`BUILD files`](https://github.com/tensorflow/toolchains/tree/master/toolchains/cpus/py).
 For local execution, files produced by checking the host environment are used.
 For remote execution, a [conditional statement](https://github.com/tensorflow/tensorflow/blob/master/third_party/py/python_configure.bzl#L304)
 on an environment variable allows the rule to use files that are checked into

@@ -13,15 +13,14 @@
 // limitations under the License.
 package com.google.devtools.build.buildjar.javac.statistics;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.sun.tools.javac.util.Context;
 import java.time.Duration;
-import java.util.Collections;
 import java.util.Optional;
-import java.util.Set;
-import java.util.WeakHashMap;
 
 /**
  * A class representing statistics for an invocation of {@link
@@ -34,21 +33,17 @@ import java.util.WeakHashMap;
 public abstract class BlazeJavacStatistics {
 
   // Weak refs to contexts we've init'ed into
-  private static final Set<Context> contextsInitialized =
-      Collections.newSetFromMap(new WeakHashMap<>());
+  private static final Cache<Context, Builder> contextsInitialized =
+      Caffeine.newBuilder().weakKeys().build();
 
   public static void preRegister(Context context) {
-    if (contextsInitialized.add(context)) {
-      context.<Builder>put(
-          Builder.class,
-          ctx -> {
-            Builder instance = newBuilder();
-            ctx.put(Builder.class, instance);
-            return instance;
-          });
-    } else {
-      throw new IllegalStateException("Initialize called twice!");
-    }
+    contextsInitialized.get(
+        context,
+        unused -> {
+          Builder instance = newBuilder();
+          context.put(Builder.class, instance);
+          return instance;
+        });
   }
 
   public static BlazeJavacStatistics empty() {

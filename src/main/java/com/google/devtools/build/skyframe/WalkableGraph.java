@@ -13,9 +13,9 @@
 // limitations under the License.
 package com.google.devtools.build.skyframe;
 
+import com.google.common.collect.ImmutableSet;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.util.Pair;
-import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
 import javax.annotation.Nullable;
@@ -101,12 +101,13 @@ public interface WalkableGraph {
   Map<SkyKey, Pair<SkyValue, Iterable<SkyKey>>> getValueAndRdeps(Iterable<SkyKey> keys)
       throws InterruptedException;
 
+  default ImmutableSet<SkyKey> getAllKeysForTesting() {
+    throw new UnsupportedOperationException();
+  }
+
   /** Provides a WalkableGraph on demand after preparing it. */
   interface WalkableGraphFactory {
     EvaluationResult<SkyValue> prepareAndGet(Set<SkyKey> roots, EvaluationContext evaluationContext)
         throws InterruptedException;
-
-    /** Returns the {@link SkyKey} that defines this universe. */
-    SkyKey getUniverseKey(Collection<String> roots, String offset);
   }
 }

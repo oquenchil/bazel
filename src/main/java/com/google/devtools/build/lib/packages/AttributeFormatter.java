@@ -14,7 +14,6 @@
 package com.google.devtools.build.lib.packages;
 
 import static com.google.devtools.build.lib.packages.BuildType.DISTRIBUTIONS;
-import static com.google.devtools.build.lib.packages.BuildType.FILESET_ENTRY_LIST;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL_DICT_UNARY;
 import static com.google.devtools.build.lib.packages.BuildType.LABEL_KEYED_STRING_DICT;
@@ -51,12 +50,13 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.StarlarkInt;
 
 /** Common utilities for serializing {@link Attribute}s as protocol buffers. */
 public class AttributeFormatter {
 
   private static final ImmutableSet<Type<?>> depTypes =
-      ImmutableSet.<Type<?>>of(
+      ImmutableSet.of(
           STRING,
           LABEL,
           OUTPUT,
@@ -68,7 +68,7 @@ public class AttributeFormatter {
           DISTRIBUTIONS);
 
   private static final ImmutableSet<Type<?>> noDepTypes =
-      ImmutableSet.<Type<?>>of(NODEP_LABEL_LIST, NODEP_LABEL);
+      ImmutableSet.of(NODEP_LABEL_LIST, NODEP_LABEL);
 
   private AttributeFormatter() {}
 
@@ -168,11 +168,10 @@ public class AttributeFormatter {
    * Set the appropriate type and value. Since string and string list store values for multiple
    * types, use the toString() method on the objects instead of casting them.
    */
-  @SuppressWarnings("unchecked")
   private static void writeAttributeValueToBuilder(
       AttributeValueBuilderAdapter builder, Type<?> type, Object value) {
     if (type == INTEGER) {
-      builder.setIntValue((Integer) value);
+      builder.setIntValue(((StarlarkInt) value).toIntUnchecked());
     } else if (type == STRING || type == LABEL || type == NODEP_LABEL || type == OUTPUT) {
       builder.setStringValue(value.toString());
     } else if (type == STRING_LIST || type == LABEL_LIST || type == NODEP_LABEL_LIST
@@ -181,8 +180,8 @@ public class AttributeFormatter {
         builder.addStringListValue(entry.toString());
       }
     } else if (type == INTEGER_LIST) {
-      for (Integer entry : (Collection<Integer>) value) {
-        builder.addIntListValue(entry);
+      for (Object elem : (Collection<?>) value) {
+        builder.addIntListValue(((StarlarkInt) elem).toIntUnchecked());
       }
     } else if (type == BOOLEAN) {
       builder.setBooleanValue((Boolean) value);
@@ -199,6 +198,7 @@ public class AttributeFormatter {
       }
       builder.setLicense(licensePb);
     } else if (type == STRING_DICT) {
+      @SuppressWarnings("unchecked")
       Map<String, String> dict = (Map<String, String>) value;
       for (Map.Entry<String, String> keyValueList : dict.entrySet()) {
         StringDictEntry.Builder entry =
@@ -208,6 +208,7 @@ public class AttributeFormatter {
         builder.addStringDictValue(entry);
       }
     } else if (type == STRING_LIST_DICT) {
+      @SuppressWarnings("unchecked")
       Map<String, List<String>> dict = (Map<String, List<String>>) value;
       for (Map.Entry<String, List<String>> dictEntry : dict.entrySet()) {
         StringListDictEntry.Builder entry =
@@ -218,6 +219,7 @@ public class AttributeFormatter {
         builder.addStringListDictValue(entry);
       }
     } else if (type == LABEL_DICT_UNARY) {
+      @SuppressWarnings("unchecked")
       Map<String, Label> dict = (Map<String, Label>) value;
       for (Map.Entry<String, Label> dictEntry : dict.entrySet()) {
         LabelDictUnaryEntry.Builder entry =
@@ -227,6 +229,7 @@ public class AttributeFormatter {
         builder.addLabelDictUnaryValue(entry);
       }
     } else if (type == LABEL_KEYED_STRING_DICT) {
+      @SuppressWarnings("unchecked")
       Map<Label, String> dict = (Map<Label, String>) value;
       for (Map.Entry<Label, String> dictEntry : dict.entrySet()) {
         LabelKeyedStringDictEntry.Builder entry =
@@ -234,31 +237,6 @@ public class AttributeFormatter {
                 .setKey(dictEntry.getKey().toString())
                 .setValue(dictEntry.getValue());
         builder.addLabelKeyedStringDictValue(entry);
-      }
-    } else if (type == FILESET_ENTRY_LIST) {
-      List<FilesetEntry> filesetEntries = (List<FilesetEntry>) value;
-      for (FilesetEntry filesetEntry : filesetEntries) {
-        Build.FilesetEntry.Builder filesetEntryPb =
-            Build.FilesetEntry.newBuilder()
-                .setSource(filesetEntry.getSrcLabel().toString())
-                .setDestinationDirectory(filesetEntry.getDestDir().getPathString())
-                .setSymlinkBehavior(symlinkBehaviorToPb(filesetEntry.getSymlinkBehavior()))
-                .setStripPrefix(filesetEntry.getStripPrefix())
-                .setFilesPresent(filesetEntry.getFiles() != null);
-
-        if (filesetEntry.getFiles() != null) {
-          for (Label file : filesetEntry.getFiles()) {
-            filesetEntryPb.addFile(file.toString());
-          }
-        }
-
-        if (filesetEntry.getExcludes() != null) {
-          for (String exclude : filesetEntry.getExcludes()) {
-            filesetEntryPb.addExclude(exclude);
-          }
-        }
-
-        builder.addFilesetListValue(filesetEntryPb);
       }
     } else {
       throw new AssertionError("Unknown type: " + type);
@@ -275,21 +253,6 @@ public class AttributeFormatter {
         return Tristate.YES;
       default:
         throw new AssertionError("Expected AUTO/NO/YES to cover all possible cases");
-    }
-  }
-
-  // This is needed because I do not want to use the SymlinkBehavior from the
-  // protocol buffer all over the place, so there are two classes that do
-  // essentially the same thing.
-  private static Build.FilesetEntry.SymlinkBehavior symlinkBehaviorToPb(
-      FilesetEntry.SymlinkBehavior symlinkBehavior) {
-    switch (symlinkBehavior) {
-      case COPY:
-        return Build.FilesetEntry.SymlinkBehavior.COPY;
-      case DEREFERENCE:
-        return Build.FilesetEntry.SymlinkBehavior.DEREFERENCE;
-      default:
-        throw new AssertionError("Unhandled FilesetEntry.SymlinkBehavior");
     }
   }
 

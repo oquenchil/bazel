@@ -103,6 +103,23 @@ test_bazelversion_file() {
   expect_log "My args: build //src:bazel"
 }
 
+test_workspace_with_extension() {
+  setup_mock
+  mv WORKSPACE WORKSPACE.bazel
+
+  echo "1.0.1" > .bazelversion
+
+  ../bin/bazel info &> "$TEST_log"
+  expect_log "Hello from bazel-1.0.1"
+  expect_log "My args: info"
+
+  cd subdir
+  ../../bin/bazel build //src:bazel &> "$TEST_log"
+  expect_log "Hello from bazel-1.0.1"
+  expect_log "My args: build //src:bazel"
+}
+
+
 test_empty_bazelversion_file() {
   setup_mock
 
@@ -175,7 +192,7 @@ test_recommends_curl() {
   if PATH="$(pwd)/mockpath" USE_BAZEL_VERSION="foobar" ../bin/bazel &> "$TEST_log"; then
     fail "Bazel wrapper should have failed"
   fi
-  expect_log "curl -LO"
+  expect_log "curl -fLO"
   expect_not_log "wget"
 }
 

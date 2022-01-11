@@ -26,6 +26,7 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
 import com.google.devtools.build.lib.actions.Artifact.TreeFileArtifact;
 import com.google.devtools.build.lib.actions.CommandLine;
+import com.google.devtools.build.lib.actions.CommandLineExpansionException;
 import com.google.devtools.build.lib.actions.CommandLineItem;
 import com.google.devtools.build.lib.actions.SingleStringArgFormatter;
 import com.google.devtools.build.lib.cmdline.Label;
@@ -35,8 +36,9 @@ import com.google.devtools.build.lib.concurrent.BlazeInterners;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec.VisibleForSerialization;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
 import com.google.devtools.build.lib.util.Fingerprint;
-import com.google.devtools.build.lib.util.LazyString;
+import com.google.devtools.build.lib.util.OnDemandString;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.errorprone.annotations.CompileTimeConstant;
 import com.google.errorprone.annotations.FormatMethod;
@@ -55,7 +57,6 @@ import javax.annotation.Nullable;
 
 /** A customizable, serializable class for building memory efficient command lines. */
 @Immutable
-@AutoCodec
 public final class CustomCommandLine extends CommandLine {
 
   private interface ArgvFragment {
@@ -68,13 +69,15 @@ public final class CustomCommandLine extends CommandLine {
      * @return The index of the next argument, after the ArgvFragment has consumed its args. If the
      *     ArgvFragment doesn't have any args, it should return {@code argi} unmodified.
      */
-    int eval(List<Object> arguments, int argi, ImmutableList.Builder<String> builder);
+    int eval(List<Object> arguments, int argi, ImmutableList.Builder<String> builder)
+        throws CommandLineExpansionException, InterruptedException;
 
     int addToFingerprint(
         List<Object> arguments,
         int argi,
         ActionKeyContext actionKeyContext,
-        Fingerprint fingerprint);
+        Fingerprint fingerprint)
+        throws CommandLineExpansionException, InterruptedException;
   }
 
   /**
@@ -137,7 +140,6 @@ public final class CustomCommandLine extends CommandLine {
    * -> ["1:2:3"]
    * }</pre>
    */
-  @AutoCodec
   public static class VectorArg<T> {
     final boolean isNestedSet;
     final boolean isEmpty;
@@ -146,9 +148,7 @@ public final class CustomCommandLine extends CommandLine {
     final String beforeEach;
     final String joinWith;
 
-    @AutoCodec.Instantiator
-    @VisibleForSerialization
-    VectorArg(
+    private VectorArg(
         boolean isNestedSet,
         boolean isEmpty,
         int count,
@@ -169,7 +169,6 @@ public final class CustomCommandLine extends CommandLine {
      * <p>Call {@link SimpleVectorArg#mapped} to produce a vector arg that maps from a given type to
      * a string.
      */
-    @AutoCodec
     public static class SimpleVectorArg<T> extends VectorArg<T> {
       private final Object values;
 
@@ -195,9 +194,7 @@ public final class CustomCommandLine extends CommandLine {
             values);
       }
 
-      @AutoCodec.Instantiator
-      @VisibleForSerialization
-      SimpleVectorArg(
+      private SimpleVectorArg(
           boolean isNestedSet,
           boolean isEmpty,
           int count,
@@ -335,8 +332,7 @@ public final class CustomCommandLine extends CommandLine {
       }
     }
 
-    @AutoCodec
-    static final class VectorArgFragment implements ArgvFragment {
+    private static final class VectorArgFragment implements ArgvFragment {
       private static Interner<VectorArgFragment> interner = BlazeInterners.newStrongInterner();
       private static final UUID FORMAT_EACH_UUID =
           UUID.fromString("f830781f-2e0d-4e3b-9b99-ece7f249e0f3");
@@ -351,8 +347,6 @@ public final class CustomCommandLine extends CommandLine {
       private final boolean hasBeforeEach;
       private final boolean hasJoinWith;
 
-      @AutoCodec.Instantiator
-      @VisibleForSerialization
       VectorArgFragment(
           boolean isNestedSet,
           boolean hasMapEach,
@@ -368,7 +362,8 @@ public final class CustomCommandLine extends CommandLine {
 
       @SuppressWarnings("unchecked")
       @Override
-      public int eval(List<Object> arguments, int argi, ImmutableList.Builder<String> builder) {
+      public int eval(List<Object> arguments, int argi, ImmutableList.Builder<String> builder)
+          throws CommandLineExpansionException, InterruptedException {
         final List<String> mutatedValues;
         CommandLineItem.MapFn<Object> mapFn =
             hasMapEach ? (CommandLineItem.MapFn<Object>) arguments.get(argi++) : null;
@@ -430,7 +425,8 @@ public final class CustomCommandLine extends CommandLine {
           List<Object> arguments,
           int argi,
           ActionKeyContext actionKeyContext,
-          Fingerprint fingerprint) {
+          Fingerprint fingerprint)
+          throws CommandLineExpansionException, InterruptedException {
         CommandLineItem.MapFn<Object> mapFn =
             hasMapEach ? (CommandLineItem.MapFn<Object>) arguments.get(argi++) : null;
         if (isNestedSet) {
@@ -491,7 +487,9 @@ public final class CustomCommandLine extends CommandLine {
 
   @AutoCodec.VisibleForSerialization
   static class FormatArg implements ArgvFragment {
-    @AutoCodec @AutoCodec.VisibleForSerialization static final FormatArg INSTANCE = new FormatArg();
+    @SerializationConstant @AutoCodec.VisibleForSerialization
+    static final FormatArg INSTANCE = new FormatArg();
+
     private static final UUID FORMAT_UUID = UUID.fromString("377cee34-e947-49e0-94a2-6ab95b396ec4");
 
     private static void push(List<Object> arguments, String formatStr, Object... args) {
@@ -531,7 +529,9 @@ public final class CustomCommandLine extends CommandLine {
 
   @AutoCodec.VisibleForSerialization
   static class PrefixArg implements ArgvFragment {
-    @AutoCodec @AutoCodec.VisibleForSerialization static final PrefixArg INSTANCE = new PrefixArg();
+    @SerializationConstant @AutoCodec.VisibleForSerialization
+    static final PrefixArg INSTANCE = new PrefixArg();
+
     private static final UUID PREFIX_UUID = UUID.fromString("a95eccdf-4f54-46fc-b925-c8c7e1f50c95");
 
     private static void push(List<Object> arguments, String before, Object arg) {
@@ -616,6 +616,8 @@ public final class CustomCommandLine extends CommandLine {
     abstract String describe();
   }
 
+  // TODO(b/113932468): @AutoCodec is incorrectly not serializing expandFunction, but all the
+  // callers need to pass in serializable functions for us to switch to DynamicCodec
   @AutoCodec
   static final class ExpandedTreeArtifactArg extends TreeArtifactExpansionArgvFragment {
     private final Artifact treeArtifact;
@@ -740,6 +742,15 @@ public final class CustomCommandLine extends CommandLine {
     }
 
     /**
+     * Adds a single argument to the command line, which is lazily converted to string.
+     *
+     * <p>If the value is null, neither the arg nor the value is added.
+     */
+    public Builder addObject(@Nullable Object value) {
+      return addObjectInternal(value);
+    }
+
+    /**
      * Adds a dynamically calculated string.
      *
      * <p>Consider whether using another method could be more efficient. For instance, rather than
@@ -826,12 +837,12 @@ public final class CustomCommandLine extends CommandLine {
     }
 
     /** Adds a lazily expanded string. */
-    public Builder addLazyString(@Nullable LazyString value) {
+    public Builder addLazyString(@Nullable OnDemandString value) {
       return addObjectInternal(value);
     }
 
     /** Adds a lazily expanded string. */
-    public Builder addLazyString(@CompileTimeConstant String arg, @Nullable LazyString value) {
+    public Builder addLazyString(@CompileTimeConstant String arg, @Nullable OnDemandString value) {
       return addObjectInternal(arg, value);
     }
 
@@ -1190,7 +1201,7 @@ public final class CustomCommandLine extends CommandLine {
     builder.arguments.addAll(other.arguments);
     return builder;
   }
-  
+
   private final ImmutableList<Object> arguments;
 
   /**
@@ -1206,9 +1217,8 @@ public final class CustomCommandLine extends CommandLine {
     this(arguments, null);
   }
 
-  @AutoCodec.Instantiator
-  @VisibleForSerialization
-  CustomCommandLine(List<Object> arguments, Map<Artifact, TreeFileArtifact> substitutionMap) {
+  private CustomCommandLine(
+      List<Object> arguments, Map<Artifact, TreeFileArtifact> substitutionMap) {
     this.arguments = ImmutableList.copyOf(arguments);
     this.substitutionMap = substitutionMap == null ? null : ImmutableMap.copyOf(substitutionMap);
   }
@@ -1229,16 +1239,19 @@ public final class CustomCommandLine extends CommandLine {
   }
 
   @Override
-  public Iterable<String> arguments() {
+  public ImmutableList<String> arguments()
+      throws CommandLineExpansionException, InterruptedException {
     return argumentsInternal(null);
   }
 
   @Override
-  public Iterable<String> arguments(ArtifactExpander artifactExpander) {
+  public ImmutableList<String> arguments(ArtifactExpander artifactExpander)
+      throws CommandLineExpansionException, InterruptedException {
     return argumentsInternal(Preconditions.checkNotNull(artifactExpander));
   }
 
-  private Iterable<String> argumentsInternal(@Nullable ArtifactExpander artifactExpander) {
+  private ImmutableList<String> argumentsInternal(@Nullable ArtifactExpander artifactExpander)
+      throws CommandLineExpansionException, InterruptedException {
     ImmutableList.Builder<String> builder = ImmutableList.builder();
     int count = arguments.size();
     for (int i = 0; i < count; ) {
@@ -1288,7 +1301,11 @@ public final class CustomCommandLine extends CommandLine {
 
   @Override
   @SuppressWarnings("unchecked")
-  public void addToFingerprint(ActionKeyContext actionKeyContext, Fingerprint fingerprint) {
+  public void addToFingerprint(
+      ActionKeyContext actionKeyContext,
+      @Nullable ArtifactExpander artifactExpander,
+      Fingerprint fingerprint)
+      throws CommandLineExpansionException, InterruptedException {
     int count = arguments.size();
     for (int i = 0; i < count; ) {
       Object arg = arguments.get(i++);

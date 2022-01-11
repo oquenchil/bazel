@@ -13,7 +13,6 @@
 // limitations under the License.
 package com.google.devtools.build.lib.skyframe.packages;
 
-import com.google.common.base.Optional;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -28,7 +27,6 @@ import com.google.devtools.build.lib.packages.BuildFileName;
 import com.google.devtools.build.lib.packages.PackageFactory.EnvironmentExtension;
 import com.google.devtools.build.lib.repository.ExternalPackageHelper;
 import com.google.devtools.build.lib.rules.repository.RepositoryDelegatorFunction;
-import com.google.devtools.build.lib.rules.repository.RepositoryLoaderFunction;
 import com.google.devtools.build.lib.skyframe.ActionEnvironmentFunction;
 import com.google.devtools.build.lib.skyframe.BazelSkyframeExecutorConstants;
 import com.google.devtools.build.lib.skyframe.ClientEnvironmentFunction;
@@ -43,10 +41,10 @@ import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.skyframe.SkyFunctions;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.Root;
-import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.lib.vfs.UnixGlob;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionName;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -89,9 +87,20 @@ public class BazelPackageLoader extends AbstractPackageLoader {
           installBase,
           outputBase,
           BUILD_FILES_BY_PRIORITY,
-          EXTERNAL_PACKAGE_HELPER,
           ExternalFileAction.DEPEND_ON_EXTERNAL_PKG_FOR_EXTERNAL_REPO_PATHS);
       this.isFetch = isFetch;
+      addExtraPrecomputedValues(
+          PrecomputedValue.injected(PrecomputedValue.ACTION_ENV, ImmutableMap.of()),
+          PrecomputedValue.injected(PrecomputedValue.REPO_ENV, ImmutableMap.of()),
+          PrecomputedValue.injected(
+              RepositoryDelegatorFunction.REPOSITORY_OVERRIDES,
+              Suppliers.ofInstance(ImmutableMap.of())),
+          PrecomputedValue.injected(
+              RepositoryDelegatorFunction.RESOLVED_FILE_INSTEAD_OF_WORKSPACE, Optional.empty()),
+          PrecomputedValue.injected(
+              RepositoryDelegatorFunction.DEPENDENCY_FOR_UNCONDITIONAL_FETCHING,
+              RepositoryDelegatorFunction.DONT_FETCH_UNCONDITIONALLY),
+          PrecomputedValue.injected(RepositoryDelegatorFunction.ENABLE_BZLMOD, false));
     }
 
     @Override
@@ -124,20 +133,7 @@ public class BazelPackageLoader extends AbstractPackageLoader {
                       directories,
                       ManagedDirectoriesKnowledge.NO_MANAGED_DIRECTORIES,
                       EXTERNAL_PACKAGE_HELPER))
-              .put(SkyFunctions.REPOSITORY, new RepositoryLoaderFunction())
               .build());
-      addExtraPrecomputedValues(
-          PrecomputedValue.injected(PrecomputedValue.ACTION_ENV, ImmutableMap.of()),
-          PrecomputedValue.injected(PrecomputedValue.REPO_ENV, ImmutableMap.of()),
-          PrecomputedValue.injected(
-              RepositoryDelegatorFunction.REPOSITORY_OVERRIDES,
-              Suppliers.ofInstance(ImmutableMap.of())),
-          PrecomputedValue.injected(
-              RepositoryDelegatorFunction.RESOLVED_FILE_INSTEAD_OF_WORKSPACE,
-              Optional.<RootedPath>absent()),
-          PrecomputedValue.injected(
-              RepositoryDelegatorFunction.DEPENDENCY_FOR_UNCONDITIONAL_FETCHING,
-              RepositoryDelegatorFunction.DONT_FETCH_UNCONDITIONALLY));
 
       return new BazelPackageLoader(this);
     }

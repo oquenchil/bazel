@@ -16,16 +16,17 @@ package com.google.devtools.build.lib.shell;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.flogger.GoogleLogger;
 import com.google.common.flogger.LazyArgs;
 import com.google.common.io.ByteStreams;
 import com.google.devtools.build.lib.shell.Consumers.OutErrConsumers;
+import com.google.devtools.build.lib.util.DescribableExecutionUnit;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.time.Duration;
-import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
 
@@ -122,7 +123,7 @@ import javax.annotation.Nullable;
  * lookup, output redirection, pipelines, etc) are needed, call it directly without using a shell,
  * as in the {@code du(1)} example above.
  */
-public final class Command {
+public final class Command implements DescribableExecutionUnit {
 
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
 
@@ -206,13 +207,15 @@ public final class Command {
   }
 
   /** Returns the raw command line elements to be executed */
-  public String[] getCommandLineElements() {
-    final List<String> elements = subprocessBuilder.getArgv();
-    return elements.toArray(new String[elements.size()]);
+  @Override
+  public ImmutableList<String> getArguments() {
+    return subprocessBuilder.getArgv();
   }
 
   /** Returns an (unmodifiable) {@link Map} view of command's environment variables or null. */
-  @Nullable public Map<String, String> getEnvironmentVariables() {
+  @Override
+  @Nullable
+  public ImmutableMap<String, String> getEnvironment() {
     return subprocessBuilder.getEnv();
   }
 
@@ -231,10 +234,10 @@ public final class Command {
    * @return {@link CommandResult} representing result of the execution
    * @throws ExecFailedException if {@link Runtime#exec(String[])} fails for any reason
    * @throws AbnormalTerminationException if an {@link IOException} is encountered while reading
-   *    from the process, or the process was terminated due to a signal
+   *     from the process, or the process was terminated due to a signal
    * @throws BadExitStatusException if the process exits with a non-zero status
    */
-  public CommandResult execute() throws CommandException {
+  public CommandResult execute() throws CommandException, InterruptedException {
     return executeAsync().get();
   }
 
@@ -250,10 +253,11 @@ public final class Command {
    * @return {@link CommandResult} representing result of the execution
    * @throws ExecFailedException if {@link Runtime#exec(String[])} fails for any reason
    * @throws AbnormalTerminationException if an {@link IOException} is encountered while reading
-   *    from the process, or the process was terminated due to a signal
+   *     from the process, or the process was terminated due to a signal
    * @throws BadExitStatusException if the process exits with a non-zero status
    */
-  public CommandResult execute(OutputStream stdOut, OutputStream stdErr) throws CommandException {
+  public CommandResult execute(OutputStream stdOut, OutputStream stdErr)
+      throws CommandException, InterruptedException {
     return doExecute(
         NO_INPUT, Consumers.createStreamingConsumers(stdOut, stdErr), KILL_SUBPROCESS_ON_INTERRUPT)
             .get();
@@ -302,15 +306,17 @@ public final class Command {
    * the subprocess to exit.
    *
    * @param killSubprocessOnInterrupt whether the subprocess should be killed if the current process
-   *     is interrupted
+   *     is interrupted. If this is true, the returned {@link FutureCommandResult} object may throw
+   *     {@link InterruptedException} on {@link FutureCommandResult#get} if the thread is
+   *     interrupted while waiting for the process to complete. Otherwise, it will not.
    * @return {@link CommandResult} representing result of the execution
    * @throws ExecFailedException if {@link Runtime#exec(String[])} fails for any reason
    * @throws AbnormalTerminationException if an {@link IOException} is encountered while reading
-   *    from the process, or the process was terminated due to a signal
+   *     from the process, or the process was terminated due to a signal
    * @throws BadExitStatusException if the process exits with a non-zero status
    */
-  public FutureCommandResult executeAsync(
-      InputStream stdinInput, boolean killSubprocessOnInterrupt) throws CommandException {
+  public FutureCommandResult executeAsync(InputStream stdinInput, boolean killSubprocessOnInterrupt)
+      throws CommandException {
     return doExecute(
         stdinInput, Consumers.createAccumulatingConsumers(), killSubprocessOnInterrupt);
   }
@@ -380,7 +386,7 @@ public final class Command {
     // enforced.
     processInput(stdinInput, process);
 
-    return new FutureCommandResultImpl(this, process, outErrConsumers, killSubprocessOnInterrupt);
+    return new FutureCommandResult(this, process, outErrConsumers, killSubprocessOnInterrupt);
   }
 
   private Subprocess startProcess() throws ExecFailedException {
@@ -404,7 +410,7 @@ public final class Command {
   }
 
   private static void processInput(InputStream stdinInput, Subprocess process) {
-    logger.atFiner().log(stdinInput.toString());
+    logger.atFiner().log("%s", stdinInput);
     try (OutputStream out = process.getOutputStream()) {
       ByteStreams.copy(stdinInput, out);
     } catch (IOException ioe) {

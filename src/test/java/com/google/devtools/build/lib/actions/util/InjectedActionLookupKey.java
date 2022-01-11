@@ -14,14 +14,17 @@
 
 package com.google.devtools.build.lib.actions.util;
 
-import com.google.devtools.build.lib.actions.ActionLookupValue.ActionLookupKey;
+import com.google.devtools.build.lib.actions.ActionLookupKey;
+import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.skyframe.BuildConfigurationKey;
 import com.google.devtools.build.skyframe.SkyFunctionName;
+import javax.annotation.Nullable;
 
 /**
  * An {@link ActionLookupKey} with a non-hermetic {@link SkyFunctionName} so that its value can be
  * directly injected during tests.
  */
-public class InjectedActionLookupKey extends ActionLookupKey {
+public final class InjectedActionLookupKey implements ActionLookupKey {
   public static final SkyFunctionName INJECTED_ACTION_LOOKUP =
       SkyFunctionName.createNonHermetic("INJECTED_ACTION_LOOKUP");
 
@@ -34,6 +37,17 @@ public class InjectedActionLookupKey extends ActionLookupKey {
   @Override
   public SkyFunctionName functionName() {
     return INJECTED_ACTION_LOOKUP;
+  }
+
+  @Override
+  public Label getLabel() {
+    return Label.parseAbsoluteUnchecked("//foo:" + name); // Makes actions shareable.
+  }
+
+  @Nullable
+  @Override
+  public BuildConfigurationKey getConfigurationKey() {
+    return null;
   }
 
   @Override

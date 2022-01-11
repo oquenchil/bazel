@@ -15,12 +15,13 @@
 package com.google.devtools.build.lib.rules.proto;
 
 import com.google.auto.value.AutoValue;
+import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.FilesToRunProvider;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import javax.annotation.Nullable;
 
 // Note: AutoValue v1.4-rc1 has AutoValue.CopyAnnotations which makes it work with Starlark. No need
@@ -30,9 +31,11 @@ import javax.annotation.Nullable;
  * rules.
  */
 @AutoValue
-@AutoCodec
 public abstract class ProtoLangToolchainProvider implements TransitiveInfoProvider {
-  public abstract String commandLine();
+  public abstract String outReplacementFormatFlag();
+
+  @Nullable
+  public abstract String pluginFormatFlag();
 
   @Nullable
   public abstract FilesToRunProvider pluginExecutable();
@@ -40,15 +43,41 @@ public abstract class ProtoLangToolchainProvider implements TransitiveInfoProvid
   @Nullable
   public abstract TransitiveInfoCollection runtime();
 
-  public abstract NestedSet<Artifact> blacklistedProtos();
+  /**
+   * Returns a list of {@link ProtoSource}s that are already provided by the protobuf runtime (i.e.
+   * for which {@code <lang>_proto_library} should not generate bindings.
+   */
+  public abstract ImmutableList<ProtoSource> providedProtoSources();
 
-  @AutoCodec.Instantiator
+  /**
+   * This makes the blacklisted_protos member available in the provider. It can be removed after
+   * users are migrated and a sufficient time for Bazel rules to migrate has elapsed.
+   */
+  @Deprecated
+  public NestedSet<Artifact> blacklistedProtos() {
+    return forbiddenProtos();
+  }
+
+  // TODO(yannic): Remove after migrating all users to `providedProtoSources()`.
+  @Deprecated
+  public abstract NestedSet<Artifact> forbiddenProtos();
+
   public static ProtoLangToolchainProvider create(
-      String commandLine,
+      String outReplacementFormatFlag,
+      String pluginFormatFlag,
       FilesToRunProvider pluginExecutable,
       TransitiveInfoCollection runtime,
-      NestedSet<Artifact> blacklistedProtos) {
+      ImmutableList<ProtoSource> providedProtoSources) {
+    NestedSetBuilder<Artifact> blacklistedProtos = NestedSetBuilder.stableOrder();
+    for (ProtoSource protoSource : providedProtoSources) {
+      blacklistedProtos.add(protoSource.getOriginalSourceFile());
+    }
     return new AutoValue_ProtoLangToolchainProvider(
-        commandLine, pluginExecutable, runtime, blacklistedProtos);
+        outReplacementFormatFlag,
+        pluginFormatFlag,
+        pluginExecutable,
+        runtime,
+        providedProtoSources,
+        blacklistedProtos.build());
   }
 }

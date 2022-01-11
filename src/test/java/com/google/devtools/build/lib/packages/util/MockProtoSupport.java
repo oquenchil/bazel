@@ -127,17 +127,20 @@ public final class MockProtoSupport {
         "package(default_visibility=['//visibility:public'])",
         "py_library(name = 'proto1',",
         "           srcs = [ 'pyproto.py' ])");
+    config.create("net/rpc/no_stubby_rpc_libs_please_dont_depend_on_this.cc", "");
     config.create(
         "net/rpc/BUILD",
         "package(default_visibility=['//visibility:public'])",
         "cc_library(name = 'stubby12_proto_rpc_libs')",
-        "cc_library(name = 'no_stubby_rpc_libs_please_dont_depend_on_this')");
+        "cc_library(name = 'no_stubby_rpc_libs_please_dont_depend_on_this',"
+            + " srcs=['no_stubby_rpc_libs_please_dont_depend_on_this.cc'])");
     config.create("net/rpc4/public/core/BUILD",
         "package(default_visibility=['//visibility:public'])",
         "cc_library(name = 'stubby4_rpc_libs')");
-    config.create("net/grpc/BUILD",
+    config.create(
+        "net/grpc/BUILD",
         "package(default_visibility=['//visibility:public'])",
-        "cc_library(name = 'grpc++_codegen_lib')");
+        "cc_library(name = 'grpc++_codegen_lib', srcs = ['grpc++_codegen_lib.cc'])");
     config.create(
         "net/rpc/python/BUILD",
         "py_library(name = 'proto_python_api_2_stub',",
@@ -173,9 +176,7 @@ public final class MockProtoSupport {
         "net/proto2/go/BUILD",
         "package(default_visibility=['//visibility:public'])",
         "go_library(name = 'protodeps',",
-        "           srcs = [ 'protodeps.go' ])",
-        "go_library(name = 'proto',",
-        "           srcs = [ 'proto.go' ])");
+        "           srcs = [ 'protodeps.go' ])");
     config.create("net/proto2/compiler/go/BUILD",
         "package(default_visibility=['//visibility:public'])",
         "go_binary(name = 'protoc-gen-go',",

@@ -14,19 +14,34 @@
 
 package com.google.devtools.build.lib.packages;
 
+import com.google.common.base.Function;
 import com.google.common.collect.ImmutableSet;
-import com.google.devtools.build.lib.syntax.Printer;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
+import net.starlark.java.eval.EvalException;
+import net.starlark.java.eval.Printer;
+import net.starlark.java.eval.Starlark;
 
 /** A natively-defined aspect that is may be referenced by Starlark attribute definitions. */
 public abstract class StarlarkNativeAspect extends NativeAspectClass implements StarlarkAspect {
+  @SerializationConstant @AutoCodec.VisibleForSerialization
+  static final Function<Rule, AspectParameters> EMPTY_FUNCTION = input -> AspectParameters.EMPTY;
+
   @Override
   public void repr(Printer printer) {
     printer.append("<native aspect>");
   }
 
   @Override
-  public void attachToAttribute(Attribute.Builder<?> attrBuilder) {
-    attrBuilder.aspect(this);
+  public void attachToAspectsList(
+      String baseAspectName, AspectsListBuilder aspectsList, boolean allowAspectsParameters)
+      throws EvalException {
+
+    if (!allowAspectsParameters && !this.getParamAttributes().isEmpty()) {
+      throw Starlark.errorf("Cannot use parameterized aspect %s at the top level.", this.getName());
+    }
+
+    aspectsList.addAspect(this, baseAspectName);
   }
 
   @Override
@@ -37,5 +52,10 @@ public abstract class StarlarkNativeAspect extends NativeAspectClass implements 
   @Override
   public ImmutableSet<String> getParamAttributes() {
     return ImmutableSet.of();
+  }
+
+  @Override
+  public Function<Rule, AspectParameters> getDefaultParametersExtractor() {
+    return EMPTY_FUNCTION;
   }
 }

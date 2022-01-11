@@ -43,6 +43,7 @@ import javax.annotation.concurrent.Immutable;
  * <p>This class is immutable so long as the converters and default values associated with the
  * options are immutable.
  */
+// TODO(b/159980134): Can this be folded into OptionsData?
 @Immutable
 public class IsolatedOptionsData extends OpaqueOptionsData {
 
@@ -222,9 +223,9 @@ public class IsolatedOptionsData extends OpaqueOptionsData {
   }
 
   /**
-   * Constructs an {@link IsolatedOptionsData} object for a parser that knows about the given
-   * {@link OptionsBase} classes. No inter-option analysis is done. Performs basic sanity checking
-   * on each option in isolation.
+   * Constructs an {@link IsolatedOptionsData} object for a parser that knows about the given {@link
+   * OptionsBase} classes. No inter-option analysis is done. Performs basic validity checks on each
+   * option in isolation.
    */
   static IsolatedOptionsData from(Collection<Class<? extends OptionsBase>> classes) {
     // Mind which fields have to preserve order.

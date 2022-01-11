@@ -13,6 +13,8 @@
 // limitations under the License.
 package com.google.devtools.build.lib.query2.cquery;
 
+import static java.util.stream.Collectors.joining;
+
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
@@ -24,7 +26,7 @@ import com.google.devtools.build.lib.analysis.InconsistentAspectOrderException;
 import com.google.devtools.build.lib.analysis.TargetAndConfiguration;
 import com.google.devtools.build.lib.analysis.ToolchainCollection;
 import com.google.devtools.build.lib.analysis.ToolchainContext;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.analysis.config.BuildOptions.OptionsDiff;
 import com.google.devtools.build.lib.analysis.config.ConfigMatchingProvider;
@@ -39,11 +41,10 @@ import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
-import com.google.devtools.build.lib.packages.Rule;
+import com.google.devtools.build.lib.packages.RuleTransitionData;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.TargetAccessor;
 import com.google.devtools.build.lib.skyframe.SkyframeExecutor;
-import com.google.devtools.build.lib.syntax.EvalException;
 import com.google.devtools.build.lib.util.OrderedSetMultimap;
 import java.io.OutputStream;
 import java.util.Collection;
@@ -60,10 +61,10 @@ import javax.annotation.Nullable;
  */
 class TransitionsOutputFormatterCallback extends CqueryThreadsafeCallback {
 
-  protected final BuildConfiguration hostConfiguration;
+  protected final BuildConfigurationValue hostConfiguration;
 
   private final HashMap<Label, Target> partialResultMap;
-  @Nullable private final TransitionFactory<Rule> trimmingTransitionFactory;
+  @Nullable private final TransitionFactory<RuleTransitionData> trimmingTransitionFactory;
 
   @Override
   public String getName() {
@@ -79,9 +80,9 @@ class TransitionsOutputFormatterCallback extends CqueryThreadsafeCallback {
       CqueryOptions options,
       OutputStream out,
       SkyframeExecutor skyframeExecutor,
-      TargetAccessor<ConfiguredTarget> accessor,
-      BuildConfiguration hostConfiguration,
-      @Nullable TransitionFactory<Rule> trimmingTransitionFactory) {
+      TargetAccessor<KeyedConfiguredTarget> accessor,
+      BuildConfigurationValue hostConfiguration,
+      @Nullable TransitionFactory<RuleTransitionData> trimmingTransitionFactory) {
     super(eventHandler, options, out, skyframeExecutor, accessor);
     this.hostConfiguration = hostConfiguration;
     this.trimmingTransitionFactory = trimmingTransitionFactory;
@@ -89,7 +90,8 @@ class TransitionsOutputFormatterCallback extends CqueryThreadsafeCallback {
   }
 
   @Override
-  public void processOutput(Iterable<ConfiguredTarget> partialResult) throws InterruptedException {
+  public void processOutput(Iterable<KeyedConfiguredTarget> partialResult)
+      throws InterruptedException {
     CqueryOptions.Transitions verbosity = options.transitions;
     if (verbosity.equals(CqueryOptions.Transitions.NONE)) {
       eventHandler.handle(
@@ -98,25 +100,22 @@ class TransitionsOutputFormatterCallback extends CqueryThreadsafeCallback {
                   + " flag explicitly to 'lite' or 'full'"));
       return;
     }
-    partialResult.forEach(
-        ct -> partialResultMap.put(ct.getLabel(), accessor.getTargetFromConfiguredTarget(ct)));
-    for (ConfiguredTarget configuredTarget : partialResult) {
-      Target target = partialResultMap.get(configuredTarget.getLabel());
-      BuildConfiguration config =
-          skyframeExecutor.getConfiguration(
-              eventHandler, configuredTarget.getConfigurationKey());
+    partialResult.forEach(kct -> partialResultMap.put(kct.getLabel(), accessor.getTarget(kct)));
+    for (KeyedConfiguredTarget keyedConfiguredTarget : partialResult) {
+      Target target = partialResultMap.get(keyedConfiguredTarget.getLabel());
+      BuildConfigurationValue config =
+          getConfiguration(keyedConfiguredTarget.getConfigurationKey());
       addResult(
-          getRuleClassTransition(configuredTarget, target)
-              + configuredTarget.getLabel()
-              + " ("
-              + (config != null && config.isHostConfiguration() ? "HOST" : config)
-              + ")");
-      if (!(configuredTarget instanceof RuleConfiguredTarget)) {
+          getRuleClassTransition(keyedConfiguredTarget.getConfiguredTarget(), target)
+              + String.format(
+                  "%s (%s)",
+                  keyedConfiguredTarget.getConfiguredTarget().getOriginalLabel(), shortId(config)));
+      if (!(keyedConfiguredTarget.getConfiguredTarget() instanceof RuleConfiguredTarget)) {
         continue;
       }
       OrderedSetMultimap<DependencyKind, DependencyKey> deps;
       ImmutableMap<Label, ConfigMatchingProvider> configConditions =
-          ((RuleConfiguredTarget) configuredTarget).getConfigConditions();
+          keyedConfiguredTarget.getConfigConditions();
 
       // Get a ToolchainContext to use for dependency resolution.
       ToolchainCollection<ToolchainContext> toolchainContexts =
@@ -129,13 +128,13 @@ class TransitionsOutputFormatterCallback extends CqueryThreadsafeCallback {
             new FormatterDependencyResolver()
                 .dependentNodeMap(
                     new TargetAndConfiguration(target, config),
-                    hostConfiguration,
                     /*aspect=*/ null,
                     configConditions,
                     toolchainContexts,
                     DependencyResolver.shouldUseToolchainTransition(config, target),
                     trimmingTransitionFactory);
-      } catch (EvalException | InconsistentAspectOrderException e) {
+      } catch (DependencyResolver.Failure | InconsistentAspectOrderException e) {
+        // This is an abuse of InterruptedException.
         throw new InterruptedException(e.getMessage());
       }
       for (Map.Entry<DependencyKind, DependencyKey> attributeAndDep : deps.entries()) {
@@ -171,16 +170,17 @@ class TransitionsOutputFormatterCallback extends CqueryThreadsafeCallback {
                 .concat(dep.getLabel().toString())
                 .concat("#")
                 .concat(dep.getTransition().getName())
-                .concat(" ( -> ")
+                .concat(" -> ")
                 .concat(
                     toOptions.stream()
                         .map(
                             options -> {
-                              String checksum = options.computeChecksum();
-                              return checksum.equals(hostConfigurationChecksum) ? "HOST" : checksum;
+                              String checksum = options.checksum();
+                              return checksum.equals(hostConfigurationChecksum)
+                                  ? "HOST"
+                                  : shortId(checksum);
                             })
-                        .collect(Collectors.joining(", ")))
-                .concat(")"));
+                        .collect(joining(", "))));
         if (verbosity == CqueryOptions.Transitions.LITE) {
           continue;
         }
@@ -193,14 +193,18 @@ class TransitionsOutputFormatterCallback extends CqueryThreadsafeCallback {
     }
   }
 
-  private String getRuleClassTransition(ConfiguredTarget ct, Target target) {
+  private static String getRuleClassTransition(ConfiguredTarget ct, Target target) {
     String output = "";
     if (ct instanceof RuleConfiguredTarget) {
-      TransitionFactory<Rule> factory =
+      TransitionFactory<RuleTransitionData> factory =
           target.getAssociatedRule().getRuleClassObject().getTransitionFactory();
       if (factory != null) {
         output =
-            factory.create(target.getAssociatedRule()).getClass().getSimpleName().concat(" -> ");
+            factory
+                .create(RuleTransitionData.create(target.getAssociatedRule()))
+                .getClass()
+                .getSimpleName()
+                .concat(" -> ");
       }
     }
     return output;
@@ -221,4 +225,3 @@ class TransitionsOutputFormatterCallback extends CqueryThreadsafeCallback {
     }
   }
 }
-

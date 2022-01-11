@@ -3,7 +3,10 @@ layout: documentation
 title: Remote caching
 ---
 
-# Remote caching
+# Remote Caching
+
+This page covers remote caching, setting up a server to host the cache, and
+running builds using the remote cache.
 
 A remote cache is used by a team of developers and/or a continuous integration
 (CI) system to share build outputs. If your build is reproducible, the
@@ -34,7 +37,7 @@ The remote cache stores two types of data:
 
 Note that the remote cache additionally stores the stdout and stderr for every
 action. Inspecting the stdout/stderr of Bazel thus is not a good signal for
-[estimating cache hits](https://docs.bazel.build/versions/master/remote-caching-debug.html).
+[estimating cache hits](https://docs.bazel.build/versions/main/remote-caching-debug.html).
 
 ### How a build uses remote caching
 
@@ -176,7 +179,7 @@ syntax is `https://username:password@hostname.com:port/path`. Please note that
 HTTP Basic Authentication transmits username and password in plaintext over the
 network and it's thus critical to always use it with HTTPS.
 
-## HTTP Caching Protocol
+## HTTP caching protocol
 
 Bazel supports remote caching via HTTP/1.1. The protocol is conceptually simple:
 Binary data (BLOB) is uploaded via PUT requests and downloaded via GET requests.
@@ -306,9 +309,9 @@ checked in `.bazelrc` file.
 **Input file modification during a build**
 
 When an input file is modified during a build, Bazel might upload invalid
-results to the remote cache. We implemented a change detection that can be
-enabled via the `--experimental_guard_against_concurrent_changes` flag. There
-are no known issues and we expect to enable it by default in a future release.
+results to the remote cache. You can enable a change detection with
+the `--experimental_guard_against_concurrent_changes` flag. There
+are no known issues and it will be enabled by default in a future release.
 See [issue #3360] for updates. Generally, avoid modifying source files during a
 build.
 
@@ -318,9 +321,9 @@ build.
 An action definition contains environment variables. This can be a problem for
 sharing remote cache hits across machines. For example, environments with
 different `$PATH` variables won't share cache hits. Only environment variables
-explicitly whitelisted via `--action_env` are included in an action
+explicitly named via `--action_env` are included in an action
 definition. Bazel's Debian/Ubuntu package used to install `/etc/bazel.bazelrc`
-with a whitelist of environment variables including `$PATH`. If you are getting
+with a pre-defined list of environment variables including `$PATH`. If you are getting
 fewer cache hits than expected, check that your environment doesn't have an old
 `/etc/bazel.bazelrc` file.
 
@@ -339,15 +342,15 @@ On server side Bazel maintain in-memory state which speed up builds so when runn
 builds inside docker containers e.g. in CI, in-memory state is lost so Bazel
 must rebuild it before using remote cache.
 
-## External Links
+## External links
 
 * **Your Build in a Datacenter:** The Bazel team gave a [talk](https://fosdem.org/2018/schedule/event/datacenter_build/) about remote caching and execution at FOSDEM 2018.
 
 * **Faster Bazel builds with remote caching: a benchmark:** Nicolò Valigi wrote a [blog post](https://nicolovaligi.com/faster-bazel-remote-caching-benchmark.html) in which he benchmarks remote caching in Bazel.
 
 
-[Adapting Rules for Remote Execution]: https://docs.bazel.build/versions/master/remote-execution-rules.html
-[Troubleshooting Remote Execution]: https://docs.bazel.build/versions/master/remote-execution-sandbox.html
+[Adapting Rules for Remote Execution]: https://docs.bazel.build/versions/main/remote-execution-rules.html
+[Troubleshooting Remote Execution]: https://docs.bazel.build/versions/main/remote-execution-sandbox.html
 [WebDAV module]: http://nginx.org/en/docs/http/ngx_http_dav_module.html
 [docker image]: https://hub.docker.com/r/buchgr/bazel-remote-cache/
 [bazel-remote]: https://github.com/buchgr/bazel-remote/

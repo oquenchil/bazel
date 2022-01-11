@@ -14,9 +14,7 @@
 
 package com.google.devtools.build.lib.rules.objc;
 
-import com.google.devtools.build.lib.analysis.config.CoreOptionConverters.LabelConverter;
 import com.google.devtools.build.lib.analysis.config.FragmentOptions;
-import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.rules.apple.DottedVersion;
 import com.google.devtools.build.lib.rules.apple.DottedVersionConverter;
 import com.google.devtools.common.options.Converters.CommaSeparatedOptionListConverter;
@@ -140,15 +138,6 @@ public class ObjcCommandLineOptions extends FragmentOptions {
   public List<String> fastbuildOptions;
 
   @Option(
-    name = "experimental_objc_enable_module_maps",
-    defaultValue = "false",
-    documentationCategory = OptionDocumentationCategory.OUTPUT_SELECTION,
-    effectTags = {OptionEffectTag.ACTION_COMMAND_LINES},
-    help = "Enables module map generation and interpretation."
-  )
-  public boolean enableModuleMaps;
-
-  @Option(
       name = "objc_enable_binary_stripping",
       defaultValue = "false",
       documentationCategory = OptionDocumentationCategory.OUTPUT_PARAMETERS,
@@ -194,72 +183,31 @@ public class ObjcCommandLineOptions extends FragmentOptions {
   public boolean deviceDebugEntitlements;
 
   @Option(
-      name = "objc_use_dotd_pruning",
-      defaultValue = "true",
-      documentationCategory = OptionDocumentationCategory.BUILD_TIME_OPTIMIZATION,
-      effectTags = {OptionEffectTag.CHANGES_INPUTS, OptionEffectTag.LOADING_AND_ANALYSIS},
-      help =
-          "If set, .d files emitted by clang will be used to prune the set of inputs passed into "
-              + "objc compiles.")
-  public boolean useDotdPruning;
-
-  @Option(
-    name = "enable_apple_binary_native_protos",
-    defaultValue = "true",
-    documentationCategory = OptionDocumentationCategory.OUTPUT_SELECTION,
-    effectTags = {OptionEffectTag.AFFECTS_OUTPUTS},
-    metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
-    help = "If set, apple_binary will generate and link objc protos into the output binary."
-  )
-  public boolean enableAppleBinaryNativeProtos;
-
-  @Option(
-      name = "experimental_objc_include_scanning",
+      name = "incompatible_avoid_hardcoded_objc_compilation_flags",
       defaultValue = "false",
-      documentationCategory = OptionDocumentationCategory.BUILD_TIME_OPTIMIZATION,
+      documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
       effectTags = {
-        OptionEffectTag.LOADING_AND_ANALYSIS,
+        OptionEffectTag.AFFECTS_OUTPUTS,
+        OptionEffectTag.BAZEL_INTERNAL_CONFIGURATION,
         OptionEffectTag.EXECUTION,
-        OptionEffectTag.CHANGES_INPUTS
+        OptionEffectTag.ACTION_COMMAND_LINES,
       },
-      help = "Whether to perform include scanning for objective C/C++.")
-  public boolean scanIncludes;
-
-  @Option(
-      name = "objc_header_scanner_tool",
-      defaultValue = "@bazel_tools//tools/objc:header_scanner",
-      converter = LabelConverter.class,
-      documentationCategory = OptionDocumentationCategory.TOOLCHAIN,
-      effectTags = {OptionEffectTag.CHANGES_INPUTS},
+      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
       help =
-          "Location of tool to scan Objective-C code for inclusions and output a .headers_list "
-              + "file.")
-  public Label objcHeaderScannerTool;
+          "Prevents Bazel from adding compiler options to Objective-C compilation actions. Options"
+              + " set in the crosstool are still applied.")
+  public boolean incompatibleAvoidHardcodedObjcCompilationFlags;
 
   @Option(
-    name = "apple_sdk",
-    defaultValue = "null",
-    converter = LabelConverter.class,
-    documentationCategory = OptionDocumentationCategory.TOOLCHAIN,
-    effectTags = {OptionEffectTag.AFFECTS_OUTPUTS, OptionEffectTag.LOADING_AND_ANALYSIS},
-    help =
-        "Location of target that will provide the appropriate Apple SDK for the current build "
-            + "configuration."
-  )
-  public Label appleSdk;
-
-  @Option(
-      name = "incompatible_objc_compile_info_migration",
+      name = "incompatible_disable_native_apple_binary_rule",
       defaultValue = "false",
-      documentationCategory = OptionDocumentationCategory.TOOLCHAIN,
-      effectTags = {OptionEffectTag.LOADING_AND_ANALYSIS, OptionEffectTag.CHANGES_INPUTS},
-      metadataTags = {
-        OptionMetadataTag.INCOMPATIBLE_CHANGE,
-        OptionMetadataTag.TRIGGERED_BY_ALL_INCOMPATIBLE_CHANGES,
+      documentationCategory = OptionDocumentationCategory.INPUT_STRICTNESS,
+      effectTags = {
+        OptionEffectTag.EAGERNESS_TO_EXIT,
       },
+      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
       help =
-          "If true, native rules can assume compile info has been migrated to CcInfo. See "
-              + "https://github.com/bazelbuild/bazel/issues/10854 for details and migration "
-              + "instructions")
-  public boolean incompatibleObjcCompileInfoMigration;
+          "If enabled, direct usage of the native apple_binary rule is disabled. Please use the"
+              + " Starlark rule from https://github.com/bazelbuild/rules_apple instead.")
+  public boolean incompatibleDisableNativeAppleBinaryRule;
 }

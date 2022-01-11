@@ -14,6 +14,7 @@
 package com.google.devtools.build.lib.skyframe;
 
 import static com.google.common.truth.Truth.assertThat;
+import static com.google.devtools.build.lib.bazel.bzlmod.BzlmodTestUtil.createModuleKey;
 import static com.google.devtools.build.skyframe.EvaluationResultSubjectFactory.assertThatEvaluationResult;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
@@ -21,16 +22,22 @@ import static org.junit.Assert.fail;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
+import com.google.devtools.build.lib.bazel.bzlmod.BazelModuleResolutionFunction;
+import com.google.devtools.build.lib.bazel.bzlmod.FakeRegistry;
+import com.google.devtools.build.lib.bazel.bzlmod.ModuleFileFunction;
+import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.CheckDirectDepsMode;
 import com.google.devtools.build.lib.clock.BlazeClock;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.BazelModuleContext;
 import com.google.devtools.build.lib.packages.ConstantRuleVisibility;
-import com.google.devtools.build.lib.packages.StarlarkSemanticsOptions;
+import com.google.devtools.build.lib.packages.semantics.BuildLanguageOptions;
 import com.google.devtools.build.lib.pkgcache.PackageOptions;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
 import com.google.devtools.build.lib.skyframe.BzlLoadFunction.BzlLoadFailedException;
+import com.google.devtools.build.lib.skyframe.PrecomputedValue.Injected;
 import com.google.devtools.build.lib.skyframe.util.SkyframeExecutorTestUtils;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileStatus;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
@@ -46,6 +53,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.UUID;
 import javax.annotation.Nullable;
+import net.starlark.java.eval.StarlarkInt;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -54,6 +62,9 @@ import org.junit.runners.JUnit4;
 /** Tests for BzlLoadFunction. */
 @RunWith(JUnit4.class)
 public class BzlLoadFunctionTest extends BuildViewTestCase {
+  private Path moduleRoot;
+  private FakeRegistry registry;
+
   @Override
   protected FileSystem createFileSystem() {
     return new CustomInMemoryFs();
@@ -73,11 +84,37 @@ public class BzlLoadFunctionTest extends BuildViewTestCase {
                 ImmutableList.of(Root.fromPath(rootDirectory), Root.fromPath(alternativeRoot)),
                 BazelSkyframeExecutorConstants.BUILD_FILES_BY_PRIORITY),
             packageOptions,
-            Options.getDefaults(StarlarkSemanticsOptions.class),
+            Options.getDefaults(BuildLanguageOptions.class),
             UUID.randomUUID(),
             ImmutableMap.<String, String>of(),
             new TimestampGranularityMonitor(BlazeClock.instance()));
     skyframeExecutor.setActionEnv(ImmutableMap.<String, String>of());
+  }
+
+  @Override
+  protected boolean enableBzlmod() {
+    return true;
+  }
+
+  @Override
+  protected ImmutableList<Injected> extraPrecomputedValues() {
+    try {
+      moduleRoot = scratch.dir("modules");
+    } catch (IOException e) {
+      throw new IllegalStateException(e);
+    }
+    registry = FakeRegistry.DEFAULT_FACTORY.newFakeRegistry(moduleRoot.getPathString());
+    return ImmutableList.of(
+        PrecomputedValue.injected(
+            ModuleFileFunction.REGISTRIES, ImmutableList.of(registry.getUrl())),
+        PrecomputedValue.injected(ModuleFileFunction.IGNORE_DEV_DEPS, false),
+        PrecomputedValue.injected(
+            BazelModuleResolutionFunction.CHECK_DIRECT_DEPENDENCIES, CheckDirectDepsMode.WARNING));
+  }
+
+  @Before
+  public void setUpForBzlmod() throws Exception {
+    scratch.file("MODULE.bazel");
   }
 
   @Test
@@ -364,7 +401,7 @@ public class BzlLoadFunctionTest extends BuildViewTestCase {
         .hasMessageThat()
         .contains(
             "Unable to find package for @repository//dir:file.bzl: The repository '@repository' "
-                + "could not be resolved.");
+                + "could not be resolved: Repository '@repository' is not defined.");
   }
 
   @Test
@@ -401,11 +438,75 @@ public class BzlLoadFunctionTest extends BuildViewTestCase {
         SkyframeExecutorTestUtils.evaluate(
             getSkyframeExecutor(), skyKey, /*keepGoing=*/ false, reporter);
 
-    assertThat(result.get(skyKey).getModule().getGlobals()).containsEntry("a_symbol", 5);
+    assertThat(result.get(skyKey).getModule().getGlobals())
+        .containsEntry("a_symbol", StarlarkInt.of(5));
   }
 
   @Test
-  public void testErrorReadingBzlFileInlineIsTransient() throws Exception {
+  public void testLoadBzlFileFromBzlmod() throws Exception {
+    scratch.overwriteFile("MODULE.bazel", "bazel_dep(name='foo',version='1.0')");
+    registry
+        .addModule(
+            createModuleKey("foo", "1.0"),
+            "module(name='foo',version='1.0')",
+            "bazel_dep(name='bar',version='2.0',repo_name='bar_alias')")
+        .addModule(createModuleKey("bar", "2.0"), "module(name='bar',version='2.0')");
+    Path fooDir = moduleRoot.getRelative("foo.1.0");
+    scratch.file(fooDir.getRelative("WORKSPACE").getPathString());
+    scratch.file(fooDir.getRelative("BUILD").getPathString());
+    scratch.file(
+        fooDir.getRelative("test.bzl").getPathString(),
+        "load('@bar_alias//:test.bzl', 'haha')",
+        "hoho = haha");
+    Path barDir = moduleRoot.getRelative("bar.2.0");
+    scratch.file(barDir.getRelative("WORKSPACE").getPathString());
+    scratch.file(barDir.getRelative("BUILD").getPathString());
+    scratch.file(barDir.getRelative("test.bzl").getPathString(), "haha = 5");
+
+    SkyKey skyKey = BzlLoadValue.keyForBzlmod(Label.parseAbsoluteUnchecked("@foo.1.0//:test.bzl"));
+    EvaluationResult<BzlLoadValue> result =
+        SkyframeExecutorTestUtils.evaluate(
+            getSkyframeExecutor(), skyKey, /*keepGoing=*/ false, reporter);
+
+    assertThatEvaluationResult(result).hasNoError();
+    assertThat(result.get(skyKey).getModule().getGlobals())
+        .containsEntry("hoho", StarlarkInt.of(5));
+    // Note that we're not testing the case of a non-registry override using @bazel_tools here, but
+    // that is incredibly hard to set up in a unit test. So we should just rely on integration tests
+    // for that.
+  }
+
+  @Test
+  public void testBuiltinsInjectionFailure() throws Exception {
+    setBuildLanguageOptions("--experimental_builtins_bzl_path=tools/builtins_staging");
+    scratch.file(
+        "tools/builtins_staging/exports.bzl",
+        "1 // 0  # <-- dynamic error",
+        "exported_toplevels = {}",
+        "exported_rules = {}",
+        "exported_to_java = {}");
+    scratch.file("pkg/BUILD");
+    scratch.file("pkg/foo.bzl");
+    reporter.removeHandler(failFastHandler);
+
+    SkyKey key = key("//pkg:foo.bzl");
+    EvaluationResult<BzlLoadValue> result =
+        SkyframeExecutorTestUtils.evaluate(
+            getSkyframeExecutor(), key, /*keepGoing=*/ false, reporter);
+
+    assertContainsEvent(
+        "File \"/workspace/tools/builtins_staging/exports.bzl\", line 1, column 3, in <toplevel>");
+    assertContainsEvent("Error: integer division by zero");
+    Exception ex = result.getError(key).getException();
+    assertThat(ex)
+        .hasMessageThat()
+        .contains(
+            "Internal error while loading Starlark builtins for //pkg:foo.bzl: Failed to load"
+                + " builtins sources: initialization of module 'exports.bzl' (internal) failed");
+  }
+
+  @Test
+  public void testErrorReadingBzlFileIsTransientWhenUsingASTInlining() throws Exception {
     CustomInMemoryFs fs = (CustomInMemoryFs) fileSystem;
     scratch.file("a/BUILD");
     fs.badPathForRead = scratch.file("a/a1.bzl", "doesntmatter");
@@ -448,17 +549,21 @@ public class BzlLoadFunctionTest extends BuildViewTestCase {
     @Nullable private Path badPathForStat;
     @Nullable private Path badPathForRead;
 
+    CustomInMemoryFs() {
+      super(DigestHashFunction.SHA256);
+    }
+
     @Override
-    public FileStatus statIfFound(Path path, boolean followSymlinks) throws IOException {
-      if (path.equals(badPathForStat)) {
+    public FileStatus statIfFound(PathFragment path, boolean followSymlinks) throws IOException {
+      if (badPathForStat != null && badPathForStat.asFragment().equals(path)) {
         throw new IOException("bad");
       }
       return super.statIfFound(path, followSymlinks);
     }
 
     @Override
-    protected InputStream getInputStream(Path path) throws IOException {
-      if (path.equals(badPathForRead)) {
+    protected InputStream getInputStream(PathFragment path) throws IOException {
+      if (badPathForRead != null && badPathForRead.asFragment().equals(path)) {
         throw new IOException("bad");
       }
       return super.getInputStream(path);

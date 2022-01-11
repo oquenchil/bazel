@@ -35,12 +35,13 @@ import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
 import com.google.devtools.build.lib.analysis.Runfiles;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
-import com.google.devtools.build.lib.analysis.config.HostTransition;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.analysis.config.ExecutionTransitionFactory;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.packages.ImplicitOutputsFunction.SafeImplicitOutputsFunction;
 import com.google.devtools.build.lib.packages.RuleClass;
 import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
+import com.google.devtools.build.lib.packages.RuleClass.ToolchainTransitionMode;
 import com.google.devtools.build.lib.packages.StarlarkProviderIdentifier;
 import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.rules.apple.AppleConfiguration;
@@ -51,7 +52,6 @@ import com.google.devtools.build.lib.rules.cpp.CcToolchain;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainProvider;
 import com.google.devtools.build.lib.rules.cpp.CppModuleMap.UmbrellaHeaderStrategy;
 import com.google.devtools.build.lib.rules.cpp.CppRuleClasses;
-import com.google.devtools.build.lib.rules.proto.ProtoSourceFileBlacklist;
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.FileTypeSet;
 
@@ -59,14 +59,6 @@ import com.google.devtools.build.lib.util.FileTypeSet;
  * Shared rule classes and associated utility code for Objective-C rules.
  */
 public class ObjcRuleClasses {
-
-  /**
-   * Name of the attribute used for implicit dependency on the libtool wrapper.
-   */
-  public static final String LIBTOOL_ATTRIBUTE = "$libtool";
-  /** Name of attribute used for implicit dependency on the apple SDKs. */
-  public static final String APPLE_SDK_ATTRIBUTE = ":apple_sdk";
-
   static final String LIPO = "lipo";
   static final String STRIP = "strip";
 
@@ -75,12 +67,12 @@ public class ObjcRuleClasses {
   }
 
   /**
-   * Creates and returns an {@link IntermediateArtifacts} object, using the given rule context
-   * for fetching current-rule attributes, and using the given build configuration to determine
-   * the appropriate output directory in which to root artifacts.
+   * Creates and returns an {@link IntermediateArtifacts} object, using the given rule context for
+   * fetching current-rule attributes, and using the given build configuration to determine the
+   * appropriate output directory in which to root artifacts.
    */
-  public static IntermediateArtifacts intermediateArtifacts(RuleContext ruleContext,
-      BuildConfiguration buildConfiguration) {
+  public static IntermediateArtifacts intermediateArtifacts(
+      RuleContext ruleContext, BuildConfigurationValue buildConfiguration) {
     return new IntermediateArtifacts(ruleContext, /*archiveFileNameSuffix*/ "",
         /*outputPrefix*/ "", buildConfiguration);
   }
@@ -144,7 +136,7 @@ public class ObjcRuleClasses {
   }
 
   /** Returns apple environment variables that are typically needed by the apple toolchain. */
-  static ImmutableMap<String, String> appleToolchainEnvironment(
+  private static ImmutableMap<String, String> appleToolchainEnvironment(
       XcodeConfigInfo xcodeConfigInfo, ApplePlatform targetPlatform) {
     return ImmutableMap.<String, String>builder()
         .putAll(
@@ -155,7 +147,7 @@ public class ObjcRuleClasses {
   }
 
   /** Creates a new spawn action builder that requires a darwin architecture to run. */
-  static SpawnAction.Builder spawnOnDarwinActionBuilder(XcodeConfigInfo xcodeConfigInfo) {
+  private static SpawnAction.Builder spawnOnDarwinActionBuilder(XcodeConfigInfo xcodeConfigInfo) {
     return new SpawnAction.Builder().setExecutionInfo(xcodeConfigInfo.getExecutionRequirements());
   }
 
@@ -261,9 +253,7 @@ public class ObjcRuleClasses {
     }
   }
 
-  /**
-   * Iff a file matches this type, it is considered to use C++.
-   */
+  /** Iff a file matches this type, it is considered to use C++. */
   static final FileType CPP_SOURCES = FileType.of(".cc", ".cpp", ".mm", ".cxx", ".C");
 
   static final FileType NON_CPP_SOURCES = FileType.of(".m", ".c");
@@ -323,6 +313,7 @@ public class ObjcRuleClasses {
               attr(CcToolchain.CC_TOOLCHAIN_TYPE_ATTRIBUTE_NAME, NODEP_LABEL)
                   .value(CppRuleClasses.ccToolchainTypeAttribute(env)))
           .addRequiredToolchains(ImmutableList.of(CppRuleClasses.ccToolchainTypeAttribute(env)))
+          .useToolchainTransition(ToolchainTransitionMode.ENABLED)
           .build();
     }
 
@@ -413,7 +404,7 @@ public class ObjcRuleClasses {
      * Rule class names for cc rules which are allowed as targets of the 'deps' attribute of this
      * rule.
      */
-    static final ImmutableSet<String> ALLOWED_CC_DEPS_RULE_CLASSES =
+    public static final ImmutableSet<String> ALLOWED_CC_DEPS_RULE_CLASSES =
         ImmutableSet.of("cc_library", "cc_inc_library");
 
     @Override
@@ -499,6 +490,10 @@ public class ObjcRuleClasses {
           all special symbols replaced by _, e.g. //foo/baz:bar can be imported as foo_baz_bar.
           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
           .add(attr("module_name", STRING))
+          /* <!-- #BLAZE_RULE($objc_compiling_rule).ATTRIBUTE(linkopts) -->
+          Extra flags to pass to the linker.
+          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
+          .add(attr("linkopts", STRING_LIST))
           .build();
     }
     @Override
@@ -507,36 +502,11 @@ public class ObjcRuleClasses {
           .name("$objc_compiling_rule")
           .type(RuleClassType.ABSTRACT)
           .ancestors(
-              BaseRuleClasses.RuleBase.class,
+              BaseRuleClasses.NativeActionCreatingRule.class,
               CompileDependencyRule.class,
               CoptsRule.class,
-              LibtoolRule.class,
               XcrunRule.class,
               CrosstoolRule.class)
-          .build();
-    }
-  }
-
-  /**
-   * Common attributes for {@code objc_*} rules that need to call libtool.
-   */
-  public static class LibtoolRule implements RuleDefinition {
-    @Override
-    public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment env) {
-      return builder
-          .add(
-              attr(LIBTOOL_ATTRIBUTE, LABEL)
-                  .cfg(HostTransition.createFactory())
-                  .exec()
-                  .value(env.getToolsLabel("//tools/objc:libtool")))
-          .build();
-    }
-    @Override
-    public Metadata getMetadata() {
-      return RuleDefinition.Metadata.builder()
-          .name("$objc_libtool_rule")
-          .type(RuleClassType.ABSTRACT)
-          .ancestors(XcrunRule.class)
           .build();
     }
   }
@@ -571,72 +541,10 @@ public class ObjcRuleClasses {
   }
 
   /**
-   * Protocol buffer related implicit attributes.
-   */
-  static final String PROTO_COMPILER_ATTR = "$googlemac_proto_compiler";
-  static final String PROTO_COMPILER_SUPPORT_ATTR = "$googlemac_proto_compiler_support";
-  static final String PROTO_LIB_ATTR = "$lib_protobuf";
-  static final String PROTOBUF_WELL_KNOWN_TYPES = "$protobuf_well_known_types";
-
-  /**
    * Template for the fat binary output (using Apple's "lipo" tool to combine binaries of multiple
    * architectures).
    */
-  static final SafeImplicitOutputsFunction LIPOBIN_OUTPUT = fromTemplates("%{name}_lipobin");
-
-  /**
-   * Common attributes for {@code objc_*} rules that link sources and dependencies.
-   */
-  public static class LinkingRule implements RuleDefinition {
-
-    private final ObjcProtoAspect objcProtoAspect;
-
-    public LinkingRule(ObjcProtoAspect objcProtoAspect) {
-      this.objcProtoAspect = objcProtoAspect;
-    }
-
-    @Override
-    public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment env) {
-      return builder
-          .add(
-              attr("$j2objc_dead_code_pruner", LABEL)
-                  .allowedFileTypes(FileType.of(".py"))
-                  .cfg(HostTransition.createFactory())
-                  .exec()
-                  .singleArtifact()
-                  .value(env.getToolsLabel("//tools/objc:j2objc_dead_code_pruner")))
-          .add(attr("$dummy_lib", LABEL).value(env.getToolsLabel("//tools/objc:dummy_lib")))
-          .add(
-              attr(PROTO_COMPILER_ATTR, LABEL)
-                  .allowedFileTypes(FileType.of(".sh"))
-                  .cfg(HostTransition.createFactory())
-                  .singleArtifact()
-                  .value(env.getToolsLabel("//tools/objc:protobuf_compiler_wrapper")))
-          .add(
-              attr(PROTO_COMPILER_SUPPORT_ATTR, LABEL)
-                  .legacyAllowAnyFileType()
-                  .cfg(HostTransition.createFactory())
-                  .value(env.getToolsLabel("//tools/objc:protobuf_compiler_support")))
-          .add(
-              ProtoSourceFileBlacklist.blacklistFilegroupAttribute(
-                  PROTOBUF_WELL_KNOWN_TYPES,
-                  ImmutableList.of(env.getToolsLabel("//tools/objc:protobuf_well_known_types"))))
-          .override(builder.copy("deps").aspect(objcProtoAspect))
-          /* <!-- #BLAZE_RULE($objc_linking_rule).ATTRIBUTE(linkopts) -->
-          Extra flags to pass to the linker.
-          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
-          .add(attr("linkopts", STRING_LIST))
-          .build();
-    }
-    @Override
-    public Metadata getMetadata() {
-      return RuleDefinition.Metadata.builder()
-          .name("$objc_linking_rule")
-          .type(RuleClassType.ABSTRACT)
-          .ancestors(CompilingRule.class)
-          .build();
-    }
-  }
+  public static final SafeImplicitOutputsFunction LIPOBIN_OUTPUT = fromTemplates("%{name}_lipobin");
 
   /**
    * Common attributes for apple rules that produce outputs for a given platform type (such as ios
@@ -708,13 +616,6 @@ public class ObjcRuleClasses {
    * type (such as ios or watchos).
    */
   public static class MultiArchPlatformRule implements RuleDefinition {
-
-    private final ObjcProtoAspect objcProtoAspect;
-
-    public MultiArchPlatformRule(ObjcProtoAspect objcProtoAspect) {
-      this.objcProtoAspect = objcProtoAspect;
-    }
-
     /**
      * Rule class names for cc rules which are allowed as targets of the 'deps' attribute of this
      * rule.
@@ -743,35 +644,27 @@ public class ObjcRuleClasses {
                   .allowedRuleClasses(ALLOWED_CC_DEPS_RULE_CLASSES)
                   .mandatoryProviders(ObjcProvider.STARLARK_CONSTRUCTOR.id())
                   .cfg(splitTransitionProvider)
-                  .aspect(objcProtoAspect)
                   .allowedFileTypes())
           /* <!-- #BLAZE_RULE($apple_multiarch_rule).ATTRIBUTE(linkopts) -->
           Extra flags to pass to the linker.
           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
           .add(attr("linkopts", STRING_LIST))
+          /* <!-- #BLAZE_RULE($apple_multiarch_rule).ATTRIBUTE(additional_linker_inputs) -->
+          Extra files to pass to the linker.
+          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
+          .add(
+              attr("additional_linker_inputs", LABEL_LIST)
+                  .orderIndependent()
+                  .direct_compile_time_input()
+                  .allowedFileTypes(FileTypeSet.ANY_FILE))
           .add(
               attr("$j2objc_dead_code_pruner", LABEL)
                   .allowedFileTypes(FileType.of(".py"))
-                  .cfg(HostTransition.createFactory())
+                  .cfg(ExecutionTransitionFactory.create())
                   .exec()
                   .singleArtifact()
                   .value(env.getToolsLabel("//tools/objc:j2objc_dead_code_pruner")))
           .add(attr("$dummy_lib", LABEL).value(env.getToolsLabel("//tools/objc:dummy_lib")))
-          .add(
-              attr(PROTO_COMPILER_ATTR, LABEL)
-                  .allowedFileTypes(FileType.of(".sh"))
-                  .cfg(HostTransition.createFactory())
-                  .singleArtifact()
-                  .value(env.getToolsLabel("//tools/objc:protobuf_compiler_wrapper")))
-          .add(
-              attr(PROTO_COMPILER_SUPPORT_ATTR, LABEL)
-                  .legacyAllowAnyFileType()
-                  .cfg(HostTransition.createFactory())
-                  .value(env.getToolsLabel("//tools/objc:protobuf_compiler_support")))
-          .add(
-              ProtoSourceFileBlacklist.blacklistFilegroupAttribute(
-                  PROTOBUF_WELL_KNOWN_TYPES,
-                  ImmutableList.of(env.getToolsLabel("//tools/objc:protobuf_well_known_types"))))
           .build();
     }
 
@@ -783,11 +676,10 @@ public class ObjcRuleClasses {
           .ancestors(
               PlatformRule.class,
               CrosstoolRule.class,
-              BaseRuleClasses.RuleBase.class,
+              BaseRuleClasses.NativeActionCreatingRule.class,
               CppRuleClasses.CcIncludeScanningRule.class,
               XcrunRule.class,
-              SdkFrameworksDependerRule.class,
-              LibtoolRule.class)
+              SdkFrameworksDependerRule.class)
           .build();
     }
   }
@@ -796,13 +688,6 @@ public class ObjcRuleClasses {
    * Common attributes for apple rules that can depend on one or more dynamic libraries.
    */
   public static class DylibDependingRule implements RuleDefinition {
-
-    private final ObjcProtoAspect objcProtoAspect;
-
-    public DylibDependingRule(ObjcProtoAspect objcProtoAspect) {
-      this.objcProtoAspect = objcProtoAspect;
-    }
-
     /**
      * Attribute name for dylib dependencies.
      */
@@ -824,8 +709,7 @@ public class ObjcRuleClasses {
                       ImmutableList.of(
                           StarlarkProviderIdentifier.forKey(
                               AppleDynamicFrameworkInfo.STARLARK_CONSTRUCTOR.getKey())))
-                  .allowedFileTypes()
-                  .aspect(objcProtoAspect))
+                  .allowedFileTypes())
           .build();
     }
 
@@ -847,7 +731,7 @@ public class ObjcRuleClasses {
       return builder
           .add(
               attr("$xcrunwrapper", LABEL)
-                  .cfg(HostTransition.createFactory())
+                  .cfg(ExecutionTransitionFactory.create())
                   .exec()
                   .value(env.getToolsLabel("//tools/objc:xcrunwrapper")))
           .build();

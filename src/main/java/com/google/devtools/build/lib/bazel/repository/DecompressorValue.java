@@ -16,13 +16,13 @@ package com.google.devtools.build.lib.bazel.repository;
 
 import com.google.common.base.Optional;
 import com.google.devtools.build.lib.rules.repository.RepositoryFunction.RepositoryFunctionException;
-import com.google.devtools.build.lib.syntax.EvalException;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
 import com.google.devtools.build.skyframe.SkyValue;
 import java.io.IOException;
 import java.util.Set;
+import net.starlark.java.eval.Starlark;
 
 /**
  * The contents of decompressed archive.
@@ -57,16 +57,10 @@ public class DecompressorValue implements SkyValue {
         return error + suggestion + suggestionBody;
       }
 
-      private static boolean isValidPrefixSuggestion(PathFragment pathFragment) {
-        return pathFragment.segmentCount() > 1;
-      }
-
       public static Optional<String> maybeMakePrefixSuggestion(PathFragment pathFragment) {
-        if (isValidPrefixSuggestion(pathFragment)) {
-          return Optional.of(pathFragment.getSegment(0));
-        } else {
-          return Optional.absent();
-        }
+        return pathFragment.isMultiSegment()
+            ? Optional.of(pathFragment.getSegment(0))
+            : Optional.absent();
       }
     }
 
@@ -98,7 +92,10 @@ public class DecompressorValue implements SkyValue {
   static Decompressor getDecompressor(Path archivePath)
       throws RepositoryFunctionException {
     String baseName = archivePath.getBaseName();
-    if (baseName.endsWith(".zip") || baseName.endsWith(".jar") || baseName.endsWith(".war")) {
+    if (baseName.endsWith(".zip")
+        || baseName.endsWith(".jar")
+        || baseName.endsWith(".war")
+        || baseName.endsWith(".aar")) {
       return ZipDecompressor.INSTANCE;
     } else if (baseName.endsWith(".tar")) {
       return TarFunction.INSTANCE;
@@ -110,12 +107,10 @@ public class DecompressorValue implements SkyValue {
       return TarBz2Function.INSTANCE;
     } else {
       throw new RepositoryFunctionException(
-          new EvalException(
-              null,
-              String.format(
-                  "Expected a file with a .zip, .jar, .war, .tar, .tar.gz, .tgz, .tar.xz, .txz, or "
-                      + ".tar.bz2 suffix (got %s)",
-                  archivePath)),
+          Starlark.errorf(
+              "Expected a file with a .zip, .jar, .war, .aar, .tar, .tar.gz, .tgz, .tar.xz, .txz, "
+                  + "or .tar.bz2 suffix (got %s)",
+              archivePath),
           Transience.PERSISTENT);
     }
   }

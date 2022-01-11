@@ -21,7 +21,7 @@ import com.google.common.base.Predicates;
 import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.packages.Attribute;
 import com.google.devtools.build.lib.packages.Attribute.StarlarkComputedDefaultTemplate;
 import com.google.devtools.build.lib.packages.BuildType;
@@ -41,6 +41,7 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import net.starlark.java.eval.StarlarkInt;
 
 /**
  * Info item for the build language. It is deprecated, it still works, when explicitly requested,
@@ -54,7 +55,8 @@ public final class BuildLanguageInfoItem extends InfoItem {
   }
 
   @Override
-  public byte[] get(Supplier<BuildConfiguration> configurationSupplier, CommandEnvironment env) {
+  public byte[] get(
+      Supplier<BuildConfigurationValue> configurationSupplier, CommandEnvironment env) {
     checkNotNull(env);
     return print(getBuildLanguageDefinition(env.getRuntime().getRuleClassProvider()));
   }
@@ -118,8 +120,7 @@ public final class BuildLanguageInfoItem extends InfoItem {
       for (Map.Entry<?, ?> entry : ((Map<?, ?>) v).entrySet()) {
         b.addDictBuilder()
             .setKey(entry.getKey().toString())
-            .setValue(convertAttrValue(dictType.getValueType(), entry.getValue()))
-            .build();
+            .setValue(convertAttrValue(dictType.getValueType(), entry.getValue()));
       }
     } else if (v instanceof List) {
       for (Object elem : (List<?>) v) {
@@ -134,7 +135,7 @@ public final class BuildLanguageInfoItem extends InfoItem {
     } else if (t == Type.STRING) {
       b.setString((String) v);
     } else if (t == Type.INTEGER) {
-      b.setInt((Integer) v);
+      b.setInt(((StarlarkInt) v).toIntUnchecked());
     } else if (t == Type.BOOLEAN) {
       b.setBool((Boolean) v);
     } else if (t == BuildType.TRISTATE) {

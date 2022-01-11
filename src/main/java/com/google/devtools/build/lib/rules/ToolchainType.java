@@ -26,6 +26,7 @@ import com.google.devtools.build.lib.analysis.Runfiles;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
 import com.google.devtools.build.lib.analysis.platform.ToolchainTypeInfo;
 import com.google.devtools.build.lib.packages.RuleClass;
+import com.google.devtools.build.lib.packages.RuleClass.ToolchainResolutionMode;
 
 /**
  * Implementation of {@code toolchain_type}.
@@ -34,7 +35,7 @@ public class ToolchainType implements RuleConfiguredTargetFactory {
 
   @Override
   public ConfiguredTarget create(RuleContext ruleContext)
-      throws ActionConflictException {
+      throws ActionConflictException, InterruptedException {
 
     ToolchainTypeInfo toolchainTypeInfo = ToolchainTypeInfo.create(ruleContext.getLabel());
 
@@ -50,7 +51,8 @@ public class ToolchainType implements RuleConfiguredTargetFactory {
     @Override
     public RuleClass build(RuleClass.Builder builder, RuleDefinitionEnvironment environment) {
       return builder
-          .useToolchainResolution(false)
+          .useToolchainResolution(ToolchainResolutionMode.DISABLED)
+          .advertiseStarlarkProvider(ToolchainTypeInfo.PROVIDER.id())
           .removeAttribute("licenses")
           .removeAttribute("distribs")
           .build();
@@ -61,12 +63,12 @@ public class ToolchainType implements RuleConfiguredTargetFactory {
       return Metadata.builder()
           .name("toolchain_type")
           .factoryClass(ToolchainType.class)
-          .ancestors(BaseRuleClasses.BaseRule.class)
+          .ancestors(BaseRuleClasses.NativeBuildRule.class)
           .build();
     }
   }
 }
-/*<!-- #BLAZE_RULE (NAME = toolchain_type, TYPE = OTHER, FAMILY = Platform)[GENERIC_RULE] -->
+/*<!-- #BLAZE_RULE (NAME = toolchain_type, FAMILY = Platform)[GENERIC_RULE] -->
 
 <p>
   This rule defines a new type of toolchain -- a simple target that represents a class of tools that

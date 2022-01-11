@@ -16,10 +16,12 @@ package com.google.devtools.build.lib.skyframe;
 import static com.google.common.base.Preconditions.checkArgument;
 
 import com.google.common.collect.Interner;
+import com.google.devtools.build.lib.actions.ActionLookupKey;
 import com.google.devtools.build.lib.actions.ActionLookupValue;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.concurrent.BlazeInterners;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
+import com.google.devtools.build.lib.skyframe.serialization.autocodec.SerializationConstant;
 import com.google.devtools.build.skyframe.AbstractSkyKey;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyValue;
@@ -29,12 +31,12 @@ import com.google.devtools.build.skyframe.SkyValue;
  * action conflict issues.
  */
 public class ActionLookupConflictFindingValue implements SkyValue {
-  @AutoCodec
+  @SerializationConstant
   static final ActionLookupConflictFindingValue INSTANCE = new ActionLookupConflictFindingValue();
 
   private ActionLookupConflictFindingValue() {}
 
-  public static Key key(ActionLookupValue.ActionLookupKey lookupKey) {
+  public static Key key(ActionLookupKey lookupKey) {
     return Key.create(lookupKey);
   }
 
@@ -46,16 +48,16 @@ public class ActionLookupConflictFindingValue implements SkyValue {
 
   @AutoCodec.VisibleForSerialization
   @AutoCodec
-  static class Key extends AbstractSkyKey<ActionLookupValue.ActionLookupKey> {
+  static class Key extends AbstractSkyKey<ActionLookupKey> {
     private static final Interner<Key> interner = BlazeInterners.newWeakInterner();
 
-    private Key(ActionLookupValue.ActionLookupKey arg) {
+    private Key(ActionLookupKey arg) {
       super(arg);
     }
 
     @AutoCodec.VisibleForSerialization
     @AutoCodec.Instantiator
-    static Key create(ActionLookupValue.ActionLookupKey arg) {
+    static Key create(ActionLookupKey arg) {
       return interner.intern(new Key(arg));
     }
 

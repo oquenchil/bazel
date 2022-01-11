@@ -22,6 +22,7 @@ import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.packages.Package;
 import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.skyframe.AbstractSkyKey;
+import com.google.devtools.build.skyframe.CPUHeavySkyKey;
 import com.google.devtools.build.skyframe.NotComparableSkyValue;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
@@ -56,14 +57,13 @@ public class PackageValue implements NotComparableSkyValue {
   }
 
   public static Key key(PackageIdentifier pkgIdentifier) {
-    Preconditions.checkArgument(!pkgIdentifier.getRepository().isDefault());
     return Key.create(pkgIdentifier);
   }
 
   /** Skyframe key for packages */
   @AutoCodec.VisibleForSerialization
   @AutoCodec
-  public static class Key extends AbstractSkyKey<PackageIdentifier> {
+  public static class Key extends AbstractSkyKey<PackageIdentifier> implements CPUHeavySkyKey {
     private static final Interner<Key> interner = BlazeInterners.newWeakInterner();
 
     private Key(PackageIdentifier arg) {

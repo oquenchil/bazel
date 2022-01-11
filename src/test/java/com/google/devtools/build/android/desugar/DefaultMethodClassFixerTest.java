@@ -23,6 +23,7 @@ import com.google.devtools.build.android.desugar.io.CoreLibraryRewriter;
 import com.google.devtools.build.android.desugar.io.HeaderClassLoader;
 import com.google.devtools.build.android.desugar.io.IndexedInputs;
 import com.google.devtools.build.android.desugar.io.ThrowingClassLoader;
+import com.google.devtools.build.android.r8.DependencyCollector;
 import java.io.File;
 import java.io.IOException;
 import java.io.Serializable;
@@ -140,13 +141,13 @@ public class DefaultMethodClassFixerTest {
       byte[] classContent) {
     ClassReader reader = new ClassReader(classContent);
     reader.accept(
-        new ClassVisitor(Opcodes.ASM5) {
+        new ClassVisitor(Opcodes.ASM8) {
 
           class ClinitMethod extends MethodNode {
 
             public ClinitMethod(
                 int access, String name, String desc, String signature, String[] exceptions) {
-              super(Opcodes.ASM5, access, name, desc, signature, exceptions);
+              super(Opcodes.ASM8, access, name, desc, signature, exceptions);
             }
           }
 

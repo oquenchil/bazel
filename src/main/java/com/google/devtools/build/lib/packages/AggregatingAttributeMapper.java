@@ -13,25 +13,29 @@
 // limitations under the License.
 package com.google.devtools.build.lib.packages;
 
-import com.google.common.base.Preconditions;
-import com.google.common.base.Verify;
+import static com.google.common.base.Preconditions.checkArgument;
+
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
+import com.google.common.collect.Maps;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.CollectionUtils;
 import com.google.devtools.build.lib.packages.Attribute.ComputationLimiter;
+import com.google.devtools.build.lib.packages.Attribute.ComputedDefault;
 import com.google.devtools.build.lib.packages.BuildType.Selector;
 import com.google.devtools.build.lib.packages.BuildType.SelectorList;
 import com.google.devtools.build.lib.packages.Type.LabelClass;
 import com.google.devtools.build.lib.packages.Type.ListType;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.Nullable;
@@ -41,12 +45,9 @@ import javax.annotation.Nullable;
  * values an attribute might take.
  */
 public class AggregatingAttributeMapper extends AbstractAttributeMapper {
-  private final Rule rule;
 
   private AggregatingAttributeMapper(Rule rule) {
-    super(rule.getPackage(), rule.getRuleClassObject(), rule.getLabel(),
-        rule.getAttributeContainer());
-    this.rule = rule;
+    super(rule);
   }
 
   public static AggregatingAttributeMapper of(Rule rule) {
@@ -69,38 +70,74 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
    * {@link #visitAttribute}'s documentation. So we want to avoid that code path when possible.
    */
   @Override
-  protected void visitLabels(Attribute attribute, Type.LabelVisitor<Attribute> visitor) {
-    visitLabels(attribute, true, visitor);
+  <T> void visitLabels(Attribute attribute, Type<T> type, Type.LabelVisitor visitor) {
+    visitLabels(attribute, type, /*includeSelectKeys=*/ true, visitor);
   }
 
-  private void visitLabels(
-      Attribute attribute, boolean includeSelectKeys, Type.LabelVisitor<Attribute> visitor) {
-    Type<?> type = attribute.getType();
-    SelectorList<?> selectorList = getSelectorList(attribute.getName(), type);
-    if (selectorList == null) {
-      if (type.getLabelClass().equals(LabelClass.NONE)) {
-        return; // Skip non-label attributes for performance.
-      }
-      if (getComputedDefault(attribute.getName(), attribute.getType()) != null) {
-        // Computed defaults are a special pain: we have no choice but to iterate through their
-        // (computed) values and look for labels.
-        for (Object value : visitAttribute(attribute.getName(), attribute.getType())) {
-          if (value != null) {
-            type.visitLabels(visitor, value, attribute);
-          }
+  @SuppressWarnings("unchecked")
+  private <T> void visitLabels(
+      Attribute attribute, Type<T> type, boolean includeSelectKeys, Type.LabelVisitor visitor) {
+    String name = attribute.getName();
+
+    // The only way for LabelClass.NONE to contain labels is in select keys.
+    if (type.getLabelClass() == LabelClass.NONE) {
+      if (includeSelectKeys && attribute.isConfigurable()) {
+        SelectorList<T> selectorList = getSelectorList(name, type);
+        if (selectorList != null) {
+          visitLabelsInSelect(
+              selectorList,
+              attribute,
+              type,
+              visitor,
+              /*includeKeys=*/ true,
+              /*includeValues=*/ false);
         }
-      } else {
-        super.visitLabels(attribute, visitor);
+      }
+      return;
+    }
+
+    Object rawVal = rule.getAttr(name, type);
+    if (rawVal instanceof SelectorList) {
+      visitLabelsInSelect(
+          (SelectorList<T>) rawVal,
+          attribute,
+          type,
+          visitor,
+          includeSelectKeys,
+          /*includeValues=*/ true);
+    } else if (rawVal instanceof ComputedDefault) {
+      // Computed defaults are a special pain: we have no choice but to iterate through their
+      // (computed) values and look for labels.
+      for (T value : ((ComputedDefault) rawVal).getPossibleValues(type, rule)) {
+        if (value != null) {
+          type.visitLabels(visitor, value, attribute);
+        }
       }
     } else {
-      for (Selector<?> selector : selectorList.getSelectors()) {
-        for (Map.Entry<Label, ?> selectorEntry : selector.getEntries().entrySet()) {
-          if (includeSelectKeys && !BuildType.Selector.isReservedLabel(selectorEntry.getKey())) {
-            visitor.visit(selectorEntry.getKey(), attribute);
-          }
-          Object value = selector.isValueSet(selectorEntry.getKey())
-              ? selectorEntry.getValue()
-              : attribute.getDefaultValue(null);
+      T value = getFromRawAttributeValue(rawVal, name, type);
+      if (value != null) {
+        type.visitLabels(visitor, value, attribute);
+      }
+    }
+  }
+
+  private static <T> void visitLabelsInSelect(
+      SelectorList<T> selectorList,
+      Attribute attribute,
+      Type<T> type,
+      Type.LabelVisitor visitor,
+      boolean includeKeys,
+      boolean includeValues) {
+    for (Selector<T> selector : selectorList.getSelectors()) {
+      for (Map.Entry<Label, T> selectorEntry : selector.getEntries().entrySet()) {
+        if (includeKeys && !Selector.isReservedLabel(selectorEntry.getKey())) {
+          visitor.visit(selectorEntry.getKey(), attribute);
+        }
+        if (includeValues) {
+          T value =
+              selector.isValueSet(selectorEntry.getKey())
+                  ? selectorEntry.getValue()
+                  : type.cast(attribute.getDefaultValue(null));
           type.visitLabels(visitor, value, attribute);
         }
       }
@@ -110,79 +147,93 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
   /**
    * Returns all labels reachable via the given attribute, with duplicate instances removed.
    *
-   * <p>Use this interface over @link #visitAttribute} whenever possible, since the latter has
+   * <p>Use this interface over {@link #visitAttribute} whenever possible, since the latter has
    * efficiency problems discussed in that method's documentation.
    *
    * @param includeSelectKeys whether to include config_setting keys for configurable attributes
    */
-  public Set<Label> getReachableLabels(String attributeName, boolean includeSelectKeys) {
-    final ImmutableSet.Builder<Label> builder = ImmutableSet.<Label>builder();
+  public ImmutableSet<Label> getReachableLabels(String attributeName, boolean includeSelectKeys) {
+    Attribute attribute = getAttributeDefinition(attributeName);
+    ImmutableSet.Builder<Label> builder = ImmutableSet.builder();
     visitLabels(
-        getAttributeDefinition(attributeName),
-        includeSelectKeys,
-        (label, attribute) -> builder.add(label));
+        attribute, attribute.getType(), includeSelectKeys, (label, attr) -> builder.add(label));
     return builder.build();
   }
 
+  /** Returns the labels that appear multiple times in the same attribute value. */
+  @SuppressWarnings("unchecked")
+  public Set<Label> checkForDuplicateLabels(Attribute attribute) {
+    Type<List<Label>> attrType = BuildType.LABEL_LIST;
+    checkArgument(attribute.getType() == attrType, "Not a label list type: %s", attribute);
+    String attrName = attribute.getName();
+    Object rawVal = rule.getAttr(attrName, attrType);
+
+    // Plain old attribute (no selects).
+    if (!(rawVal instanceof SelectorList)) {
+      return checkForDuplicateLabels(
+          visitRawNonConfigurableAttributeValue(rawVal, attrName, attrType));
+    }
+
+    List<Selector<List<Label>>> selectors = ((SelectorList<List<Label>>) rawVal).getSelectors();
+
+    // "attr = select({...})" with just a single select.
+    if (selectors.size() == 1) {
+      return checkForDuplicateLabels(selectors.get(0).getEntries().values());
+    }
+
+    // Multiple selects concatenated together. It's expensive to iterate over every possible
+    // permutation of values, so instead check for duplicates within a single select branch while
+    // also collecting all labels for a cross-select duplicate check at the end. This is overly
+    // strict, since this counts values present in mutually exclusive select branches. We can
+    // presumably relax this if necessary, but doing so would incur some of the expense this code
+    // path avoids.
+    ImmutableSet.Builder<Label> duplicates = null;
+    List<Label> combinedLabels = new ArrayList<>(); // Labels that appear across all selectors.
+    for (Selector<List<Label>> selector : selectors) {
+      // Labels within a single selector. It's okay for there to be duplicates as long as
+      // they're in different selector paths (since only one path can actually get chosen).
+      Set<Label> selectorLabels = new LinkedHashSet<>();
+      for (List<Label> labelsInSelectorValue : selector.getEntries().values()) {
+        // Duplicates within a single select branch are not okay.
+        duplicates = addDuplicateLabels(duplicates, labelsInSelectorValue);
+        selectorLabels.addAll(labelsInSelectorValue);
+      }
+      combinedLabels.addAll(selectorLabels);
+    }
+    duplicates = addDuplicateLabels(duplicates, combinedLabels);
+
+    return duplicates == null ? ImmutableSet.of() : duplicates.build();
+  }
+
+  private static Set<Label> checkForDuplicateLabels(Collection<List<Label>> possibleLabels) {
+    switch (possibleLabels.size()) {
+      case 0:
+        return ImmutableSet.of();
+      case 1:
+        List<Label> onlyPossibility =
+            possibleLabels instanceof List
+                ? ((List<List<Label>>) possibleLabels).get(0) // Avoid overhead of list iterator.
+                : possibleLabels.iterator().next();
+        return CollectionUtils.duplicatedElementsOf(onlyPossibility);
+      default:
+        ImmutableSet.Builder<Label> duplicates = null;
+        for (List<Label> labels : possibleLabels) {
+          duplicates = addDuplicateLabels(duplicates, labels);
+        }
+        return duplicates == null ? ImmutableSet.of() : duplicates.build();
+    }
+  }
+
   private static ImmutableSet.Builder<Label> addDuplicateLabels(
-      ImmutableSet.Builder<Label> builder, List<Label> labels) {
+      @Nullable ImmutableSet.Builder<Label> builder, List<Label> labels) {
     Set<Label> duplicates = CollectionUtils.duplicatedElementsOf(labels);
     if (duplicates.isEmpty()) {
       return builder;
     }
     if (builder == null) {
-      builder = ImmutableSet.builderWithExpectedSize(duplicates.size());
+      builder = ImmutableSet.builder();
     }
-    builder.addAll(duplicates);
-    return builder;
-  }
-
-  /**
-   * Returns the labels that might appear multiple times in the same attribute value.
-   */
-  public Set<Label> checkForDuplicateLabels(Attribute attribute) {
-    String attrName = attribute.getName();
-    Type<?> attrType = attribute.getType();
-    ImmutableSet.Builder<Label> duplicates = null;
-
-    SelectorList<?> selectorList = getSelectorList(attribute.getName(), attrType);
-    if (selectorList == null || selectorList.getSelectors().size() == 1) {
-      // Three possible scenarios:
-      //  1) Plain old attribute (no selects). Without selects, visitAttribute runs efficiently.
-      //  2) Computed default, possibly depending on other attributes using select. In this case,
-      //     visitAttribute might be inefficient. But we have no choice but to iterate over all
-      //     possible values (since we have to compute them), so we take the efficiency hit.
-      //  3) "attr = select({...})". With just a single select, visitAttribute runs efficiently.
-      for (Object value : visitAttribute(attrName, attrType)) {
-        if (value != null) {
-          // TODO(bazel-team): Calculate duplicates directly using attrType.visitLabels in order to
-          // avoid intermediate collections here.
-          duplicates = addDuplicateLabels(duplicates, extractLabels(attrType, value));
-        }
-      }
-    } else {
-      // Multiple selects concatenated together. It's expensive to iterate over every possible
-      // value, so instead collect all labels across all the selects and check for duplicates.
-      // This is overly strict, since this counts duplicates across values. We can presumably
-      // relax this if necessary, but doing so would incur the value iteration expense this
-      // code path avoids.
-      List<Label> combinedLabels = new LinkedList<>(); // Labels that appear across all selectors.
-      for (Selector<?> selector : selectorList.getSelectors()) {
-        // Labels within a single selector. It's okay for there to be duplicates as long as
-        // they're in different selector paths (since only one path can actually get chosen).
-        Set<Label> selectorLabels = new LinkedHashSet<>();
-        for (Object selectorValue : selector.getEntries().values()) {
-          List<Label> labelsInSelectorValue = extractLabels(attrType, selectorValue);
-          // Duplicates within a single path are not okay.
-          duplicates = addDuplicateLabels(duplicates, labelsInSelectorValue);
-          Iterables.addAll(selectorLabels, labelsInSelectorValue);
-        }
-        combinedLabels.addAll(selectorLabels);
-      }
-      duplicates = addDuplicateLabels(duplicates, combinedLabels);
-    }
-
-    return duplicates == null ? ImmutableSet.of() : duplicates.build();
+    return builder.addAll(duplicates);
   }
 
   /**
@@ -249,22 +300,38 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
    * whenever possible.
    */
   public <T> Iterable<T> visitAttribute(String attributeName, Type<T> type) {
+    return visitAttribute(attributeName, type, /*mayTreatMultipleAsNone=*/ false);
+  }
+
+  /**
+   * Specialization of {@link #visitAttribute(String, Type)} for query output formatters which need
+   * one attribute value or none at all. Should be used with the same care as its sibling method.
+   *
+   * @param mayTreatMultipleAsNone signals if attribute-value computation <b>may</b> be aborted if
+   *     more than one possible value is encountered. This parameter is respected on a best-effort
+   *     basis - multiple values may still be returned if an unoptimized code path is visited.
+   */
+  @SuppressWarnings("unchecked")
+  public <T> Iterable<T> visitAttribute(
+      String attributeName, Type<T> type, boolean mayTreatMultipleAsNone) {
+    Object rawVal = rule.getAttr(attributeName, type);
+
     // If this attribute value is configurable, visit all possible values.
-    SelectorList<T> selectorList = getSelectorList(attributeName, type);
-    if (selectorList != null) {
-      ImmutableList.Builder<T> builder = ImmutableList.builder();
-      visitConfigurableAttribute(selectorList.getSelectors(), new BoundSelectorPaths(), type,
-          null, builder);
-      return builder.build();
+    if (rawVal instanceof SelectorList) {
+      return getAllValues(((SelectorList<T>) rawVal).getSelectors(), type, mayTreatMultipleAsNone);
     }
 
+    return visitRawNonConfigurableAttributeValue(rawVal, attributeName, type);
+  }
+
+  private <T> List<T> visitRawNonConfigurableAttributeValue(
+      Object rawVal, String attributeName, Type<T> type) {
     // If this attribute is a computed default, feed it all possible value combinations of
     // its declared dependencies and return all computed results. For example, if this default
     // uses attributes x and y, x can configurably be x1 or x2, and y can configurably be y1
     // or y1, then compute default values for the (x1,y1), (x1,y2), (x2,y1), and (x2,y2) cases.
-    Attribute.ComputedDefault computedDefault = getComputedDefault(attributeName, type);
-    if (computedDefault != null) {
-      return computedDefault.getPossibleValues(type, rule);
+    if (rawVal instanceof Attribute.ComputedDefault) {
+      return ((Attribute.ComputedDefault) rawVal).getPossibleValues(type, rule);
     }
 
     if ("visibility".equals(attributeName) && type.equals(BuildType.NODEP_LABEL_LIST)) {
@@ -275,111 +342,8 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
     }
 
     // For any other attribute, just return its direct value.
-    T value = get(attributeName, type);
+    T value = getFromRawAttributeValue(rawVal, attributeName, type);
     return value == null ? ImmutableList.of() : ImmutableList.of(value);
-  }
-
-  /**
-   * Determines all possible values a configurable attribute can take. Do not call this method
-   * unless really necessary (see TODO comment inside).
-   *
-   * @param selectors the selectors that make up this attribute assignment (in order)
-   * @param boundSelectorPaths paths that have already been chosen from previous selectors in an
-   *     earlier recursive call of this method. For example, given
-   *     <pre>cmd = select({':a': 'w', ':b': 'x'}) + select({':a': 'y', ':b': 'z'})</pre>
-   *     the only possible values for <code>cmd</code> are <code>"wy"</code> and <code>"xz"</code>.
-   *     This is because the selects have the same conditions, so whatever matches the first also
-   *     matches the second. Note that this doesn't work for selects with overlapping but
-   *     <i>different</i> key sets. That's because of key specialization (see
-   *     {@link ConfiguredAttributeMapper} - if the
-   *     second select also included a condition <code>':c'</code> that includes both the flags
-   *     in <code>':a'</code> and <code>':b'</code>, <code>':c'</code> would be chosen over
-   *     them both.
-   * @param type the type of this attribute
-   * @param currentValueSoFar the partial value produced so far from earlier calls to this method
-   * @param valuesBuilder output container for full values this attribute can take
-   */
-  private <T> void visitConfigurableAttribute(List<Selector<T>> selectors,
-      BoundSelectorPaths boundSelectorPaths, Type<T> type, T currentValueSoFar,
-      ImmutableList.Builder<T> valuesBuilder) {
-    // TODO(bazel-team): minimize or eliminate uses of this interface. It necessarily grows
-    // exponentially with the number of selects in the attribute. Is that always necessary?
-    // For example, dependency resolution just needs to know every possible label an attribute
-    // might reference, but it doesn't need to know the exact combination of labels that make
-    // up a value. This may be even less important for non-label values (e.g. strings), which
-    // have no impact on the dependency structure.
-
-    if (selectors.isEmpty()) {
-      if (currentValueSoFar != null) {
-        // Null values arise when a None is used as the value of a Selector for a type without a
-        // default value.
-        // TODO(gregce): visitAttribute should probably convey that an unset attribute is possible.
-        // Therefore we need to actually handle null values here.
-        valuesBuilder.add(currentValueSoFar);
-      }
-    } else {
-      Selector<T> firstSelector = selectors.get(0);
-      List<Selector<T>> remainingSelectors = selectors.subList(1, selectors.size());
-
-      Map<Label, T> firstSelectorEntries = firstSelector.getEntries();
-      Label boundKey = boundSelectorPaths.getChosenKey(firstSelectorEntries.keySet());
-      if (boundKey != null) {
-        // If we've already followed some path from a previous selector with the same exact
-        // conditions as this one, we only need to visit that path (since the same key will
-        // match both selectors).
-        T boundValue = firstSelectorEntries.get(boundKey);
-        visitConfigurableAttribute(remainingSelectors, boundSelectorPaths, type,
-                    currentValueSoFar == null
-                        ? boundValue
-                        : type.concat(ImmutableList.of(currentValueSoFar, boundValue)),
-                    valuesBuilder);
-      } else {
-        // Otherwise, we need to iterate over all possible paths.
-        for (Map.Entry<Label, T> selectorBranch : firstSelectorEntries.entrySet()) {
-          // Bind this particular path for later selectors using the same conditions.
-          boundSelectorPaths.bind(firstSelectorEntries.keySet(), selectorBranch.getKey());
-          visitConfigurableAttribute(remainingSelectors, boundSelectorPaths, type,
-              currentValueSoFar == null
-                  ? selectorBranch.getValue()
-                  : type.concat(ImmutableList.of(currentValueSoFar, selectorBranch.getValue())),
-              valuesBuilder);
-          // Unbind the path (so when we pop back up the recursive stack we can rebind it to new
-          // values if we visit this selector again).
-          boundSelectorPaths.unbind(firstSelectorEntries.keySet());
-        }
-      }
-    }
-  }
-
-  /**
-   * Helper class for {@link #visitConfigurableAttribute}. See that method's comments for more
-   * details.
-   */
-  private static class BoundSelectorPaths {
-    private final Map<Set<Label>, Label> bindings = new HashMap<>();
-
-    /**
-     * Binds the given config key set to the specified path. There should be no previous binding
-     * for this key set.
-     */
-    public void bind(Set<Label> allKeys, Label chosenKey) {
-      Preconditions.checkState(allKeys.contains(chosenKey));
-      Verify.verify(bindings.put(allKeys, chosenKey) == null);
-    }
-
-    /**
-     * Unbinds the given config key set.
-     */
-    public void unbind(Set<Label> allKeys) {
-      Verify.verifyNotNull(bindings.remove(allKeys));
-    }
-
-    /**
-     * Returns the key this config key set is bound to or null if no binding.
-     */
-    public Label getChosenKey(Set<Label> allKeys) {
-      return bindings.get(allKeys);
-    }
   }
 
   /**
@@ -408,7 +372,7 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
     visitAttributesInner(
         attributes,
         depMaps,
-        new HashMap<String, Object>(attributes.size()),
+        Maps.newHashMapWithExpectedSize(attributes.size()),
         combinationsSoFar,
         limiter);
     return depMaps;
@@ -465,122 +429,172 @@ public class AggregatingAttributeMapper extends AbstractAttributeMapper {
    * configurable attribute that's not in {@code directMap} causes an {@link
    * IllegalArgumentException} to be thrown.
    */
-  AttributeMap createMapBackedAttributeMap(final Map<String, Object> directMap) {
-    final AggregatingAttributeMapper owner = AggregatingAttributeMapper.this;
-    return new AttributeMap() {
+  AttributeMap createMapBackedAttributeMap(Map<String, Object> directMap) {
+    AggregatingAttributeMapper owner = this;
+    return new DelegatingAttributeMapper(owner) {
 
       @Override
+      @Nullable
       public <T> T get(String attributeName, Type<T> type) {
         owner.checkType(attributeName, type);
         if (getNonConfigurableAttributes().contains(attributeName)) {
           return owner.get(attributeName, type);
         }
-        if (!directMap.containsKey(attributeName)) {
-          throw new IllegalArgumentException(
-              "attribute \""
-                  + attributeName
-                  + "\" isn't available in this computed default context");
+
+        Object val = directMap.get(attributeName);
+        if (val == null) {
+          checkArgument(
+              directMap.containsKey(attributeName),
+              "attribute \"%s\" isn't available in this computed default context",
+              attributeName);
+          return null;
         }
-        return type.cast(directMap.get(attributeName));
+        return type.cast(val);
       }
 
       @Override
-      public boolean isConfigurable(String attributeName) {
-        return owner.isConfigurable(attributeName);
-      }
-
-      @Override
-      public String getName() {
-        return owner.getName();
-      }
-
-      @Override
-      public Label getLabel() {
-        return owner.getLabel();
-      }
-
-      @Override
-      public String getRuleClassName() {
-        return owner.getRuleClassName();
-      }
-
-      @Override
-      public Iterable<String> getAttributeNames() {
-        return ImmutableList.<String>builder()
+      public ImmutableList<String> getAttributeNames() {
+        List<String> nonConfigurableAttributes = getNonConfigurableAttributes();
+        return ImmutableList.<String>builderWithExpectedSize(
+                directMap.size() + nonConfigurableAttributes.size())
             .addAll(directMap.keySet())
-            .addAll(getNonConfigurableAttributes())
+            .addAll(nonConfigurableAttributes)
             .build();
-      }
-
-      @Override
-      public Collection<DepEdge> visitLabels() throws InterruptedException {
-        return owner.visitLabels();
-      }
-
-      @Override
-      public Collection<DepEdge> visitLabels(Attribute attribute) throws InterruptedException {
-        return owner.visitLabels(attribute);
-      }
-
-      @Override
-      public String getPackageDefaultHdrsCheck() {
-        return owner.getPackageDefaultHdrsCheck();
-      }
-
-      @Override
-      public Boolean getPackageDefaultTestOnly() {
-        return owner.getPackageDefaultTestOnly();
-      }
-
-      @Override
-      public String getPackageDefaultDeprecation() {
-        return owner.getPackageDefaultDeprecation();
-      }
-
-      @Override
-      public ImmutableList<String> getPackageDefaultCopts() {
-        return owner.getPackageDefaultCopts();
-      }
-
-      @Nullable
-      @Override
-      public Type<?> getAttributeType(String attrName) {
-        return owner.getAttributeType(attrName);
-      }
-
-      @Nullable
-      @Override
-      public Attribute getAttributeDefinition(String attrName) {
-        return owner.getAttributeDefinition(attrName);
-      }
-
-      @Override
-      public boolean isAttributeValueExplicitlySpecified(String attributeName) {
-        return owner.isAttributeValueExplicitlySpecified(attributeName);
-      }
-
-      @Override
-      public boolean has(String attrName) {
-        return owner.has(attrName);
-      }
-
-      @Override
-      public <T> boolean has(String attrName, Type<T> type) {
-        return owner.has(attrName, type);
       }
     };
   }
 
-  private static ImmutableList<Label> extractLabels(Type<?> type, Object value) {
-    final ImmutableList.Builder<Label> result = ImmutableList.builder();
-    type.visitLabels(
-        (label, dummy) -> {
-          if (label != null) {
-            result.add(label);
+  /**
+   * Helper class for {@link #getAllValues}. Represents a node in the logical DAG of combinations of
+   * {@link Selector}s' values.
+   */
+  private static class ConfigurableAttrVisitationNode<T> {
+    /** Offset into the list of selectors being combined. */
+    private final int offset;
+    /** Key of the selector taken. */
+    private final Label boundKey;
+    /** Accumulated value through this node. */
+    private final T valueSoFar;
+
+    private ConfigurableAttrVisitationNode(int offset, Label boundKey, T valueSoFar) {
+      this.offset = offset;
+      this.boundKey = boundKey;
+      this.valueSoFar = valueSoFar;
+    }
+  }
+
+  /**
+   * Represents a path previously taken through a previous selector.
+   *
+   * <p>Used to short-circuit visitation when encountering selectors with <i>equivalent</i> key
+   * sets. See uses for details. Note that this optimization is not safe for overlapping but
+   * <i>different</i> keysets due to specialization (see {@link ConfiguredAttributeMapper}).
+   */
+  private static class BoundKeyAndOffset {
+    /** Key chosen from associated select. */
+    private final Label key;
+    /**
+     * Offset into the list of selectors where this key was bound. Used to determine when {@link
+     * #key} is safe to follow through equivalent selects.
+     */
+    private final int offset;
+
+    private BoundKeyAndOffset(Label key, int offset) {
+      this.key = key;
+      this.offset = offset;
+    }
+  }
+
+  /**
+   * Determines all possible values a configurable attribute can take. Do not call this method
+   * unless really necessary and avoid all new uses.
+   */
+  // TODO(bazel-team): minimize or eliminate uses of this interface. It necessarily grows
+  // exponentially with the number of selects in the attribute. Is that always necessary?
+  // For example, dependency resolution just needs to know every possible label an attribute
+  // might reference, but it doesn't need to know the exact combination of labels that make
+  // up a value. This may be even less important for non-label values (e.g. strings), which
+  // have no impact on the dependency structure.
+  private static <T> ImmutableList<T> getAllValues(
+      List<Selector<T>> selectors, Type<T> type, boolean mayTreatMultipleAsNone) {
+    if (selectors.isEmpty()) {
+      return ImmutableList.of();
+    }
+
+    if (selectors.size() == 1) {
+      // Optimize for common case.
+      return selectors.get(0).getEntries().values().stream()
+          .filter(Objects::nonNull)
+          .collect(ImmutableList.toImmutableList());
+    }
+
+    Deque<ConfigurableAttrVisitationNode<T>> nodes = new ArrayDeque<>();
+    // Track per selector key set when we started visiting a specific key.
+    Map<Set<Label>, BoundKeyAndOffset> boundKeysAndOffsets = new HashMap<>();
+    ImmutableList.Builder<T> result = ImmutableList.builder();
+
+    // Seed visitation.
+    for (Map.Entry<Label, T> root : selectors.get(0).getEntries().entrySet()) {
+      nodes.push(new ConfigurableAttrVisitationNode<>(0, root.getKey(), root.getValue()));
+    }
+
+    boolean foundResults = false;
+    while (!nodes.isEmpty()) {
+      ConfigurableAttrVisitationNode<T> node = nodes.pop();
+      int nextOffset = node.offset + 1;
+      if (nextOffset >= selectors.size()) {
+        // Null values arise when a None is used as the value of a Selector for a type without a
+        // default value.
+        if (node.valueSoFar != null) {
+          if (foundResults && mayTreatMultipleAsNone) {
+            // Caller wanted one value or none at all, this is the second, so bail.
+            return ImmutableList.of();
           }
-        },
-        value,
-        /*context=*/ null);
+          foundResults = true;
+
+          // TODO(gregce): visitAttribute should probably convey that an unset attribute is
+          //  possible. Therefore we need to actually handle null values here.
+          result.add(node.valueSoFar);
+        }
+        continue;
+      }
+
+      Map<Label, T> nextSelectorEntries = selectors.get(nextOffset).getEntries();
+      BoundKeyAndOffset boundKeyAndOffset = boundKeysAndOffsets.get(nextSelectorEntries.keySet());
+      if (boundKeyAndOffset != null && boundKeyAndOffset.offset < node.offset) {
+        // We've seen this select key set before along this path and chosen this key.
+        nodes.push(
+            new ConfigurableAttrVisitationNode<>(
+                nextOffset,
+                boundKeyAndOffset.key,
+                concat(type, node.valueSoFar, nextSelectorEntries.get(boundKeyAndOffset.key))));
+        continue;
+      }
+
+      Set<Label> currentKeys = selectors.get(node.offset).getEntries().keySet();
+      // Record that we've descended along node.boundKey starting at this offset.
+      boundKeysAndOffsets.put(currentKeys, new BoundKeyAndOffset(node.boundKey, node.offset));
+
+      if (currentKeys.equals(nextSelectorEntries.keySet())) {
+        nodes.push(
+            new ConfigurableAttrVisitationNode<>(
+                nextOffset,
+                node.boundKey,
+                concat(type, node.valueSoFar, nextSelectorEntries.get(node.boundKey))));
+        continue;
+      }
+
+      for (Map.Entry<Label, T> entry : nextSelectorEntries.entrySet()) {
+        nodes.push(
+            new ConfigurableAttrVisitationNode<>(
+                nextOffset, entry.getKey(), concat(type, node.valueSoFar, entry.getValue())));
+      }
+    }
+
     return result.build();
+  }
+
+  private static <T> T concat(Type<T> type, T lhs, T rhs) {
+    return type.concat(ImmutableList.of(lhs, rhs));
   }
 }

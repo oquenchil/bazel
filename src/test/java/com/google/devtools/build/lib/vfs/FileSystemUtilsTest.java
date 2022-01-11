@@ -27,7 +27,6 @@ import static java.nio.charset.StandardCharsets.ISO_8859_1;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.Assert.assertThrows;
 
-import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.testutil.BlazeTestUtils;
 import com.google.devtools.build.lib.testutil.ManualClock;
 import com.google.devtools.build.lib.vfs.FileSystemUtils.MoveResult;
@@ -54,7 +53,7 @@ public class FileSystemUtilsTest {
   @Before
   public final void initializeFileSystem() throws Exception  {
     clock = new ManualClock();
-    fileSystem = new InMemoryFileSystem(clock);
+    fileSystem = new InMemoryFileSystem(clock, DigestHashFunction.SHA256);
     workingDir = fileSystem.getPath("/workingDir");
     workingDir.createDirectory();
   }
@@ -194,7 +193,7 @@ public class FileSystemUtilsTest {
   }
 
   @Test
-  public void testRemoveExtension_Strings() throws Exception {
+  public void testRemoveExtension_strings() throws Exception {
     assertThat(removeExtension("foo.c")).isEqualTo("foo");
     assertThat(removeExtension("a/foo.c")).isEqualTo("a/foo");
     assertThat(removeExtension("a.b/foo")).isEqualTo("a.b/foo");
@@ -203,7 +202,7 @@ public class FileSystemUtilsTest {
   }
 
   @Test
-  public void testRemoveExtension_Paths() throws Exception {
+  public void testRemoveExtension_paths() throws Exception {
     assertPath("/foo", removeExtension(fileSystem.getPath("/foo.c")));
     assertPath("/a/foo", removeExtension(fileSystem.getPath("/a/foo.c")));
     assertPath("/a.b/foo", removeExtension(fileSystem.getPath("/a.b/foo")));
@@ -220,7 +219,7 @@ public class FileSystemUtilsTest {
   }
 
   @Test
-  public void testReplaceExtension_Path() throws Exception {
+  public void testReplaceExtension_path() throws Exception {
     assertPath("/foo/bar.baz",
                FileSystemUtils.replaceExtension(fileSystem.getPath("/foo/bar"), ".baz"));
     assertPath("/foo/bar.baz",
@@ -235,7 +234,7 @@ public class FileSystemUtilsTest {
   }
 
   @Test
-  public void testReplaceExtension_PathFragment() throws Exception {
+  public void testReplaceExtension_pathFragment() throws Exception {
     assertPath("foo/bar.baz",
                FileSystemUtils.replaceExtension(PathFragment.create("foo/bar"), ".baz"));
     assertPath("foo/bar.baz",
@@ -364,22 +363,11 @@ public class FileSystemUtilsTest {
 
   @Test
   public void testMoveFileAcrossDevices() throws Exception {
-    class MultipleDeviceFS extends InMemoryFileSystem {
-      @Override
-      public void renameTo(Path source, Path target) throws IOException {
-        if (!source.startsWith(target.asFragment().subFragment(0, 1))) {
-          throw new IOException("EXDEV");
-        }
-        super.renameTo(source, target);
-      }
-    }
     FileSystem fs = new MultipleDeviceFS();
-    Path dev1 = fs.getPath("/fs1");
-    dev1.createDirectory();
-    Path dev2 = fs.getPath("/fs2");
-    dev2.createDirectory();
-    Path source = dev1.getChild("source");
-    Path target = dev2.getChild("target");
+    Path source = fs.getPath("/fs1/source");
+    source.getParentDirectory().createDirectoryAndParents();
+    Path target = fs.getPath("/fs2/target");
+    target.getParentDirectory().createDirectoryAndParents();
 
     FileSystemUtils.writeContent(source, UTF_8, "hello, world");
     source.setLastModifiedTime(142);
@@ -390,10 +378,32 @@ public class FileSystemUtilsTest {
     assertThat(target.getLastModifiedTime()).isEqualTo(142);
 
     source.createSymbolicLink(PathFragment.create("link-target"));
+
     assertThat(FileSystemUtils.moveFile(source, target)).isEqualTo(MoveResult.FILE_COPIED);
+
     assertThat(source.exists(Symlinks.NOFOLLOW)).isFalse();
     assertThat(target.isSymbolicLink()).isTrue();
     assertThat(target.readSymbolicLink()).isEqualTo(PathFragment.create("link-target"));
+  }
+
+  @Test
+  public void testMoveFileFixPermissions() throws Exception {
+    FileSystem fs = new MultipleDeviceFS();
+    Path source = fs.getPath("/fs1/source");
+    source.getParentDirectory().createDirectoryAndParents();
+    Path target = fs.getPath("/fs2/target");
+    target.getParentDirectory().createDirectoryAndParents();
+
+    FileSystemUtils.writeContent(source, UTF_8, "linear-a");
+    source.setLastModifiedTime(142);
+    source.setReadable(false);
+
+    MoveResult moveResult = moveFile(source, target);
+
+    assertThat(moveResult).isEqualTo(MoveResult.FILE_COPIED);
+    assertThat(source.exists(Symlinks.NOFOLLOW)).isFalse();
+    assertThat(target.isFile(Symlinks.NOFOLLOW)).isTrue();
+    assertThat(FileSystemUtils.readContent(target, UTF_8)).isEqualTo("linear-a");
   }
 
   @Test
@@ -745,19 +755,16 @@ public class FileSystemUtilsTest {
   }
 
   @Test
-  public void testIterateLines() throws Exception {
+  public void testReadLines() throws Exception {
     Path file = fileSystem.getPath("/test.txt");
     FileSystemUtils.writeContent(file, ISO_8859_1, "a\nb");
-    assertThat(Lists.newArrayList(FileSystemUtils.iterateLinesAsLatin1(file)))
-        .isEqualTo(Arrays.asList("a", "b"));
+    assertThat(FileSystemUtils.readLinesAsLatin1(file)).containsExactly("a", "b").inOrder();
 
     FileSystemUtils.writeContent(file, ISO_8859_1, "a\rb");
-    assertThat(Lists.newArrayList(FileSystemUtils.iterateLinesAsLatin1(file)))
-        .isEqualTo(Arrays.asList("a", "b"));
+    assertThat(FileSystemUtils.readLinesAsLatin1(file)).containsExactly("a", "b").inOrder();
 
     FileSystemUtils.writeContent(file, ISO_8859_1, "a\r\nb");
-    assertThat(Lists.newArrayList(FileSystemUtils.iterateLinesAsLatin1(file)))
-        .isEqualTo(Arrays.asList("a", "b"));
+    assertThat(FileSystemUtils.readLinesAsLatin1(file)).containsExactly("a", "b").inOrder();
   }
 
   @Test
@@ -773,7 +780,7 @@ public class FileSystemUtilsTest {
   }
 
   @Test
-  public void testCreateHardLinkForFile_Success() throws Exception {
+  public void testCreateHardLinkForFile_success() throws Exception {
 
     /* Original file exists and link file does not exist */
     Path originalPath = workingDir.getRelative("original");
@@ -782,12 +789,12 @@ public class FileSystemUtilsTest {
     FileSystemUtils.createHardLink(linkPath, originalPath);
     assertThat(originalPath.exists()).isTrue();
     assertThat(linkPath.exists()).isTrue();
-    assertThat(fileSystem.stat(linkPath, false).getNodeId())
-        .isEqualTo(fileSystem.stat(originalPath, false).getNodeId());
+    assertThat(fileSystem.stat(linkPath.asFragment(), false).getNodeId())
+        .isEqualTo(fileSystem.stat(originalPath.asFragment(), false).getNodeId());
   }
 
   @Test
-  public void testCreateHardLinkForEmptyDirectory_Success() throws Exception {
+  public void testCreateHardLinkForEmptyDirectory_success() throws Exception {
 
     Path originalDir = workingDir.getRelative("originalDir");
     Path linkPath = workingDir.getRelative("link");
@@ -800,7 +807,7 @@ public class FileSystemUtilsTest {
   }
 
   @Test
-  public void testCreateHardLinkForNonEmptyDirectory_Success() throws Exception {
+  public void testCreateHardLinkForNonEmptyDirectory_success() throws Exception {
 
     /* Test when original path is a directory */
     Path originalDir = workingDir.getRelative("originalDir");
@@ -823,11 +830,25 @@ public class FileSystemUtilsTest {
     assertThat(linkPath1.exists()).isTrue();
     assertThat(linkPath2.exists()).isTrue();
     assertThat(linkPath3.exists()).isTrue();
-    assertThat(fileSystem.stat(linkPath1, false).getNodeId())
-        .isEqualTo(fileSystem.stat(originalPath1, false).getNodeId());
-    assertThat(fileSystem.stat(linkPath2, false).getNodeId())
-        .isEqualTo(fileSystem.stat(originalPath2, false).getNodeId());
-    assertThat(fileSystem.stat(linkPath3, false).getNodeId())
-        .isEqualTo(fileSystem.stat(originalPath3, false).getNodeId());
+    assertThat(fileSystem.stat(linkPath1.asFragment(), false).getNodeId())
+        .isEqualTo(fileSystem.stat(originalPath1.asFragment(), false).getNodeId());
+    assertThat(fileSystem.stat(linkPath2.asFragment(), false).getNodeId())
+        .isEqualTo(fileSystem.stat(originalPath2.asFragment(), false).getNodeId());
+    assertThat(fileSystem.stat(linkPath3.asFragment(), false).getNodeId())
+        .isEqualTo(fileSystem.stat(originalPath3.asFragment(), false).getNodeId());
+  }
+
+  static class MultipleDeviceFS extends InMemoryFileSystem {
+    MultipleDeviceFS() {
+      super(DigestHashFunction.SHA256);
+    }
+
+    @Override
+    public void renameTo(PathFragment source, PathFragment target) throws IOException {
+      if (!source.startsWith(target.subFragment(0, 1))) {
+        throw new IOException("EXDEV");
+      }
+      super.renameTo(source, target);
+    }
   }
 }

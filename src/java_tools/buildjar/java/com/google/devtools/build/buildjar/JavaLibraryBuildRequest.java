@@ -14,13 +14,16 @@
 
 package com.google.devtools.build.buildjar;
 
-import static com.google.common.base.MoreObjects.firstNonNull;
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.io.MoreFiles;
 import com.google.devtools.build.buildjar.instrumentation.JacocoInstrumentationProcessor;
 import com.google.devtools.build.buildjar.javac.BlazeJavacArguments;
 import com.google.devtools.build.buildjar.javac.JavacOptions;
@@ -28,6 +31,7 @@ import com.google.devtools.build.buildjar.javac.JavacOptions.FilteredJavacopts;
 import com.google.devtools.build.buildjar.javac.plugins.BlazeJavaCompilerPlugin;
 import com.google.devtools.build.buildjar.javac.plugins.dependency.DependencyModule;
 import com.google.devtools.build.buildjar.javac.plugins.processing.AnnotationProcessingModule;
+import com.google.protobuf.ByteString;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -35,6 +39,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalInt;
 import javax.annotation.Nullable;
 
 /** All the information needed to perform a single Java library build operation. */
@@ -87,6 +92,11 @@ public final class JavaLibraryBuildRequest {
   /** List of plugins that are given to javac. */
   private final ImmutableList<BlazeJavaCompilerPlugin> plugins;
 
+  /** Map of inputs' path and digest */
+  private final ImmutableMap<String, ByteString> inputsAndDigest;
+
+  private final OptionalInt requestId;
+
   /**
    * Constructs a build from a list of command args. Sets the same JavacRunner for both compilation
    * and annotation processing.
@@ -115,6 +125,26 @@ public final class JavaLibraryBuildRequest {
       List<BlazeJavaCompilerPlugin> extraPlugins,
       DependencyModule.Builder depsBuilder)
       throws InvalidCommandLineException, IOException {
+    this(optionsParser, extraPlugins, depsBuilder, ImmutableMap.of(), OptionalInt.empty());
+  }
+
+  /**
+   * Constructs a build from a list of command args. Sets the same JavacRunner for both compilation
+   * and annotation processing.
+   *
+   * @param optionsParser the parsed command line args.
+   * @param extraPlugins extraneous plugins to use in addition to the strict dependency module.
+   * @param depsBuilder a preconstructed dependency module builder.
+   * @param inputsAndDigest a map of inputs' paths and their digest
+   * @throws InvalidCommandLineException on any command line error
+   */
+  public JavaLibraryBuildRequest(
+      OptionsParser optionsParser,
+      List<BlazeJavaCompilerPlugin> extraPlugins,
+      DependencyModule.Builder depsBuilder,
+      ImmutableMap<String, ByteString> inputsAndDigest,
+      OptionalInt requestId)
+      throws InvalidCommandLineException, IOException {
     depsBuilder.setDirectJars(
         optionsParser.directJars().stream().map(Paths::get).collect(toImmutableSet()));
     if (optionsParser.getStrictJavaDeps() != null) {
@@ -133,11 +163,11 @@ public final class JavaLibraryBuildRequest {
       depsBuilder.setTargetLabel(optionsParser.getTargetLabel());
     }
     this.dependencyModule = depsBuilder.build();
+    this.sourceGenDir =
+        deriveDirectory(optionsParser.getTargetLabel(), optionsParser.getOutputJar(), "_sources");
 
     AnnotationProcessingModule.Builder processingBuilder = AnnotationProcessingModule.builder();
-    if (optionsParser.getSourceGenDir() != null) {
-      processingBuilder.setSourceGenDir(Paths.get(optionsParser.getSourceGenDir()));
-    }
+    processingBuilder.setSourceGenDir(sourceGenDir);
     if (optionsParser.getManifestProtoPath() != null) {
       processingBuilder.setManifestProtoPath(Paths.get(optionsParser.getManifestProtoPath()));
     }
@@ -162,10 +192,10 @@ public final class JavaLibraryBuildRequest {
     this.processorPath = asPaths(optionsParser.getProcessorPath());
     this.processorNames = optionsParser.getProcessorNames();
     this.builtinProcessorNames = ImmutableSet.copyOf(optionsParser.getBuiltinProcessorNames());
-    // Since the default behavior of this tool with no arguments is "rm -fr <classDir>", let's not
-    // default to ".", shall we?
-    this.classDir = asPath(firstNonNull(optionsParser.getClassDir(), "classes"));
-    this.tempDir = asPath(firstNonNull(optionsParser.getTempDir(), "_tmp"));
+    this.classDir =
+        deriveDirectory(optionsParser.getTargetLabel(), optionsParser.getOutputJar(), "_classes");
+    this.tempDir =
+        deriveDirectory(optionsParser.getTargetLabel(), optionsParser.getOutputJar(), "_tmp");
     this.outputJar = asPath(optionsParser.getOutputJar());
     this.nativeHeaderOutput = asPath(optionsParser.getNativeHeaderOutput());
     for (Map.Entry<String, List<String>> entry : optionsParser.getPostProcessors().entrySet()) {
@@ -179,11 +209,30 @@ public final class JavaLibraryBuildRequest {
       }
     }
     this.javacOpts = ImmutableList.copyOf(optionsParser.getJavacOpts());
-    this.sourceGenDir = asPath(optionsParser.getSourceGenDir());
     this.generatedSourcesOutputJar = asPath(optionsParser.getGeneratedSourcesOutputJar());
     this.generatedClassOutputJar = asPath(optionsParser.getManifestProtoPath());
     this.targetLabel = optionsParser.getTargetLabel();
     this.injectingRuleKind = optionsParser.getInjectingRuleKind();
+    this.inputsAndDigest = inputsAndDigest;
+    this.requestId = requestId;
+  }
+
+  /**
+   * Derive a temporary directory path based on the path to the output jar, to avoid breaking
+   * fragile assumptions made by the implementation of javahotswap.
+   */
+  // TODO(b/169793789): kill this with fire if javahotswap starts using jars instead of classes
+  @VisibleForTesting
+  static Path deriveDirectory(String label, String outputJar, String suffix) throws IOException {
+    checkArgument(label != null, "--target_label is required");
+    checkArgument(outputJar != null, "--output is required");
+    checkArgument(
+        label.contains(":"), "--target_label must be a canonical label (containing a `:`)");
+
+    Path path = Paths.get(outputJar);
+    String name = MoreFiles.getNameWithoutExtension(path);
+    String base = label.substring(label.lastIndexOf(':') + 1);
+    return path.resolveSibling("_javac").resolve(base).resolve(name + suffix);
   }
 
   private static ImmutableList<Path> asPaths(Collection<String> paths) {
@@ -298,6 +347,14 @@ public final class JavaLibraryBuildRequest {
     return plugins;
   }
 
+  public ImmutableMap<String, ByteString> getInputsAndDigest() {
+    return inputsAndDigest;
+  }
+
+  public OptionalInt getRequestId() {
+    return requestId;
+  }
+
   @Nullable
   public String getTargetLabel() {
     return targetLabel;
@@ -316,12 +373,13 @@ public final class JavaLibraryBuildRequest {
             .bootClassPath(getBootClassPath())
             .system(getSystem())
             .sourceFiles(ImmutableList.copyOf(getSourceFiles()))
-            .processors(null)
             .builtinProcessors(builtinProcessorNames)
             .sourcePath(getSourcePath())
             .sourceOutput(getSourceGenDir())
             .processorPath(getProcessorPath())
-            .plugins(getPlugins());
+            .plugins(getPlugins())
+            .inputsAndDigest(getInputsAndDigest())
+            .requestId(getRequestId());
     addJavacArguments(builder);
     // Performance optimization: when reduced classpaths are enabled, stop the compilation after
     // the first diagnostic that would result in fallback to the transitive classpath. The user

@@ -17,6 +17,7 @@ package com.google.devtools.build.lib.analysis;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Sets;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.compacthashset.CompactHashSet;
 import com.google.devtools.build.lib.packages.AttributeMap;
@@ -80,6 +81,7 @@ public abstract class Util {
   public static ImmutableSet<ConfiguredTargetKey> findImplicitDeps(RuleContext ruleContext) {
     Set<ConfiguredTargetKey> maybeImplicitDeps = CompactHashSet.create();
     Set<ConfiguredTargetKey> explicitDeps = CompactHashSet.create();
+    // Consider rule attribute dependencies.
     AttributeMap attributes = ruleContext.attributes();
     ListMultimap<String, ConfiguredTargetAndData> targetMap =
         ruleContext.getConfiguredTargetAndDataMap();
@@ -90,6 +92,31 @@ public abstract class Util {
           addLabelsAndConfigs(explicitDeps, attrValues);
         } else {
           addLabelsAndConfigs(maybeImplicitDeps, attrValues);
+        }
+      }
+    }
+    // Consider toolchain dependencies.
+    ToolchainContext toolchainContext = ruleContext.getToolchainContext();
+    if (toolchainContext != null) {
+      // This logic should stay up to date with the dep creation logic in
+      // DependencyResolver#partiallyResolveDependencies.
+      BuildConfigurationValue targetConfiguration = ruleContext.getConfiguration();
+      BuildConfigurationValue hostConfiguration = ruleContext.getHostConfiguration();
+      for (Label toolchain : toolchainContext.resolvedToolchainLabels()) {
+        if (DependencyResolver.shouldUseToolchainTransition(
+            targetConfiguration, ruleContext.getRule())) {
+          maybeImplicitDeps.add(
+              ConfiguredTargetKey.builder()
+                  .setLabel(toolchain)
+                  .setConfiguration(targetConfiguration)
+                  .setExecutionPlatformLabel(toolchainContext.executionPlatform().label())
+                  .build());
+        } else {
+          maybeImplicitDeps.add(
+              ConfiguredTargetKey.builder()
+                  .setLabel(toolchain)
+                  .setConfiguration(hostConfiguration)
+                  .build());
         }
       }
     }

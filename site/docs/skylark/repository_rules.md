@@ -1,8 +1,12 @@
 ---
 layout: documentation
 title: Repository rules
+category: extending
 ---
-# Repository rules
+# Repository Rules
+
+This page covers how to create repository rules and provides examples for
+more details.
 
 An [external repository](../external.md) is a rule that can be used only
 in the `WORKSPACE` file and enables non-hermetic operation at the loading phase
@@ -38,9 +42,16 @@ local_repository = repository_rule(
     attrs={"path": attr.string(mandatory=True)})
 ```
 
-`name` attributes are implicitly defined for all `repository_rule`s.
 To access an attribute, use `repository_ctx.attr.<attribute_name>`.
-The name of a repository rule is accessible with `repository_ctx.name`.
+
+All `repository_rule`s have implicitly defined attributes (just like build
+rules). The two implicit attributes are `name` (just like for build rules) and
+`repo_mapping`. The name of a repository rule is accessible with
+`repository_ctx.name`. The meaning of `repo_mapping` is the same as for the
+native repository rules
+[`local_repository`](https://docs.bazel.build/be/workspace.html#local_repository.repo_mapping)
+and
+[`new_local_repository`](https://docs.bazel.build/be/workspace.html#new_local_repository.repo_mapping).
 
 If an attribute name starts with `_` it is private and users cannot set it.
 
@@ -79,7 +90,7 @@ in the dependency graph (including the WORKSPACE file itself) will
 cause an execution of the implementation function.
 
 The implementation function can be _restarted_ if a dependency it
-request is _missing_. The beginning of the implementation function
+requests is _missing_. The beginning of the implementation function
 will be re-executed after the dependency has been resolved. To avoid
 unnecessary restarts (which are expensive, as network access might
 have to be repeated), label arguments are prefetched, provided all

@@ -1,13 +1,14 @@
 ---
 layout: documentation
 title: Starlark language
+category: extending
 ---
 
-# Starlark language
+# Starlark Language
 
 <!-- [TOC] -->
 
-The page is an overview of [Starlark](https://github.com/bazelbuild/starlark),
+This page is an overview of [Starlark](https://github.com/bazelbuild/starlark),
 formerly known as Skylark, the language used in Bazel. For a complete list of
 functions and types, check [Starlark's API reference](lib/skylark-overview.html).
 
@@ -96,7 +97,7 @@ definitions for constants, rules, macros, and functions.
 [Native functions](../be/functions.html) and [native rules](
 ../be/overview.html#language-specific-native-rules) are global symbols in
 `BUILD` files. `bzl` files need to load them using the [`native` module](
-https://docs.bazel.build/versions/master/skylark/lib/native.html).
+https://docs.bazel.build/versions/main/skylark/lib/native.html).
 
 There are two syntactic restrictions in `BUILD` files: 1) declaring functions is
 illegal, and 2) `*args` and `**kwargs` arguments are not allowed.
@@ -106,7 +107,7 @@ illegal, and 2) `*args` and `**kwargs` arguments are not allowed.
 * Global variables are immutable.
 
 * `for` statements are not allowed at the top-level. Use them within functions
-  instead. In BUILD files, you may use list comprehensions.
+  instead. In `BUILD` files, you may use list comprehensions.
 
 * `if` statements are not allowed at the top-level. However, `if` expressions
   can be used: `first = data[0] if len(data) > 0 else None`.

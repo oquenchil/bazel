@@ -13,16 +13,15 @@
 // limitations under the License.
 package com.google.devtools.build.lib.analysis;
 
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.packages.Attribute;
-import com.google.devtools.build.lib.packages.RuleErrorConsumer;
-import com.google.devtools.build.lib.syntax.Location;
+import net.starlark.java.syntax.Location;
 
 /**
  * Base class for implementations of {@link
- * com.google.devtools.build.lib.packages.RuleErrorConsumer}.
+ * com.google.devtools.build.lib.analysis.RuleErrorConsumer}.
  *
  * <p>Do not create new implementations of this class - instead, use {@link RuleContext} in Native
  * rule definitions, and {@link StarlarkErrorReporter} in Starlark API definitions. For use in
@@ -106,7 +105,7 @@ public abstract class EventHandlingErrorReporter implements RuleErrorConsumer {
 
   protected abstract Label getLabel();
 
-  protected abstract BuildConfiguration getConfiguration();
+  protected abstract BuildConfigurationValue getConfiguration();
 
   protected abstract Location getRuleLocation();
 }

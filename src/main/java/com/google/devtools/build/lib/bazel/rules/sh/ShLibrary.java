@@ -21,11 +21,9 @@ import com.google.devtools.build.lib.analysis.RuleConfiguredTargetFactory;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.Runfiles;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
-import com.google.devtools.build.lib.analysis.TransitionMode;
 import com.google.devtools.build.lib.analysis.test.InstrumentedFilesCollector;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
-import com.google.devtools.build.lib.collect.nestedset.Order;
 
 /**
  * Implementation for the sh_library rule.
@@ -37,9 +35,9 @@ public class ShLibrary implements RuleConfiguredTargetFactory {
       throws InterruptedException, RuleErrorException, ActionConflictException {
     NestedSet<Artifact> filesToBuild =
         NestedSetBuilder.<Artifact>stableOrder()
-            .addAll(ruleContext.getPrerequisiteArtifacts("srcs", TransitionMode.TARGET).list())
-            .addAll(ruleContext.getPrerequisiteArtifacts("deps", TransitionMode.TARGET).list())
-            .addAll(ruleContext.getPrerequisiteArtifacts("data", TransitionMode.DONT_CHECK).list())
+            .addAll(ruleContext.getPrerequisiteArtifacts("srcs").list())
+            .addAll(ruleContext.getPrerequisiteArtifacts("deps").list())
+            .addAll(ruleContext.getPrerequisiteArtifacts("data").list())
             .build();
     Runfiles runfiles =
         new Runfiles.Builder(
@@ -52,10 +50,7 @@ public class ShLibrary implements RuleConfiguredTargetFactory {
         .setFilesToBuild(filesToBuild)
         .addProvider(RunfilesProvider.class, RunfilesProvider.simple(runfiles))
         .addNativeDeclaredProvider(
-            InstrumentedFilesCollector.collectTransitive(
-                ruleContext,
-                ShCoverage.INSTRUMENTATION_SPEC,
-                /* reportedToActualSources= */ NestedSetBuilder.emptySet(Order.STABLE_ORDER)))
+            InstrumentedFilesCollector.collect(ruleContext, ShCoverage.INSTRUMENTATION_SPEC))
         .build();
   }
 }

@@ -20,7 +20,6 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.io.Files;
 import com.google.devtools.build.lib.bazel.Bazel;
 import com.google.devtools.build.lib.bazel.rules.BazelRuleClassProvider;
-import com.google.devtools.build.lib.packages.util.DocumentationTestUtil;
 import com.google.devtools.build.runfiles.Runfiles;
 import java.io.File;
 import org.junit.Test;
@@ -32,9 +31,10 @@ import org.junit.runners.JUnit4;
  */
 @RunWith(JUnit4.class)
 public class BazelDocumentationTest {
+
   /**
    * Checks that the user-manual is in sync with the {@link
-   * com.google.devtools.build.lib.analysis.config.BuildConfiguration}.
+   * com.google.devtools.build.lib.analysis.config.BuildConfigurationValue}.
    */
   @Test
   public void testBazelUserManual() throws Exception {

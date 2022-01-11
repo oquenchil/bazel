@@ -19,8 +19,8 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.packages.BuiltinProvider;
 import com.google.devtools.build.lib.packages.NativeInfo;
-import com.google.devtools.build.lib.skylarkbuildapi.android.AndroidApplicationResourceInfoApi;
-import com.google.devtools.build.lib.syntax.EvalException;
+import com.google.devtools.build.lib.starlarkbuildapi.android.AndroidApplicationResourceInfoApi;
+import net.starlark.java.eval.EvalException;
 
 /** A provider for Android resource APKs (".ap_") and related info. */
 @Immutable
@@ -37,6 +37,11 @@ public class AndroidApplicationResourceInfo extends NativeInfo
   private final Artifact manifest;
   private final Artifact resourceProguardConfig;
   private final Artifact mainDexProguardConfig;
+  private final Artifact rTxt;
+  private final Artifact resourcesZip;
+  private final Artifact databindingLayoutInfoZip;
+  private final Artifact buildStampJar;
+  private final boolean shouldCompileJavaSrcs;
 
   AndroidApplicationResourceInfo(
       Artifact resourceApk,
@@ -44,14 +49,28 @@ public class AndroidApplicationResourceInfo extends NativeInfo
       Artifact resourceJavaClassJar,
       Artifact manifest,
       Artifact resourceProguardConfig,
-      Artifact mainDexProguardConfig) {
-    super(PROVIDER);
+      Artifact mainDexProguardConfig,
+      Artifact rTxt,
+      Artifact resourcesZip,
+      Artifact databindingLayoutInfoZip,
+      Artifact buildStampJar,
+      boolean shouldCompileJavaSrcs) {
     this.resourceApk = resourceApk;
     this.resourceJavaSrcJar = resourceJavaSrcJar;
     this.resourceJavaClassJar = resourceJavaClassJar;
     this.manifest = manifest;
     this.resourceProguardConfig = resourceProguardConfig;
     this.mainDexProguardConfig = mainDexProguardConfig;
+    this.rTxt = rTxt;
+    this.resourcesZip = resourcesZip;
+    this.databindingLayoutInfoZip = databindingLayoutInfoZip;
+    this.buildStampJar = buildStampJar;
+    this.shouldCompileJavaSrcs = shouldCompileJavaSrcs;
+  }
+
+  @Override
+  public AndroidApplicationResourceInfoProvider getProvider() {
+    return PROVIDER;
   }
 
   @Override
@@ -84,6 +103,37 @@ public class AndroidApplicationResourceInfo extends NativeInfo
     return mainDexProguardConfig;
   }
 
+  @Override
+  public Artifact getRTxt() {
+    return rTxt;
+  }
+
+  @Override
+  public Artifact getResourcesZip() {
+    return resourcesZip;
+  }
+
+  @Override
+  public Artifact getDatabindingLayoutInfoZip() {
+    return databindingLayoutInfoZip;
+  }
+
+  @Override
+  public Artifact getBuildStampJar() {
+    return buildStampJar;
+  }
+
+  /**
+   * A signal that indicates whether the android_binary rule should compile its Java sources in
+   * android_binary.srcs. When false, android_binary.application_resources will provide a JavaInfo
+   * that contains the compiled sources of the android_binary target. This step allows
+   * android_binary Java compilation to be offloaded to a Starlark rule.
+   */
+  @Override
+  public boolean shouldCompileJavaSrcs() {
+    return shouldCompileJavaSrcs;
+  }
+
   /** Provider for {@link AndroidApplicationResourceInfo}. */
   public static class AndroidApplicationResourceInfoProvider
       extends BuiltinProvider<AndroidApplicationResourceInfo>
@@ -100,7 +150,12 @@ public class AndroidApplicationResourceInfo extends NativeInfo
         Object resourceJavaClassJar,
         Artifact manifest,
         Object resourceProguardConfig,
-        Object mainDexProguardConfig)
+        Object mainDexProguardConfig,
+        Object rTxt,
+        Object resourcesZip,
+        Object databindingLayoutInfoZip,
+        Object buildStampJar,
+        boolean shouldCompileJavaSrcs)
         throws EvalException {
 
       return new AndroidApplicationResourceInfo(
@@ -109,7 +164,12 @@ public class AndroidApplicationResourceInfo extends NativeInfo
           fromNoneable(resourceJavaClassJar, Artifact.class),
           manifest,
           fromNoneable(resourceProguardConfig, Artifact.class),
-          fromNoneable(mainDexProguardConfig, Artifact.class));
+          fromNoneable(mainDexProguardConfig, Artifact.class),
+          fromNoneable(rTxt, Artifact.class),
+          fromNoneable(resourcesZip, Artifact.class),
+          fromNoneable(databindingLayoutInfoZip, Artifact.class),
+          fromNoneable(buildStampJar, Artifact.class),
+          shouldCompileJavaSrcs);
     }
   }
 }

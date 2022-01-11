@@ -33,6 +33,10 @@ fail_if_no_android_sdk
 source "${CURRENT_DIR}/../../integration_test_setup.sh" \
   || { echo "integration_test_setup.sh not found!" >&2; exit 1; }
 
+if [[ "$1" = '--with_platforms' ]]; then
+  resolve_android_toolchains_with_platforms
+fi
+
 function test_sdk_library_deps() {
   create_new_workspace
   setup_android_sdk_support
@@ -78,6 +82,19 @@ EOF
 <manifest package="bazel.multidex" />
 EOF
   assert_build //java/bazel/multidex:bin
+}
+
+function test_android_tools_version() {
+  create_new_workspace
+  setup_android_sdk_support
+
+  label="1.2.3 4.5.6 1000000000000000000000000000000000000002"
+  bazel build --embed_label="$label" //tools/android/runtime_deps:version.txt
+  actual="$(cat bazel-bin/tools/android/runtime_deps/version.txt)"
+  expected="bazel_android_tools_version 1.2.3
+bazel_repo_commit 1000000000000000000000000000000000000002
+built_with_bazel_version 4.5.6"
+  assert_equals "$expected" "$actual"
 }
 
 run_suite "Android integration tests"

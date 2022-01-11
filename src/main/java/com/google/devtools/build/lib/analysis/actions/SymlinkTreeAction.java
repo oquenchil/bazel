@@ -24,12 +24,12 @@ import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.ActionResult;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.Runfiles;
-import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
-import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
-import com.google.devtools.build.lib.skyframe.serialization.autocodec.AutoCodec;
 import com.google.devtools.build.lib.util.Fingerprint;
+import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import javax.annotation.Nullable;
 
@@ -38,7 +38,6 @@ import javax.annotation.Nullable;
  * Used to generate runfiles and fileset symlink farms.
  */
 @Immutable
-@AutoCodec
 public final class SymlinkTreeAction extends AbstractAction {
 
   private static final String GUID = "7a16371c-cd4a-494d-b622-963cd89f5212";
@@ -64,7 +63,7 @@ public final class SymlinkTreeAction extends AbstractAction {
    */
   public SymlinkTreeAction(
       ActionOwner owner,
-      BuildConfiguration config,
+      BuildConfigurationValue config,
       Artifact inputManifest,
       @Nullable Runfiles runfiles,
       Artifact outputManifest,
@@ -83,8 +82,8 @@ public final class SymlinkTreeAction extends AbstractAction {
 
   /**
    * Creates SymlinkTreeAction instance. Prefer the constructor that takes a {@link
-   * BuildConfiguration} instance; it is less likely to require changes in the future if we add more
-   * command-line flags that affect this action.
+   * BuildConfigurationValue} instance; it is less likely to require changes in the future if we add
+   * more command-line flags that affect this action.
    *
    * @param owner action owner
    * @param inputManifest the input runfiles manifest
@@ -93,7 +92,6 @@ public final class SymlinkTreeAction extends AbstractAction {
    *     Symlink tree root will be set to the artifact's parent directory.
    * @param filesetRoot non-null if this is a fileset symlink tree,
    */
-  @AutoCodec.Instantiator
   public SymlinkTreeAction(
       ActionOwner owner,
       Artifact inputManifest,
@@ -106,9 +104,7 @@ public final class SymlinkTreeAction extends AbstractAction {
       boolean skipRunfilesManifests) {
     super(
         owner,
-        skipRunfilesManifests && enableRunfiles && (filesetRoot == null)
-            ? NestedSetBuilder.emptySet(Order.STABLE_ORDER)
-            : NestedSetBuilder.create(Order.STABLE_ORDER, inputManifest),
+        computeInputs(enableRunfiles, skipRunfilesManifests, runfiles, inputManifest),
         ImmutableSet.of(outputManifest),
         env);
     Preconditions.checkArgument(outputManifest.getPath().getBaseName().equals("MANIFEST"));
@@ -122,6 +118,24 @@ public final class SymlinkTreeAction extends AbstractAction {
     this.inprocessSymlinkCreation = inprocessSymlinkCreation;
     this.skipRunfilesManifests = skipRunfilesManifests && enableRunfiles && (filesetRoot == null);
     this.inputManifest = this.skipRunfilesManifests ? null : inputManifest;
+  }
+
+  private static NestedSet<Artifact> computeInputs(
+      boolean enableRunfiles,
+      boolean skipRunfilesManifests,
+      Runfiles runfiles,
+      Artifact inputManifest) {
+    NestedSetBuilder<Artifact> inputs = NestedSetBuilder.<Artifact>stableOrder();
+    if (!skipRunfilesManifests || !enableRunfiles || runfiles == null) {
+      inputs.add(inputManifest);
+    }
+    // All current strategies (in-process and build-runfiles-windows) for
+    // making symlink trees on Windows depend on the target files
+    // existing, so directory or file links can be made as appropriate.
+    if (enableRunfiles && runfiles != null && OS.getCurrent() == OS.WINDOWS) {
+      inputs.addTransitive(runfiles.getAllArtifacts());
+    }
+    return inputs.build();
   }
 
   public Artifact getInputManifest() {

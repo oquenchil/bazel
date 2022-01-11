@@ -17,8 +17,6 @@ import static org.junit.Assert.assertThrows;
 
 import com.google.devtools.build.lib.buildtool.util.BuildIntegrationTestCase;
 import com.google.devtools.build.lib.cmdline.TargetParsingException;
-import com.google.devtools.build.lib.testutil.Suite;
-import com.google.devtools.build.lib.testutil.TestSpec;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -26,12 +24,11 @@ import org.junit.runners.JUnit4;
 /**
  * Integration test for labels that cross package boundaries.
  */
-@TestSpec(size = Suite.MEDIUM_TESTS)
 @RunWith(JUnit4.class)
 public class LabelCrossesPackageBoundaryTest extends BuildIntegrationTestCase {
 
   @Test
-  public void testLabelCrossesPackageBoundary_Target() throws Exception {
+  public void testLabelCrossesPackageBoundary_target() throws Exception {
     write("x/BUILD",
         "genrule(name = 'x',",
         "        srcs = ['//x:y/z'],",

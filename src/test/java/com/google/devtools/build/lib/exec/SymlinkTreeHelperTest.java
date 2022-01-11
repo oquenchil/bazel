@@ -21,6 +21,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.actions.FilesetOutputSymlink;
 import com.google.devtools.build.lib.actions.HasDigest;
 import com.google.devtools.build.lib.shell.Command;
+import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -33,7 +34,7 @@ import org.junit.runners.JUnit4;
 /** Unit tests for {@link SymlinkTreeHelper}. */
 @RunWith(JUnit4.class)
 public final class SymlinkTreeHelperTest {
-  private final FileSystem fs = new InMemoryFileSystem();
+  private final FileSystem fs = new InMemoryFileSystem(DigestHashFunction.SHA256);
 
   @Test
   public void checkCreatedSpawn() {
@@ -44,13 +45,13 @@ public final class SymlinkTreeHelperTest {
     Command command =
         new SymlinkTreeHelper(inputManifestPath, execRoot.getRelative("output/MANIFEST"), false)
             .createCommand(execRoot, binTools, ImmutableMap.of());
-    assertThat(command.getEnvironmentVariables()).isEmpty();
+    assertThat(command.getEnvironment()).isEmpty();
     assertThat(command.getWorkingDirectory()).isEqualTo(execRoot.getPathFile());
-    String[] commandLine = command.getCommandLineElements();
-    assertThat(commandLine).hasLength(3);
-    assertThat(commandLine[0]).endsWith(SymlinkTreeHelper.BUILD_RUNFILES);
-    assertThat(commandLine[1]).isEqualTo("input_manifest");
-    assertThat(commandLine[2]).isEqualTo("output/MANIFEST");
+    ImmutableList<String> commandLine = command.getArguments();
+    assertThat(commandLine).hasSize(3);
+    assertThat(commandLine.get(0)).endsWith(SymlinkTreeHelper.BUILD_RUNFILES);
+    assertThat(commandLine.get(1)).isEqualTo("input_manifest");
+    assertThat(commandLine.get(2)).isEqualTo("output/MANIFEST");
   }
 
   @Test

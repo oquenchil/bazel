@@ -15,21 +15,16 @@
 package com.google.devtools.build.lib.rules.repository;
 
 import com.google.common.collect.ImmutableMap;
-import com.google.devtools.build.lib.actions.FileValue;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.events.ExtendedEventHandler.ResolvedEvent;
 import com.google.devtools.build.lib.packages.Rule;
-import com.google.devtools.build.lib.syntax.Printer;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
-import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
 import com.google.devtools.build.skyframe.SkyKey;
-import java.io.IOException;
 import java.util.Map;
-import javax.annotation.Nullable;
+import net.starlark.java.eval.Starlark;
 
 /**
  * Access a repository on the local filesystem.
@@ -51,10 +46,10 @@ public class LocalRepositoryFunction extends RepositoryFunction {
       SkyKey key)
       throws InterruptedException, RepositoryFunctionException {
     String userDefinedPath = RepositoryFunction.getPathAttr(rule);
-    PathFragment pathFragment =
-        RepositoryFunction.getTargetPath(userDefinedPath, directories.getWorkspace());
+    Path targetPath = directories.getWorkspace().getRelative(userDefinedPath);
     RepositoryDirectoryValue.Builder result =
-        RepositoryDelegatorFunction.symlink(outputDirectory, pathFragment, userDefinedPath, env);
+        RepositoryDelegatorFunction.symlinkRepoRoot(
+            outputDirectory, targetPath, userDefinedPath, env);
     if (result != null) {
       env.getListener().post(resolve(rule, directories));
     }
@@ -66,37 +61,9 @@ public class LocalRepositoryFunction extends RepositoryFunction {
     return LocalRepositoryRule.class;
   }
 
-  @Nullable
-  protected static FileValue getWorkspaceFile(RootedPath directory, Environment env)
-      throws RepositoryFunctionException, InterruptedException {
-    RootedPath workspaceRootedFile;
-    try {
-      workspaceRootedFile = WorkspaceFileHelper.getWorkspaceRootedFile(directory, env);
-      if (workspaceRootedFile == null) {
-        return null;
-      }
-    } catch (IOException e) {
-      throw new RepositoryFunctionException(
-          new IOException(
-              "Could not determine workspace file (\"WORKSPACE.bazel\" or \"WORKSPACE\"): "
-                  + e.getMessage()),
-          Transience.PERSISTENT);
-    }
-    SkyKey workspaceFileKey = FileValue.key(workspaceRootedFile);
-    FileValue value;
-    try {
-      value = (FileValue) env.getValueOrThrow(workspaceFileKey, IOException.class);
-    } catch (IOException e) {
-      throw new RepositoryFunctionException(
-          new IOException("Could not access " + workspaceRootedFile + ": " + e.getMessage()),
-          Transience.PERSISTENT);
-    }
-    return value;
-  }
-
   private static ResolvedEvent resolve(Rule rule, BlazeDirectories directories) {
     String name = rule.getName();
-    Object pathObj = rule.getAttributeContainer().getAttr("path");
+    Object pathObj = rule.getAttr("path");
     String path;
     if (pathObj instanceof String) {
       path = (String) pathObj;
@@ -111,12 +78,11 @@ public class LocalRepositoryFunction extends RepositoryFunction {
     if (pathFragment.isAbsolute() && pathFragment.startsWith(embeddedDir)) {
       pathArg =
           "__embedded_dir__ + \"/\" + "
-              + Printer.getPrinter().repr(pathFragment.relativeTo(embeddedDir).toString());
+              + Starlark.repr(pathFragment.relativeTo(embeddedDir).toString());
     } else {
-      pathArg = Printer.getPrinter().repr(path).toString();
+      pathArg = Starlark.repr(path);
     }
-    String repr =
-        "local_repository(name = " + Printer.getPrinter().repr(name) + ", path = " + pathArg + ")";
+    String repr = Starlark.format("local_repository(name = %r, path = %s)", name, pathArg);
     return new ResolvedEvent() {
       @Override
       public String getName() {

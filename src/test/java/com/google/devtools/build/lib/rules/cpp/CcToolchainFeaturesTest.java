@@ -16,17 +16,17 @@ package com.google.devtools.build.lib.rules.cpp;
 
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.fail;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.ArrayListMultimap;
+import com.google.common.collect.ImmutableClassToInstanceMap;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Multimap;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.ArtifactRoot;
+import com.google.devtools.build.lib.actions.ArtifactRoot.RootType;
 import com.google.devtools.build.lib.actions.util.ActionsTestUtil;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
 import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.ActionConfig;
@@ -43,17 +43,15 @@ import com.google.devtools.build.lib.skyframe.serialization.AutoRegistry;
 import com.google.devtools.build.lib.skyframe.serialization.ObjectCodecs;
 import com.google.devtools.build.lib.skyframe.serialization.testutils.SerializationTester;
 import com.google.devtools.build.lib.skyframe.serialization.testutils.TestUtils;
-import com.google.devtools.build.lib.syntax.EvalException;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.view.config.crosstool.CrosstoolConfig.CToolchain;
-import com.google.devtools.build.lib.view.config.crosstool.CrosstoolConfig.CToolchain.Feature;
 import com.google.protobuf.TextFormat;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import net.starlark.java.eval.EvalException;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -68,7 +66,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
    * <p>If there are multiple entries with the same key, the variable will be treated as sequence
    * type.
    */
-  private CcToolchainVariables createVariables(String... entries) {
+  private static CcToolchainVariables createVariables(String... entries) {
     if (entries.length % 2 != 0) {
       throw new IllegalArgumentException(
           "createVariables takes an even number of arguments (key/value pairs)");
@@ -89,29 +87,8 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
     return variables.build();
   }
 
-  /** Creates a CcToolchainFeatures from features described in the given toolchain fragment. */
-  public static CcToolchainFeatures buildFeatures(String... toolchain) throws Exception {
-    CToolchain.Builder toolchainBuilder = CToolchain.newBuilder();
-    TextFormat.merge(Joiner.on("").join(toolchain), toolchainBuilder);
-    return new CcToolchainFeatures(
-        CcToolchainConfigInfo.fromToolchain(toolchainBuilder.buildPartial()),
-        PathFragment.create("crosstool/"));
-  }
-
-  /** Creates a CcToolchainFeatures from given features and action configs. */
-  public static CcToolchainFeatures buildFeatures(
-      ImmutableList<Feature> features, ImmutableList<CToolchain.ActionConfig> actionConfigs)
-      throws Exception {
-    CToolchain.Builder toolchainBuilder = CToolchain.newBuilder();
-    toolchainBuilder.addAllFeature(features);
-    toolchainBuilder.addAllActionConfig(actionConfigs);
-    return new CcToolchainFeatures(
-        CcToolchainConfigInfo.fromToolchain(toolchainBuilder.buildPartial()),
-        PathFragment.create("crosstool/"));
-  }
-
   /** Creates an empty CcToolchainFeatures. */
-  public CcToolchainFeatures buildEmptyFeatures(String... toolchain) throws Exception {
+  private static CcToolchainFeatures buildEmptyFeatures(String... toolchain) throws Exception {
     CToolchain.Builder toolchainBuilder = CToolchain.newBuilder();
     TextFormat.merge(Joiner.on("").join(toolchain), toolchainBuilder);
     return new CcToolchainFeatures(
@@ -119,8 +96,8 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
         PathFragment.EMPTY_FRAGMENT);
   }
 
-  private Set<String> getEnabledFeatures(CcToolchainFeatures features,
-      String... requestedFeatures) throws Exception {
+  private static ImmutableSet<String> getEnabledFeatures(
+      CcToolchainFeatures features, String... requestedFeatures) throws Exception {
     FeatureConfiguration configuration =
         features.getFeatureConfiguration(ImmutableSet.copyOf(requestedFeatures));
     ImmutableSet.Builder<String> enabledFeatures = ImmutableSet.builder();
@@ -136,7 +113,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
     Path execRoot = outputBase.getRelative("exec");
     String outSegment = "out";
     Path outputRoot = execRoot.getRelative(outSegment);
-    ArtifactRoot root = ArtifactRoot.asDerivedRoot(execRoot, outSegment);
+    ArtifactRoot root = ArtifactRoot.asDerivedRoot(execRoot, RootType.Output, outSegment);
     try {
       return ActionsTestUtil.createArtifact(
           root, scratch.overwriteFile(outputRoot.getRelative(s).toString()));
@@ -150,10 +127,10 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
     FeatureConfiguration emptyConfiguration =
         buildEmptyFeatures("").getFeatureConfiguration(ImmutableSet.of());
     FeatureConfiguration emptyFeatures =
-        buildFeatures("feature {name: 'a'}", "feature {name: 'b'}")
+        CcToolchainTestHelper.buildFeatures("feature {name: 'a'}", "feature {name: 'b'}")
             .getFeatureConfiguration(ImmutableSet.of("a", "b"));
     FeatureConfiguration featuresWithFlags =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
                 "feature {",
                 "   name: 'a'",
                 "   flag_set {",
@@ -174,7 +151,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
                 "}")
             .getFeatureConfiguration(ImmutableSet.of("a", "b"));
     FeatureConfiguration featureWithEnvSet =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
                 "feature {",
                 "   name: 'a'",
                 "   env_set {",
@@ -192,7 +169,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testCrosstoolProtoCanBeSerialized() throws Exception {
     ObjectCodecs objectCodecs =
-        new ObjectCodecs(AutoRegistry.get().getBuilder().build(), ImmutableMap.of());
+        new ObjectCodecs(AutoRegistry.get().getBuilder().build(), ImmutableClassToInstanceMap.of());
     objectCodecs.serialize(CToolchain.WithFeatureSet.getDefaultInstance());
     objectCodecs.serialize(CToolchain.VariableWithValue.getDefaultInstance());
     objectCodecs.serialize(CToolchain.FlagGroup.getDefaultInstance());
@@ -202,15 +179,18 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
 
   @Test
   public void testUnconditionalFeature() throws Exception {
-    assertThat(buildFeatures("").getFeatureConfiguration(ImmutableSet.of("a")).isEnabled("a"))
+    assertThat(
+            CcToolchainTestHelper.buildFeatures("")
+                .getFeatureConfiguration(ImmutableSet.of("a"))
+                .isEnabled("a"))
         .isFalse();
     assertThat(
-            buildFeatures("feature { name: 'a' }")
+            CcToolchainTestHelper.buildFeatures("feature { name: 'a' }")
                 .getFeatureConfiguration(ImmutableSet.of("b"))
                 .isEnabled("a"))
         .isFalse();
     assertThat(
-            buildFeatures("feature { name: 'a' }")
+            CcToolchainTestHelper.buildFeatures("feature { name: 'a' }")
                 .getFeatureConfiguration(ImmutableSet.of("a"))
                 .isEnabled("a"))
         .isTrue();
@@ -219,14 +199,14 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testUnsupportedAction() throws Exception {
     FeatureConfiguration configuration =
-        buildFeatures("").getFeatureConfiguration(ImmutableSet.of());
+        CcToolchainTestHelper.buildFeatures("").getFeatureConfiguration(ImmutableSet.of());
     assertThat(configuration.getCommandLine("invalid-action", createVariables())).isEmpty();
   }
 
   @Test
   public void testFlagOrderEqualsSpecOrder() throws Exception {
     FeatureConfiguration configuration =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
                 "feature {",
                 "  name: 'a'",
                 "  flag_set {",
@@ -258,7 +238,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testEnvVars() throws Exception {
     FeatureConfiguration configuration =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
                 "feature {",
                 "  name: 'a'",
                 "  env_set {",
@@ -322,18 +302,19 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
     assertThat(env).doesNotContainEntry("doNotInclude", "doNotIncludePlease");
   }
 
-  private String getExpansionOfFlag(String value) throws Exception {
+  private static String getExpansionOfFlag(String value) throws Exception {
     return getExpansionOfFlag(value, createVariables());
   }
 
-  private String getExpansionOfFlag(String value, CcToolchainVariables variables) throws Exception {
+  private static String getExpansionOfFlag(String value, CcToolchainVariables variables)
+      throws Exception {
     return getCommandLineForFlag(value, variables).get(0);
   }
 
-  private List<String> getCommandLineForFlagGroups(String groups, CcToolchainVariables variables)
-      throws Exception {
+  private static List<String> getCommandLineForFlagGroups(
+      String groups, CcToolchainVariables variables) throws Exception {
     FeatureConfiguration configuration =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
                 "feature {",
                 "  name: 'a'",
                 "  flag_set {",
@@ -345,41 +326,25 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
     return configuration.getCommandLine(CppActionNames.CPP_COMPILE, variables);
   }
 
-  private List<String> getCommandLineForFlag(String value, CcToolchainVariables variables)
+  private static List<String> getCommandLineForFlag(String value, CcToolchainVariables variables)
       throws Exception {
     return getCommandLineForFlagGroups("flag_group { flag: '" + value + "' }", variables);
   }
 
-  private String getFlagParsingError(String value) throws Exception {
-    try {
-      getExpansionOfFlag(value);
-      fail("Expected EvalException");
-      return "";
-    } catch (EvalException e) {
-      return e.getMessage();
-    }
+  private static String getFlagParsingError(String value) {
+    return assertThrows(EvalException.class, () -> getExpansionOfFlag(value)).getMessage();
   }
 
-  private String getFlagExpansionError(String value, CcToolchainVariables variables)
-      throws Exception {
-    try {
-      getExpansionOfFlag(value, variables);
-      fail("Expected ExpansionException");
-      return "";
-    } catch (ExpansionException e) {
-      return e.getMessage();
-    }
+  private static String getFlagExpansionError(String value, CcToolchainVariables variables) {
+    return assertThrows(ExpansionException.class, () -> getExpansionOfFlag(value, variables))
+        .getMessage();
   }
 
-  private String getFlagGroupsExpansionError(String flagGroups, CcToolchainVariables variables)
-      throws Exception {
-    try {
-      getCommandLineForFlagGroups(flagGroups, variables).get(0);
-      fail("Expected ExpansionException");
-      return "";
-    } catch (ExpansionException e) {
-      return e.getMessage();
-    }
+  private static String getFlagGroupsExpansionError(
+      String flagGroups, CcToolchainVariables variables) {
+    return assertThrows(
+            ExpansionException.class, () -> getCommandLineForFlagGroups(flagGroups, variables))
+        .getMessage();
   }
 
   @Test
@@ -398,14 +363,14 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
             getCommandLineForFlagGroups(
                 "flag_group{ iterate_over: 'v' flag: '%{v}' }",
                 CcToolchainVariables.builder()
-                    .addStringSequenceVariable("v", ImmutableList.<String>of())
+                    .addStringSequenceVariable("v", ImmutableList.of())
                     .build()))
         .isEmpty();
     assertThat(getFlagExpansionError("%{v}", createVariables()))
         .contains("Invalid toolchain configuration: Cannot find variable named 'v'");
   }
 
-  private CcToolchainVariables createStructureSequenceVariables(
+  private static CcToolchainVariables createStructureSequenceVariables(
       String name, StructureBuilder... values) {
     SequenceBuilder builder = new SequenceBuilder();
     for (StructureBuilder value : values) {
@@ -414,7 +379,8 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
     return CcToolchainVariables.builder().addCustomBuiltVariable(name, builder).build();
   }
 
-  private CcToolchainVariables createStructureVariables(String name, StructureBuilder value) {
+  private static CcToolchainVariables createStructureVariables(
+      String name, StructureBuilder value) {
     return CcToolchainVariables.builder().addCustomBuiltVariable(name, value).build();
   }
 
@@ -444,7 +410,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testAccessingStructureAsStringFails() throws Exception {
+  public void testAccessingStructureAsStringFails() {
     assertThat(
             getFlagGroupsExpansionError(
                 "flag_group { flag: '-A%{struct}' }",
@@ -459,7 +425,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testAccessingStringValueAsStructureFails() throws Exception {
+  public void testAccessingStringValueAsStructureFails() {
     assertThat(
             getFlagGroupsExpansionError(
                 "flag_group { flag: '-A%{stringVar.foo}' }",
@@ -470,7 +436,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testAccessingSequenceAsStructureFails() throws Exception {
+  public void testAccessingSequenceAsStructureFails() {
     assertThat(
             getFlagGroupsExpansionError(
                 "flag_group { flag: '-A%{sequence.foo}' }",
@@ -481,7 +447,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testAccessingMissingStructureFieldFails() throws Exception {
+  public void testAccessingMissingStructureFieldFails() {
     assertThat(
             getFlagGroupsExpansionError(
                 "flag_group { flag: '-A%{struct.missing}' }",
@@ -806,8 +772,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testListVariableExpansionMixedWithImplicitlyAccessedListVariableFails()
-      throws Exception {
+  public void testListVariableExpansionMixedWithImplicitlyAccessedListVariableFails() {
     assertThat(
             getFlagGroupsExpansionError(
                 "flag_group { iterate_over: 'v1' flag: '%{v1} %{v2}' }",
@@ -840,7 +805,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
         .containsExactly("-f", "1", "-f", "2", "1", "2");
   }
 
-  private VariableValueBuilder createNestedSequence(int depth, int count, String prefix) {
+  private static VariableValueBuilder createNestedSequence(int depth, int count, String prefix) {
     if (depth == 0) {
       StringSequenceBuilder builder = new StringSequenceBuilder();
       for (int i = 0; i < count; ++i) {
@@ -858,7 +823,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
     }
   }
 
-  private CcToolchainVariables createNestedVariables(String name, int depth, int count) {
+  private static CcToolchainVariables createNestedVariables(String name, int depth, int count) {
     return CcToolchainVariables.builder()
         .addCustomBuiltVariable(name, createNestedSequence(depth, count, ""))
         .build();
@@ -889,7 +854,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
         assertThrows(
             ExpansionException.class,
             () ->
-                buildFeatures(
+                CcToolchainTestHelper.buildFeatures(
                     "feature {",
                     "  name: 'a'",
                     "  flag_set {",
@@ -906,7 +871,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testImplies() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature { name: 'a' implies: 'b' implies: 'c' }",
             "feature { name: 'b' }",
             "feature { name: 'c' implies: 'd' }",
@@ -918,7 +883,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testRequires() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature { name: 'a' requires: { feature: 'b' } }",
             "feature { name: 'b' requires: { feature: 'c' } }",
             "feature { name: 'c' }");
@@ -931,13 +896,13 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testDisabledRequirementChain() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature { name: 'a' }",
             "feature { name: 'b' requires: { feature: 'c' } implies: 'a' }",
             "feature { name: 'c' }");
     assertThat(getEnabledFeatures(features, "b")).isEmpty();
     features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature { name: 'a' }",
             "feature { name: 'b' requires: { feature: 'a' } implies: 'c' }",
             "feature { name: 'c' }",
@@ -949,7 +914,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testEnabledRequirementChain() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature { name: '0' implies: 'a' }",
             "feature { name: 'a' }",
             "feature { name: 'b' requires: { feature: 'a' } implies: 'c' }",
@@ -963,7 +928,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testLogicInRequirements() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature {",
             "  name: 'a'",
             "  requires: { feature: 'b' feature: 'c' }",
@@ -981,7 +946,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testImpliesImpliesRequires() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature { name: 'a' implies: 'b' }",
             "feature { name: 'b' requires: { feature: 'c' } }",
             "feature { name: 'c' }");
@@ -991,7 +956,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testMultipleImplies() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature { name: 'a' implies: 'b' implies: 'c' implies: 'd' }",
             "feature { name: 'b' }",
             "feature { name: 'c' requires: { feature: 'e' } }",
@@ -1004,7 +969,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testDisabledFeaturesDoNotEnableImplications() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature { name: 'a' implies: 'b' requires: { feature: 'c' } }",
             "feature { name: 'b' }",
             "feature { name: 'c' }");
@@ -1012,31 +977,32 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testFeatureNameCollision() throws Exception {
+  public void testFeatureNameCollision() {
     EvalException e =
         assertThrows(
             EvalException.class,
             () ->
-                buildFeatures(
+                CcToolchainTestHelper.buildFeatures(
                     "feature { name: '<<<collision>>>' }", "feature { name: '<<<collision>>>' }"));
     assertThat(e).hasMessageThat().contains("<<<collision>>>");
   }
 
   @Test
-  public void testReferenceToUndefinedFeature() throws Exception {
+  public void testReferenceToUndefinedFeature() {
     EvalException e =
         assertThrows(
             EvalException.class,
-            () -> buildFeatures("feature { name: 'a' implies: '<<<undefined>>>' }"));
+            () ->
+                CcToolchainTestHelper.buildFeatures(
+                    "feature { name: 'a' implies: '<<<undefined>>>' }"));
     assertThat(e).hasMessageThat().contains("<<<undefined>>>");
   }
 
   @Test
   public void testImpliesWithCycle() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
-            "feature { name: 'a' implies: 'b' }",
-            "feature { name: 'b' implies: 'a' }");
+        CcToolchainTestHelper.buildFeatures(
+            "feature { name: 'a' implies: 'b' }", "feature { name: 'b' implies: 'a' }");
     assertThat(getEnabledFeatures(features, "a")).containsExactly("a", "b");
     assertThat(getEnabledFeatures(features, "b")).containsExactly("a", "b");
  }
@@ -1044,7 +1010,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testMultipleImpliesCycle() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature { name: 'a' implies: 'b' implies: 'c' implies: 'd' }",
             "feature { name: 'b' }",
             "feature { name: 'c' requires: { feature: 'e' } }",
@@ -1059,7 +1025,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testRequiresWithCycle() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature { name: 'a' requires: { feature: 'b' } }",
             "feature { name: 'b' requires: { feature: 'a' } }",
             "feature { name: 'c' implies: 'a' }",
@@ -1072,7 +1038,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testImpliedByOneEnabledAndOneDisabledFeature() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature { name: 'a' }",
             "feature { name: 'b' requires: { feature: 'a' } implies: 'd' }",
             "feature { name: 'c' implies: 'd' }",
@@ -1083,7 +1049,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testRequiresOneEnabledAndOneUnsupportedFeature() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature { name: 'a' requires: { feature: 'b' } requires: { feature: 'c' } }",
             "feature { name: 'b' }",
             "feature { name: 'c' requires: { feature: 'd' } }",
@@ -1094,7 +1060,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testFlagGroupsWithMissingVariableIsNotExpanded() throws Exception {
     FeatureConfiguration configuration =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
                 "feature {",
                 "  name: 'a'",
                 "  flag_set {",
@@ -1115,7 +1081,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testOnlyFlagGroupsWithAllVariablesPresentAreExpanded() throws Exception {
     FeatureConfiguration configuration =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
                 "feature {",
                 "  name: 'a'",
                 "  flag_set {",
@@ -1144,7 +1110,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testOnlyInnerFlagGroupIsIteratedWithSequenceVariable() throws Exception {
     FeatureConfiguration configuration =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
                 "feature {",
                 "  name: 'a'",
                 "  flag_set {",
@@ -1177,7 +1143,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testFlagSetsAreIteratedIndividuallyForSequenceVariables() throws Exception {
     FeatureConfiguration configuration =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
                 "feature {",
                 "  name: 'a'",
                 "  flag_set {",
@@ -1210,7 +1176,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testConfiguration() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature {",
             "  name: 'a'",
             "  flag_set {",
@@ -1241,23 +1207,24 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testDefaultFeatures() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures("feature { name: 'a' }", "feature { name: 'b' enabled: true }");
+        CcToolchainTestHelper.buildFeatures(
+            "feature { name: 'a' }", "feature { name: 'b' enabled: true }");
     assertThat(features.getDefaultFeaturesAndActionConfigs()).containsExactly("b");
   }
 
   @Test
   public void testDefaultActionConfigs() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "action_config { config_name: 'a' action_name: 'a'}",
             "action_config { config_name: 'b' action_name: 'b' enabled: true }");
     assertThat(features.getDefaultFeaturesAndActionConfigs()).containsExactly("b");
   }
 
   @Test
-  public void testWithFeature_OneSetOneFeature() throws Exception {
+  public void testWithFeature_oneSetOneFeature() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature {",
             "  name: 'a'",
             "  flag_set {",
@@ -1282,9 +1249,9 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testWithFeature_OneSetMultipleFeatures() throws Exception {
+  public void testWithFeature_oneSetMultipleFeatures() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature {",
             "  name: 'a'",
             "  flag_set {",
@@ -1315,9 +1282,9 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testWithFeature_MulipleSetsMultipleFeatures() throws Exception {
+  public void testWithFeature_mulipleSetsMultipleFeatures() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature {",
             "  name: 'a'",
             "  flag_set {",
@@ -1351,9 +1318,9 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testWithFeature_NotFeature() throws Exception {
+  public void testWithFeature_notFeature() throws Exception {
     CcToolchainFeatures features =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "feature {",
             "  name: 'a'",
             "  flag_set {",
@@ -1399,7 +1366,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testActivateActionConfigFromFeature() throws Exception {
     CcToolchainFeatures toolchainFeatures =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "action_config {",
             "  config_name: 'action-a'",
             "  action_name: 'action-a'",
@@ -1422,7 +1389,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testFeatureCanRequireActionConfig() throws Exception {
     CcToolchainFeatures toolchainFeatures =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "action_config {",
             "  config_name: 'action-a'",
             "  action_name: 'action-a'",
@@ -1448,7 +1415,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testSimpleActionTool() throws Exception {
     FeatureConfiguration configuration =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
                 "action_config {",
                 "  config_name: 'action-a'",
                 "  action_name: 'action-a'",
@@ -1467,7 +1434,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testActionToolFromFeatureSet() throws Exception {
     CcToolchainFeatures toolchainFeatures =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "action_config {",
             "  config_name: 'action-a'",
             "  action_name: 'action-a'",
@@ -1547,7 +1514,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testErrorForNoMatchingTool() throws Exception {
     CcToolchainFeatures toolchainFeatures =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "action_config {",
             "  config_name: 'action-a'",
             "  action_name: 'action-a'",
@@ -1579,7 +1546,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testActivateActionConfigDirectly() throws Exception {
     CcToolchainFeatures toolchainFeatures =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "action_config {",
             "  config_name: 'action-a'",
             "  action_name: 'action-a'",
@@ -1598,7 +1565,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testActionConfigCanActivateFeature() throws Exception {
     CcToolchainFeatures toolchainFeatures =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "action_config {",
             "  config_name: 'action-a'",
             "  action_name: 'action-a'",
@@ -1619,12 +1586,12 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testInvalidActionConfigurationDuplicateActionConfigs() throws Exception {
+  public void testInvalidActionConfigurationDuplicateActionConfigs() {
     EvalException e =
         assertThrows(
             EvalException.class,
             () ->
-                buildFeatures(
+                CcToolchainTestHelper.buildFeatures(
                     "action_config {",
                     "  config_name: 'action-a'",
                     "  action_name: 'action-1'",
@@ -1639,12 +1606,12 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testInvalidActionConfigurationMultipleActionConfigsForAction() throws Exception {
+  public void testInvalidActionConfigurationMultipleActionConfigsForAction() {
     EvalException e =
         assertThrows(
             EvalException.class,
             () ->
-                buildFeatures(
+                CcToolchainTestHelper.buildFeatures(
                     "action_config {",
                     "  config_name: 'name-a'",
                     "  action_name: 'action-a'",
@@ -1659,7 +1626,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testFlagsFromActionConfig() throws Exception {
     FeatureConfiguration featureConfiguration =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
                 "action_config {",
                 "  config_name: 'c++-compile'",
                 "  action_name: 'c++-compile'",
@@ -1674,12 +1641,12 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testErrorForFlagFromActionConfigWithSpecifiedAction() throws Exception {
+  public void testErrorForFlagFromActionConfigWithSpecifiedAction() {
     EvalException e =
         assertThrows(
             EvalException.class,
             () ->
-                buildFeatures(
+                CcToolchainTestHelper.buildFeatures(
                         "action_config {",
                         "  config_name: 'c++-compile'",
                         "  action_name: 'c++-compile'",
@@ -1722,17 +1689,16 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
       objectNames.add(object.getStringValue("name"));
     }
     assertThat(objectNames.build())
-        .containsExactlyElementsIn(
-            Iterables.transform(testArtifacts, testArtifact -> testArtifact.getExecPathString()));
+        .containsExactlyElementsIn(Iterables.transform(testArtifacts, Artifact::getExecPathString));
   }
 
   @Test
-  public void testProvidesCollision() throws Exception {
+  public void testProvidesCollision() {
     Exception e =
         assertThrows(
             Exception.class,
             () ->
-                buildFeatures(
+                CcToolchainTestHelper.buildFeatures(
                         "feature {",
                         " name: 'a'",
                         " provides: 'provides_string'",
@@ -1746,12 +1712,12 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testErrorForNoMatchingArtifactNamePatternCategory() throws Exception {
+  public void testErrorForNoMatchingArtifactNamePatternCategory() {
     EvalException e =
         assertThrows(
             EvalException.class,
             () ->
-                buildFeatures(
+                CcToolchainTestHelper.buildFeatures(
                     "artifact_name_pattern {",
                     "category_name: 'NONEXISTENT_CATEGORY'",
                     "prefix: 'foo'",
@@ -1763,12 +1729,12 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
 
   @Test
   public void testErrorForNoMatchingArtifactPatternForCategory() throws Exception {
-              CcToolchainFeatures toolchainFeatures =
-                  buildFeatures(
-                      "artifact_name_pattern {",
-                      "category_name: 'static_library'",
-                      "prefix: 'foo'",
-                      "extension: '.a'}");
+    CcToolchainFeatures toolchainFeatures =
+        CcToolchainTestHelper.buildFeatures(
+            "artifact_name_pattern {",
+            "category_name: 'static_library'",
+            "prefix: 'foo'",
+            "extension: '.a'}");
     EvalException e =
         assertThrows(
             EvalException.class,
@@ -1786,7 +1752,7 @@ public class CcToolchainFeaturesTest extends BuildViewTestCase {
   @Test
   public void testGetArtifactNameExtensionForCategory() throws Exception {
     CcToolchainFeatures toolchainFeatures =
-        buildFeatures(
+        CcToolchainTestHelper.buildFeatures(
             "artifact_name_pattern {",
             "  category_name: 'object_file'",
             "  prefix: ''",

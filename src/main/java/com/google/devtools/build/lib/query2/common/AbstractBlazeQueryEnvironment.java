@@ -13,8 +13,10 @@
 // limitations under the License.
 package com.google.devtools.build.lib.query2.common;
 
+import static java.util.concurrent.TimeUnit.MINUTES;
+
 import com.google.common.base.Preconditions;
-import com.google.common.base.Predicate;
+import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
@@ -38,14 +40,20 @@ import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.engine.QueryExpression;
 import com.google.devtools.build.lib.query2.engine.QueryExpressionContext;
 import com.google.devtools.build.lib.query2.engine.ThreadSafeOutputFormatterCallback;
+import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.Query;
+import com.google.devtools.build.lib.server.FailureDetails.Query.Code;
+import com.google.devtools.build.lib.util.DetailedExitCode;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Predicate;
+import javax.annotation.Nullable;
 
 /**
  * {@link QueryEnvironment} that can evaluate queries to produce a result, and implements as much of
@@ -53,7 +61,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public abstract class AbstractBlazeQueryEnvironment<T> extends AbstractQueryEnvironment<T>
     implements AutoCloseable {
-  protected ErrorSensingEventHandler eventHandler;
+  protected ErrorSensingEventHandler<DetailedExitCode> eventHandler;
   protected final boolean keepGoing;
   protected final boolean strictScope;
 
@@ -72,7 +80,7 @@ public abstract class AbstractBlazeQueryEnvironment<T> extends AbstractQueryEnvi
       ExtendedEventHandler eventHandler,
       Set<Setting> settings,
       Iterable<QueryFunction> extraFunctions) {
-    this.eventHandler = new ErrorSensingEventHandler(eventHandler);
+    this.eventHandler = new ErrorSensingEventHandler<>(eventHandler, DetailedExitCode.class);
     this.keepGoing = keepGoing;
     this.strictScope = strictScope;
     this.dependencyFilter = constructDependencyFilter(settings);
@@ -84,25 +92,23 @@ public abstract class AbstractBlazeQueryEnvironment<T> extends AbstractQueryEnvi
   @Override
   public abstract void close();
 
-  private static DependencyFilter constructDependencyFilter(
-      Set<Setting> settings) {
+  private static DependencyFilter constructDependencyFilter(Set<Setting> settings) {
     DependencyFilter specifiedFilter =
         settings.contains(Setting.ONLY_TARGET_DEPS)
             ? DependencyFilter.ONLY_TARGET_DEPS
             : DependencyFilter.ALL_DEPS;
     if (settings.contains(Setting.NO_IMPLICIT_DEPS)) {
-      specifiedFilter = DependencyFilter.and(specifiedFilter, DependencyFilter.NO_IMPLICIT_DEPS);
+      specifiedFilter = specifiedFilter.and(DependencyFilter.NO_IMPLICIT_DEPS);
     }
     if (settings.contains(Setting.NO_NODEP_DEPS)) {
-      specifiedFilter = DependencyFilter.and(specifiedFilter, DependencyFilter.NO_NODEP_ATTRIBUTES);
+      specifiedFilter = specifiedFilter.and(DependencyFilter.NO_NODEP_ATTRIBUTES);
     }
     return specifiedFilter;
   }
 
   /**
-   * Used by {@link #evaluateQuery} to evaluate the given {@code expr}. The caller,
-   * {@link #evaluateQuery}, not {@link #evalTopLevelInternal}, is responsible for managing
-   * {@code callback}.
+   * Used by {@link #evaluateQuery} to evaluate the given {@code expr}. The caller, ({@link
+   * #evaluateQuery}), is responsible for managing {@code callback}.
    */
   protected void evalTopLevelInternal(QueryExpression expr, OutputFormatterCallback<T> callback)
       throws QueryException, InterruptedException {
@@ -115,20 +121,19 @@ public abstract class AbstractBlazeQueryEnvironment<T> extends AbstractQueryEnvi
 
   /**
    * Evaluate the specified query expression in this environment, streaming results to the given
-   * {@code callback}. {@code callback.start()} will be called before query evaluation and
-   * {@code callback.close()} will be unconditionally called at the end of query evaluation
-   * (i.e. regardless of whether it was successful).
+   * {@code callback}. {@code callback.start()} will be called before query evaluation and {@code
+   * callback.close()} will be unconditionally called at the end of query evaluation (i.e.
+   * regardless of whether it was successful).
    *
    * @return a {@link QueryEvalResult} object that contains the resulting set of targets and a bit
-   *   to indicate whether errors occurred during evaluation; note that the
-   *   success status can only be false if {@code --keep_going} was in effect
-   * @throws QueryException if the evaluation failed and {@code --nokeep_going} was in
-   *   effect
+   *     to indicate whether errors occurred during evaluation; note that the success status can
+   *     only be false if {@code --keep_going} was in effect
+   * @throws QueryException if the evaluation failed and {@code --nokeep_going} was in effect
+   * @throws IOException for output formatter failures from {@code callback}
    */
   public QueryEvalResult evaluateQuery(
-      QueryExpression expr,
-      ThreadSafeOutputFormatterCallback<T> callback)
-          throws QueryException, InterruptedException, IOException {
+      QueryExpression expr, ThreadSafeOutputFormatterCallback<T> callback)
+      throws QueryException, InterruptedException, IOException {
     EmptinessSensingCallback<T> emptySensingCallback = new EmptinessSensingCallback<>(callback);
     long startTime = System.currentTimeMillis();
     // In the --nokeep_going case, errors are reported in the order in which the patterns are
@@ -141,7 +146,7 @@ public abstract class AbstractBlazeQueryEnvironment<T> extends AbstractQueryEnvi
       preloadOrThrow(expr, targetPatternSet);
     } catch (TargetParsingException e) {
       // Unfortunately, by evaluating the patterns in parallel, we lose some location information.
-      throw new QueryException(expr, e.getMessage());
+      throw new QueryException(expr, e.getMessage(), e.getDetailedExitCode().getFailureDetail());
     }
     IOException ioExn = null;
     boolean failFast = true;
@@ -151,8 +156,6 @@ public abstract class AbstractBlazeQueryEnvironment<T> extends AbstractQueryEnvi
       failFast = false;
     } catch (QueryException e) {
       throw new QueryException(e, expr);
-    } catch (InterruptedException e) {
-      throw e;
     } finally {
       try {
         callback.close(failFast);
@@ -170,24 +173,37 @@ public abstract class AbstractBlazeQueryEnvironment<T> extends AbstractQueryEnvi
     }
 
     if (eventHandler.hasErrors()) {
+      DetailedExitCode detailedExitCode = eventHandler.getErrorProperty();
       if (!keepGoing) {
-        // This case represents loading-phase errors reported during evaluation
-        // of target patterns that don't cause evaluation to fail per se.
+        if (detailedExitCode != null) {
+          throw new QueryException(
+              "Evaluation of query \"" + expr.toTrunctatedString() + "\" failed",
+              detailedExitCode.getFailureDetail());
+        }
         throw new QueryException(
-            "Evaluation of query \"" + expr + "\" failed due to BUILD file errors",
+            "Evaluation of query \""
+                + expr.toTrunctatedString()
+                + "\" failed due to BUILD file errors",
             Query.Code.BUILD_FILE_ERROR);
+      }
+      eventHandler.handle(
+          Event.warn("--keep_going specified, ignoring errors. Results may be inaccurate"));
+      if (detailedExitCode != null) {
+        return QueryEvalResult.failure(emptySensingCallback.isEmpty(), detailedExitCode);
       } else {
-        eventHandler.handle(Event.warn("--keep_going specified, ignoring errors.  "
-            + "Results may be inaccurate"));
+        return QueryEvalResult.failure(
+            emptySensingCallback.isEmpty(),
+            DetailedExitCode.of(
+                FailureDetail.newBuilder()
+                    .setMessage(
+                        "Evaluation of query \""
+                            + expr.toTrunctatedString()
+                            + "\" failed due to BUILD file errors")
+                    .setQuery(Query.newBuilder().setCode(Code.BUILD_FILE_ERROR))
+                    .build()));
       }
     }
-
-    return new QueryEvalResult(!eventHandler.hasErrors(), emptySensingCallback.isEmpty());
-  }
-
-  public QueryEvalResult evaluateQuery(String query, ThreadSafeOutputFormatterCallback<T> callback)
-      throws QueryException, InterruptedException, IOException {
-    return evaluateQuery(QueryExpression.parse(query, this), callback);
+    return QueryEvalResult.success(emptySensingCallback.isEmpty());
   }
 
   private static class EmptinessSensingCallback<T> extends OutputFormatterCallback<T> {
@@ -204,8 +220,7 @@ public abstract class AbstractBlazeQueryEnvironment<T> extends AbstractQueryEnvi
     }
 
     @Override
-    public void processOutput(Iterable<T> partialResult)
-        throws IOException, InterruptedException {
+    public void processOutput(Iterable<T> partialResult) throws IOException, InterruptedException {
       empty.compareAndSet(true, Iterables.isEmpty(partialResult));
       callback.processOutput(partialResult);
     }
@@ -225,13 +240,13 @@ public abstract class AbstractBlazeQueryEnvironment<T> extends AbstractQueryEnvi
   }
 
   @Override
-  public void reportBuildFileError(QueryExpression caller, String message) throws QueryException {
+  public void handleError(
+      QueryExpression expression, String message, DetailedExitCode detailedExitCode)
+      throws QueryException {
     if (!keepGoing) {
-      throw new QueryException(caller, message, Query.Code.BUILD_FILE_ERROR);
-    } else {
-      // Keep consistent with evaluateQuery() above.
-      eventHandler.handle(Event.error("Evaluation of query \"" + caller + "\" failed: " + message));
+      throw new QueryException(expression, message, detailedExitCode.getFailureDetail());
     }
+    eventHandler.handle(createErrorEvent(expression, message, detailedExitCode));
   }
 
   public abstract Target getTarget(Label label)
@@ -254,8 +269,22 @@ public abstract class AbstractBlazeQueryEnvironment<T> extends AbstractQueryEnvi
     return resultBuilder.build();
   }
 
+  protected void validateScopeOfTargets(Set<Target> targets) throws QueryException {
+    // Sets.filter would be more convenient here, but can't deal with exceptions.
+    if (labelFilter != Predicates.<Label>alwaysTrue()) {
+      // The labelFilter is always true for bazel query; it's only used for genquery rules.
+      Iterator<Target> targetIterator = targets.iterator();
+      while (targetIterator.hasNext()) {
+        Target target = targetIterator.next();
+        if (!validateScope(target.getLabel(), strictScope)) {
+          targetIterator.remove();
+        }
+      }
+    }
+  }
+
   protected boolean validateScope(Label label, boolean strict) throws QueryException {
-    if (!labelFilter.apply(label)) {
+    if (!labelFilter.test(label)) {
       String error = String.format("target '%s' is not within the scope of the query", label);
       if (strict) {
         throw new QueryException(error, Query.Code.TARGET_NOT_IN_UNIVERSE_SCOPE);
@@ -292,12 +321,32 @@ public abstract class AbstractBlazeQueryEnvironment<T> extends AbstractQueryEnvi
   protected static class TargetKeyExtractor implements KeyExtractor<Target, Label> {
     public static final TargetKeyExtractor INSTANCE = new TargetKeyExtractor();
 
-    private TargetKeyExtractor() {
-    }
+    private TargetKeyExtractor() {}
 
     @Override
     public Label extractKey(Target element) {
       return element.getLabel();
     }
+  }
+
+  private static Event createErrorEvent(
+      QueryExpression expr, String message, @Nullable DetailedExitCode detailedExitCode) {
+    String eventMessage =
+        String.format("Evaluation of query \"%s\" failed: %s", expr.toTrunctatedString(), message);
+    Event event = Event.error(eventMessage);
+    if (detailedExitCode != null) {
+      event =
+          event.withProperty(
+              DetailedExitCode.class,
+              DetailedExitCode.of(
+                  detailedExitCode.getExitCode(),
+                  detailedExitCode.getFailureDetail().toBuilder()
+                      .setMessage(eventMessage)
+                      .build()));
+    } else {
+      logger.atWarning().atMostEvery(1, MINUTES).log(
+          "Null detailed exit code for %s %s", message, expr);
+    }
+    return event;
   }
 }

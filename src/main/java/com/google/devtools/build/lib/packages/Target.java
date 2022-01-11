@@ -15,10 +15,10 @@
 package com.google.devtools.build.lib.packages;
 
 import com.google.devtools.build.lib.packages.License.DistributionType;
-import com.google.devtools.build.lib.skylarkbuildapi.TargetApi;
-import com.google.devtools.build.lib.syntax.Location;
+import com.google.devtools.build.lib.starlarkbuildapi.TargetApi;
 import java.util.Set;
 import javax.annotation.Nullable;
+import net.starlark.java.syntax.Location;
 
 /**
  * A node in the build dependency graph, identified by a Label.

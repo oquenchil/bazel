@@ -13,7 +13,13 @@
 // limitations under the License.
 package com.google.devtools.build.lib.actions;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.Streams.stream;
+import static java.nio.charset.StandardCharsets.ISO_8859_1;
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.unsafe.StringUnsafe;
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.GccParamFileEscaper;
@@ -27,7 +33,6 @@ import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.CharsetEncoder;
-import java.nio.charset.StandardCharsets;
 
 /**
  * Support for parameter file generation (as used by gcc and other tools, e.g.
@@ -66,7 +71,7 @@ public class ParameterFile {
      * A parameter file where each parameter is correctly quoted for gcc or clang use, and separated
      * by white space (space, tab, newline).
      */
-    GCC_QUOTED;
+    GCC_QUOTED
   }
 
   @VisibleForTesting
@@ -111,10 +116,10 @@ public class ParameterFile {
 
   private static void writeContent(
       OutputStream outputStream, Iterable<String> arguments, Charset charset) throws IOException {
-    if (charset.equals(StandardCharsets.ISO_8859_1) && StringUnsafe.canUse()) {
-      writeContentLatin1Jdk9(outputStream, arguments);
-    } else if (charset.equals(StandardCharsets.UTF_8) && StringUnsafe.canUse()) {
-      writeContentUtf8Jdk9(outputStream, arguments);
+    if (charset.equals(ISO_8859_1)) {
+      writeContentLatin1(outputStream, arguments);
+    } else if (charset.equals(UTF_8)) {
+      writeContentUtf8(outputStream, arguments);
     } else {
       // Generic charset support
       OutputStreamWriter out = new OutputStreamWriter(outputStream, charset);
@@ -128,10 +133,10 @@ public class ParameterFile {
 
   /**
    * Fast LATIN-1 path that avoids GC overhead. This takes advantage of the fact that strings are
-   * encoded as either LATIN-1 or UTF-16 under JDK9. When LATIN-1 we can simply copy the byte
+   * encoded as either LATIN-1 or UTF-16 under JDK9+. When LATIN-1 we can simply copy the byte
    * buffer, when UTF-16 we can fail loudly.
    */
-  private static void writeContentLatin1Jdk9(OutputStream outputStream, Iterable<String> arguments)
+  private static void writeContentLatin1(OutputStream outputStream, Iterable<String> arguments)
       throws IOException {
     StringUnsafe stringUnsafe = StringUnsafe.getInstance();
     for (String line : arguments) {
@@ -140,7 +145,7 @@ public class ParameterFile {
         outputStream.write(bytes);
       } else {
         // Error case, encode with '?' characters
-        ByteBuffer encodedBytes = StandardCharsets.ISO_8859_1.encode(CharBuffer.wrap(line));
+        ByteBuffer encodedBytes = ISO_8859_1.encode(CharBuffer.wrap(line));
         outputStream.write(
             encodedBytes.array(),
             encodedBytes.arrayOffset(),
@@ -153,13 +158,13 @@ public class ParameterFile {
 
   /**
    * Fast UTF-8 path that tries to coder GC overhead. This takes advantage of the fact that strings
-   * are encoded as either LATIN-1 or UTF-16 under JDK9. When LATIN-1 we can check if the buffer is
+   * are encoded as either LATIN-1 or UTF-16 under JDK9+. When LATIN-1 we can check if the buffer is
    * ASCII and copy that directly (since this is both valid LATIN-1 and UTF-8), in all other cases
    * we must re-encode.
    */
-  private static void writeContentUtf8Jdk9(OutputStream outputStream, Iterable<String> arguments)
+  private static void writeContentUtf8(OutputStream outputStream, Iterable<String> arguments)
       throws IOException {
-    CharsetEncoder encoder = StandardCharsets.UTF_8.newEncoder();
+    CharsetEncoder encoder = UTF_8.newEncoder();
     StringUnsafe stringUnsafe = StringUnsafe.getInstance();
     for (String line : arguments) {
       byte[] bytes = stringUnsafe.getByteArray(line);
@@ -184,5 +189,28 @@ public class ParameterFile {
       hiBitSet |= ((latin1Bytes[i] & 0x80) != 0);
     }
     return !hiBitSet;
+  }
+
+  /** Criterion shared by {@link #flagsOnly} and {@link #nonFlags}. */
+  private static boolean isFlag(String arg) {
+    return arg.startsWith("--");
+  }
+
+  /**
+   * Extracts the args from the given list that are flags (i.e. start with "--"). Note, this makes
+   * sense only if flags with values have previously been joined, e.g."--foo=bar" rather than
+   * "--foo", "bar".
+   */
+  public static ImmutableList<String> flagsOnly(Iterable<String> args) {
+    return stream(args).filter(ParameterFile::isFlag).collect(toImmutableList());
+  }
+
+  /**
+   * Extracts the args from the given list that are not flags (i.e. do not start with "--"). Note,
+   * this makes sense only if flags with values have previously been joined, e.g."--foo=bar" rather
+   * than "--foo", "bar".
+   */
+  public static ImmutableList<String> nonFlags(Iterable<String> args) {
+    return stream(args).filter(arg -> !isFlag(arg)).collect(toImmutableList());
   }
 }

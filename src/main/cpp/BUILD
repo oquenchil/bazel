@@ -1,5 +1,3 @@
-load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
-
 # Description:
 #   The Bazel launcher.
 package(
@@ -21,10 +19,6 @@ cc_library(
         "startup_options.h",
     ] + select({
         "//src/conditions:darwin": [
-            "blaze_util_darwin.cc",
-            "blaze_util_posix.cc",
-        ],
-        "//src/conditions:darwin_x86_64": [
             "blaze_util_darwin.cc",
             "blaze_util_posix.cc",
         ],
@@ -50,9 +44,6 @@ cc_library(
     ],
     linkopts = select({
         "//src/conditions:darwin": [
-            "-framework CoreFoundation",
-        ],
-        "//src/conditions:darwin_x86_64": [
             "-framework CoreFoundation",
         ],
         "//src/conditions:freebsd": [
@@ -113,8 +104,6 @@ cc_binary(
     }),
     linkopts = select({
         "//src/conditions:darwin": [
-        ],
-        "//src/conditions:darwin_x86_64": [
         ],
         "//src/conditions:freebsd": [
             "-lprocstat",

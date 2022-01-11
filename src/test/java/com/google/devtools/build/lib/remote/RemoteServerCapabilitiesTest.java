@@ -33,11 +33,14 @@ import com.google.devtools.build.lib.analysis.BlazeVersionInfo;
 import com.google.devtools.build.lib.authandtls.AuthAndTLSOptions;
 import com.google.devtools.build.lib.authandtls.GoogleAuthUtils;
 import com.google.devtools.build.lib.remote.RemoteRetrier.ExponentialBackoff;
+import com.google.devtools.build.lib.remote.RemoteServerCapabilities.ServerCapabilitiesRequirement;
+import com.google.devtools.build.lib.remote.grpc.ChannelConnectionFactory;
 import com.google.devtools.build.lib.remote.options.RemoteOptions;
 import com.google.devtools.build.lib.remote.util.TestUtils;
 import com.google.devtools.build.lib.remote.util.TracingMetadataUtils;
 import com.google.devtools.common.options.Options;
 import io.grpc.CallCredentials;
+import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
 import io.grpc.Server;
 import io.grpc.ServerCall;
@@ -49,6 +52,7 @@ import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
 import io.grpc.stub.StreamObserver;
 import io.grpc.util.MutableHandlerRegistry;
+import io.reactivex.rxjava3.core.Single;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.junit.After;
@@ -147,10 +151,22 @@ public class RemoteServerCapabilitiesTest {
             retryService);
     ReferenceCountedChannel channel =
         new ReferenceCountedChannel(
-            InProcessChannelBuilder.forName(fakeServerName)
-                .intercept(TracingMetadataUtils.newExecHeadersInterceptor(remoteOptions))
-                .directExecutor()
-                .build());
+            new ChannelConnectionFactory() {
+              @Override
+              public Single<? extends ChannelConnection> create() {
+                ManagedChannel ch =
+                    InProcessChannelBuilder.forName(fakeServerName)
+                        .intercept(TracingMetadataUtils.newExecHeadersInterceptor(remoteOptions))
+                        .directExecutor()
+                        .build();
+                return Single.just(new ChannelConnection(ch));
+              }
+
+              @Override
+              public int maxConcurrency() {
+                return 100;
+              }
+            });
     RemoteServerCapabilities client =
         new RemoteServerCapabilities("instance", channel.retain(), null, 3, retrier);
 
@@ -194,7 +210,19 @@ public class RemoteServerCapabilitiesTest {
             retryService);
     ReferenceCountedChannel channel =
         new ReferenceCountedChannel(
-            InProcessChannelBuilder.forName(fakeServerName).directExecutor().build());
+            new ChannelConnectionFactory() {
+              @Override
+              public Single<? extends ChannelConnection> create() {
+                ManagedChannel ch =
+                    InProcessChannelBuilder.forName(fakeServerName).directExecutor().build();
+                return Single.just(new ChannelConnection(ch));
+              }
+
+              @Override
+              public int maxConcurrency() {
+                return 100;
+              }
+            });
     CallCredentials creds =
         GoogleAuthUtils.newCallCredentials(Options.getDefaults(AuthAndTLSOptions.class));
     RemoteServerCapabilities client =
@@ -204,17 +232,18 @@ public class RemoteServerCapabilitiesTest {
   }
 
   @Test
-  public void testCheckClientServerCompatibility_NoChecks() throws Exception {
+  public void testCheckClientServerCompatibility_noChecks() throws Exception {
     RemoteServerCapabilities.ClientServerCompatibilityStatus st =
         RemoteServerCapabilities.checkClientServerCompatibility(
             ServerCapabilities.getDefaultInstance(),
             Options.getDefaults(RemoteOptions.class),
-            DigestFunction.Value.SHA256);
+            DigestFunction.Value.SHA256,
+            ServerCapabilitiesRequirement.NONE);
     assertThat(st.isOk()).isTrue();
   }
 
   @Test
-  public void testCheckClientServerCompatibility_ApiVersionDeprecated() throws Exception {
+  public void testCheckClientServerCompatibility_apiVersionDeprecated() throws Exception {
     ServerCapabilities caps =
         ServerCapabilities.newBuilder()
             .setDeprecatedApiVersion(ApiVersion.current.toSemVer())
@@ -222,7 +251,7 @@ public class RemoteServerCapabilitiesTest {
             .setHighApiVersion(new ApiVersion(100, 0, 0, "").toSemVer())
             .setCacheCapabilities(
                 CacheCapabilities.newBuilder()
-                    .addDigestFunction(DigestFunction.Value.SHA256)
+                    .addDigestFunctions(DigestFunction.Value.SHA256)
                     .setActionCacheUpdateCapabilities(
                         ActionCacheUpdateCapabilities.newBuilder().setUpdateEnabled(true).build())
                     .build())
@@ -231,21 +260,21 @@ public class RemoteServerCapabilitiesTest {
     remoteOptions.remoteCache = "server:port";
     RemoteServerCapabilities.ClientServerCompatibilityStatus st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps, remoteOptions, DigestFunction.Value.SHA256, ServerCapabilitiesRequirement.CACHE);
     assertThat(st.getErrors()).isEmpty();
     assertThat(st.getWarnings()).hasSize(1);
     assertThat(st.getWarnings().get(0)).containsMatch("API.*deprecated.*100.0");
   }
 
   @Test
-  public void testCheckClientServerCompatibility_ApiVersionUnsupported() throws Exception {
+  public void testCheckClientServerCompatibility_apiVersionUnsupported() throws Exception {
     ServerCapabilities caps =
         ServerCapabilities.newBuilder()
             .setLowApiVersion(new ApiVersion(100, 0, 0, "").toSemVer())
             .setHighApiVersion(new ApiVersion(100, 0, 0, "").toSemVer())
             .setCacheCapabilities(
                 CacheCapabilities.newBuilder()
-                    .addDigestFunction(DigestFunction.Value.SHA256)
+                    .addDigestFunctions(DigestFunction.Value.SHA256)
                     .setActionCacheUpdateCapabilities(
                         ActionCacheUpdateCapabilities.newBuilder().setUpdateEnabled(true).build())
                     .build())
@@ -254,13 +283,13 @@ public class RemoteServerCapabilitiesTest {
     remoteOptions.remoteCache = "server:port";
     RemoteServerCapabilities.ClientServerCompatibilityStatus st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps, remoteOptions, DigestFunction.Value.SHA256, ServerCapabilitiesRequirement.CACHE);
     assertThat(st.getErrors()).hasSize(1);
     assertThat(st.getErrors().get(0)).containsMatch("API.*not supported.*100.0");
   }
 
   @Test
-  public void testCheckClientServerCompatibility_RemoteCacheDoesNotSupportDigestFunction()
+  public void testCheckClientServerCompatibility_remoteCacheDoesNotSupportDigestFunction()
       throws Exception {
     ServerCapabilities caps =
         ServerCapabilities.newBuilder()
@@ -268,7 +297,7 @@ public class RemoteServerCapabilitiesTest {
             .setHighApiVersion(ApiVersion.current.toSemVer())
             .setCacheCapabilities(
                 CacheCapabilities.newBuilder()
-                    .addDigestFunction(DigestFunction.Value.MD5)
+                    .addDigestFunctions(DigestFunction.Value.MD5)
                     .setActionCacheUpdateCapabilities(
                         ActionCacheUpdateCapabilities.newBuilder().setUpdateEnabled(true).build())
                     .build())
@@ -277,13 +306,13 @@ public class RemoteServerCapabilitiesTest {
     remoteOptions.remoteCache = "server:port";
     RemoteServerCapabilities.ClientServerCompatibilityStatus st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps, remoteOptions, DigestFunction.Value.SHA256, ServerCapabilitiesRequirement.CACHE);
     assertThat(st.getErrors()).hasSize(1);
     assertThat(st.getErrors().get(0)).containsMatch("Cannot use hash function");
   }
 
   @Test
-  public void testCheckClientServerCompatibility_RemoteCacheDoesNotSupportUpdate()
+  public void testCheckClientServerCompatibility_remoteCacheDoesNotSupportUpdate()
       throws Exception {
     ServerCapabilities caps =
         ServerCapabilities.newBuilder()
@@ -291,14 +320,14 @@ public class RemoteServerCapabilitiesTest {
             .setHighApiVersion(ApiVersion.current.toSemVer())
             .setCacheCapabilities(
                 CacheCapabilities.newBuilder()
-                    .addDigestFunction(DigestFunction.Value.SHA256)
+                    .addDigestFunctions(DigestFunction.Value.SHA256)
                     .build())
             .build();
     RemoteOptions remoteOptions = Options.getDefaults(RemoteOptions.class);
     remoteOptions.remoteCache = "server:port";
     RemoteServerCapabilities.ClientServerCompatibilityStatus st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps, remoteOptions, DigestFunction.Value.SHA256, ServerCapabilitiesRequirement.CACHE);
     assertThat(st.getErrors()).hasSize(1);
     assertThat(st.getErrors().get(0))
         .containsMatch("not authorized to write local results to the remote cache");
@@ -307,19 +336,19 @@ public class RemoteServerCapabilitiesTest {
     remoteOptions.remoteUploadLocalResults = false;
     st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps, remoteOptions, DigestFunction.Value.SHA256, ServerCapabilitiesRequirement.CACHE);
     assertThat(st.isOk()).isTrue();
   }
 
   @Test
-  public void testCheckClientServerCompatibility_RemoteExecutionIsDisabled() throws Exception {
+  public void testCheckClientServerCompatibility_remoteExecutionIsDisabled() throws Exception {
     ServerCapabilities caps =
         ServerCapabilities.newBuilder()
             .setLowApiVersion(ApiVersion.current.toSemVer())
             .setHighApiVersion(ApiVersion.current.toSemVer())
             .setCacheCapabilities(
                 CacheCapabilities.newBuilder()
-                    .addDigestFunction(DigestFunction.Value.SHA256)
+                    .addDigestFunctions(DigestFunction.Value.SHA256)
                     .setActionCacheUpdateCapabilities(
                         ActionCacheUpdateCapabilities.newBuilder().setUpdateEnabled(true).build())
                     .build())
@@ -332,14 +361,17 @@ public class RemoteServerCapabilitiesTest {
     remoteOptions.remoteExecutor = "server:port";
     RemoteServerCapabilities.ClientServerCompatibilityStatus st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps,
+            remoteOptions,
+            DigestFunction.Value.SHA256,
+            ServerCapabilitiesRequirement.EXECUTION_AND_CACHE);
     assertThat(st.getErrors()).hasSize(1);
     assertThat(st.getErrors().get(0)).containsMatch("Remote execution is not supported");
     assertThat(st.getErrors().get(0)).containsMatch("not authorized to use remote execution");
   }
 
   @Test
-  public void testCheckClientServerCompatibility_RemoteExecutionDoesNotSupportDigestFunction()
+  public void testCheckClientServerCompatibility_remoteExecutionDoesNotSupportDigestFunction()
       throws Exception {
     ServerCapabilities caps =
         ServerCapabilities.newBuilder()
@@ -347,7 +379,7 @@ public class RemoteServerCapabilitiesTest {
             .setHighApiVersion(ApiVersion.current.toSemVer())
             .setCacheCapabilities(
                 CacheCapabilities.newBuilder()
-                    .addDigestFunction(DigestFunction.Value.SHA256)
+                    .addDigestFunctions(DigestFunction.Value.SHA256)
                     .setActionCacheUpdateCapabilities(
                         ActionCacheUpdateCapabilities.newBuilder().setUpdateEnabled(true).build())
                     .build())
@@ -361,13 +393,16 @@ public class RemoteServerCapabilitiesTest {
     remoteOptions.remoteExecutor = "server:port";
     RemoteServerCapabilities.ClientServerCompatibilityStatus st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps,
+            remoteOptions,
+            DigestFunction.Value.SHA256,
+            ServerCapabilitiesRequirement.EXECUTION_AND_CACHE);
     assertThat(st.getErrors()).hasSize(1);
     assertThat(st.getErrors().get(0)).containsMatch("Cannot use hash function");
   }
 
   @Test
-  public void testCheckClientServerCompatibility_LocalFallbackNoRemoteCacheUpdate()
+  public void testCheckClientServerCompatibility_localFallbackNoRemoteCacheUpdate()
       throws Exception {
     ServerCapabilities caps =
         ServerCapabilities.newBuilder()
@@ -375,7 +410,7 @@ public class RemoteServerCapabilitiesTest {
             .setHighApiVersion(ApiVersion.current.toSemVer())
             .setCacheCapabilities(
                 CacheCapabilities.newBuilder()
-                    .addDigestFunction(DigestFunction.Value.SHA256)
+                    .addDigestFunctions(DigestFunction.Value.SHA256)
                     .build())
             .setExecutionCapabilities(
                 ExecutionCapabilities.newBuilder()
@@ -388,7 +423,10 @@ public class RemoteServerCapabilitiesTest {
     remoteOptions.remoteLocalFallback = true;
     RemoteServerCapabilities.ClientServerCompatibilityStatus st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps,
+            remoteOptions,
+            DigestFunction.Value.SHA256,
+            ServerCapabilitiesRequirement.EXECUTION_AND_CACHE);
     assertThat(st.getErrors()).hasSize(1);
     assertThat(st.getErrors().get(0))
         .containsMatch("not authorized to write local results to the remote cache");
@@ -397,7 +435,10 @@ public class RemoteServerCapabilitiesTest {
     remoteOptions.remoteLocalFallback = false;
     st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps,
+            remoteOptions,
+            DigestFunction.Value.SHA256,
+            ServerCapabilitiesRequirement.EXECUTION_AND_CACHE);
     assertThat(st.isOk()).isTrue();
 
     // Ignored when no uploading local results.
@@ -405,19 +446,22 @@ public class RemoteServerCapabilitiesTest {
     remoteOptions.remoteUploadLocalResults = false;
     st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps,
+            remoteOptions,
+            DigestFunction.Value.SHA256,
+            ServerCapabilitiesRequirement.EXECUTION_AND_CACHE);
     assertThat(st.isOk()).isTrue();
   }
 
   @Test
-  public void testCheckClientServerCompatibility_CachePriority() throws Exception {
+  public void testCheckClientServerCompatibility_cachePriority() throws Exception {
     ServerCapabilities caps =
         ServerCapabilities.newBuilder()
             .setLowApiVersion(ApiVersion.current.toSemVer())
             .setHighApiVersion(ApiVersion.current.toSemVer())
             .setCacheCapabilities(
                 CacheCapabilities.newBuilder()
-                    .addDigestFunction(DigestFunction.Value.SHA256)
+                    .addDigestFunctions(DigestFunction.Value.SHA256)
                     .setCachePriorityCapabilities(
                         PriorityCapabilities.newBuilder()
                             .addPriorities(
@@ -432,7 +476,7 @@ public class RemoteServerCapabilitiesTest {
     remoteOptions.remoteResultCachePriority = 11;
     RemoteServerCapabilities.ClientServerCompatibilityStatus st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps, remoteOptions, DigestFunction.Value.SHA256, ServerCapabilitiesRequirement.CACHE);
     assertThat(st.getErrors()).hasSize(1);
     assertThat(st.getErrors().get(0)).containsMatch("remote_result_cache_priority");
 
@@ -440,26 +484,26 @@ public class RemoteServerCapabilitiesTest {
     remoteOptions.remoteResultCachePriority = 10;
     st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps, remoteOptions, DigestFunction.Value.SHA256, ServerCapabilitiesRequirement.CACHE);
     assertThat(st.isOk()).isTrue();
 
     // Check not performed if the value is 0.
     remoteOptions.remoteResultCachePriority = 0;
     st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps, remoteOptions, DigestFunction.Value.SHA256, ServerCapabilitiesRequirement.CACHE);
     assertThat(st.isOk()).isTrue();
   }
 
   @Test
-  public void testCheckClientServerCompatibility_ExecutionPriority() throws Exception {
+  public void testCheckClientServerCompatibility_executionPriority() throws Exception {
     ServerCapabilities caps =
         ServerCapabilities.newBuilder()
             .setLowApiVersion(ApiVersion.current.toSemVer())
             .setHighApiVersion(ApiVersion.current.toSemVer())
             .setCacheCapabilities(
                 CacheCapabilities.newBuilder()
-                    .addDigestFunction(DigestFunction.Value.SHA256)
+                    .addDigestFunctions(DigestFunction.Value.SHA256)
                     .build())
             .setExecutionCapabilities(
                 ExecutionCapabilities.newBuilder()
@@ -479,7 +523,10 @@ public class RemoteServerCapabilitiesTest {
     remoteOptions.remoteExecutionPriority = 11;
     RemoteServerCapabilities.ClientServerCompatibilityStatus st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps,
+            remoteOptions,
+            DigestFunction.Value.SHA256,
+            ServerCapabilitiesRequirement.EXECUTION_AND_CACHE);
     assertThat(st.getErrors()).hasSize(1);
     assertThat(st.getErrors().get(0)).containsMatch("remote_execution_priority");
 
@@ -487,14 +534,20 @@ public class RemoteServerCapabilitiesTest {
     remoteOptions.remoteExecutionPriority = 10;
     st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps,
+            remoteOptions,
+            DigestFunction.Value.SHA256,
+            ServerCapabilitiesRequirement.EXECUTION_AND_CACHE);
     assertThat(st.isOk()).isTrue();
 
     // Check not performed if the value is 0.
     remoteOptions.remoteExecutionPriority = 0;
     st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps,
+            remoteOptions,
+            DigestFunction.Value.SHA256,
+            ServerCapabilitiesRequirement.EXECUTION_AND_CACHE);
     assertThat(st.isOk()).isTrue();
 
     // Ignored when no remote execution requested.
@@ -503,7 +556,51 @@ public class RemoteServerCapabilitiesTest {
     remoteOptions.remoteCache = "server:port";
     st =
         RemoteServerCapabilities.checkClientServerCompatibility(
-            caps, remoteOptions, DigestFunction.Value.SHA256);
+            caps, remoteOptions, DigestFunction.Value.SHA256, ServerCapabilitiesRequirement.CACHE);
+    assertThat(st.isOk()).isTrue();
+  }
+
+  @Test
+  public void testCheckClientServerCompatibility_executionCapsOnly() throws Exception {
+    ServerCapabilities caps =
+        ServerCapabilities.newBuilder()
+            .setLowApiVersion(ApiVersion.current.toSemVer())
+            .setHighApiVersion(ApiVersion.current.toSemVer())
+            .setExecutionCapabilities(
+                ExecutionCapabilities.newBuilder()
+                    .setDigestFunction(DigestFunction.Value.SHA256)
+                    .setExecEnabled(true)
+                    .build())
+            .build();
+    RemoteOptions remoteOptions = Options.getDefaults(RemoteOptions.class);
+    remoteOptions.remoteExecutor = "server:port";
+    RemoteServerCapabilities.ClientServerCompatibilityStatus st =
+        RemoteServerCapabilities.checkClientServerCompatibility(
+            caps,
+            remoteOptions,
+            DigestFunction.Value.SHA256,
+            ServerCapabilitiesRequirement.EXECUTION);
+    assertThat(st.isOk()).isTrue();
+  }
+
+  @Test
+  public void testCheckClientServerCompatibility_cacheCapsOnly() throws Exception {
+    ServerCapabilities caps =
+        ServerCapabilities.newBuilder()
+            .setLowApiVersion(ApiVersion.current.toSemVer())
+            .setHighApiVersion(ApiVersion.current.toSemVer())
+            .setCacheCapabilities(
+                CacheCapabilities.newBuilder()
+                    .addDigestFunctions(DigestFunction.Value.SHA256)
+                    .setActionCacheUpdateCapabilities(
+                        ActionCacheUpdateCapabilities.newBuilder().setUpdateEnabled(true).build())
+                    .build())
+            .build();
+    RemoteOptions remoteOptions = Options.getDefaults(RemoteOptions.class);
+    remoteOptions.remoteCache = "server:port";
+    RemoteServerCapabilities.ClientServerCompatibilityStatus st =
+        RemoteServerCapabilities.checkClientServerCompatibility(
+            caps, remoteOptions, DigestFunction.Value.SHA256, ServerCapabilitiesRequirement.CACHE);
     assertThat(st.isOk()).isTrue();
   }
 }

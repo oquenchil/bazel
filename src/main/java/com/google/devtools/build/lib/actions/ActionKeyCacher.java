@@ -23,38 +23,59 @@ import javax.annotation.Nullable;
  */
 public abstract class ActionKeyCacher implements ActionAnalysisMetadata {
 
+  /**
+   * Integer embedded in every action key.
+   *
+   * <p>The purpose of this member and associated property is to allow to easily invalidate the
+   * action cache in case we want to mitigate bugs resulting with false-sharing.
+   */
+  private static final int ACTION_KEY_UNIQUIFIER =
+      Integer.parseInt(System.getProperty("ACTION_KEY_UNIQUIFIER", "0"));
+
   @Nullable private volatile String cachedKey = null;
 
   @Override
   public final String getKey(
-      ActionKeyContext actionKeyContext, @Nullable ArtifactExpander artifactExpander) {
+      ActionKeyContext actionKeyContext, @Nullable ArtifactExpander artifactExpander)
+      throws InterruptedException {
+    // Only cache the key when it is given all necessary information to compute a correct key.
+    // Practically, most of the benefit of the cache comes from execution, which does provide the
+    // artifactExpander.
+    if (artifactExpander == null) {
+      return computeActionKey(actionKeyContext, null);
+    }
+
     if (cachedKey == null) {
       synchronized (this) {
         if (cachedKey == null) {
-          try {
-            Fingerprint fp = new Fingerprint();
-            // TODO(b/153904017): Make use of the provided artifactExpander and only cache if
-            // present.
-            computeKey(actionKeyContext, /*artifactExpander=*/ null, fp);
-
-            // Add a bool indicating whether the execution platform was set.
-            fp.addBoolean(getExecutionPlatform() != null);
-            if (getExecutionPlatform() != null) {
-              // Add the execution platform information.
-              getExecutionPlatform().addTo(fp);
-            }
-
-            fp.addStringMap(getExecProperties());
-
-            // Compute the actual key and store it.
-            cachedKey = fp.hexDigestAndReset();
-          } catch (CommandLineExpansionException e) {
-            cachedKey = KEY_ERROR;
-          }
+          cachedKey = computeActionKey(actionKeyContext, artifactExpander);
         }
       }
     }
     return cachedKey;
+  }
+
+  private String computeActionKey(
+      ActionKeyContext actionKeyContext, @Nullable ArtifactExpander artifactExpander)
+      throws InterruptedException {
+    try {
+      Fingerprint fp = new Fingerprint();
+      computeKey(actionKeyContext, artifactExpander, fp);
+
+      // Add a bool indicating whether the execution platform was set.
+      fp.addBoolean(getExecutionPlatform() != null);
+      if (getExecutionPlatform() != null) {
+        // Add the execution platform information.
+        getExecutionPlatform().addTo(fp);
+      }
+
+      fp.addStringMap(getExecProperties());
+      fp.addInt(ACTION_KEY_UNIQUIFIER);
+      // Compute the actual key and store it.
+      return fp.hexDigestAndReset();
+    } catch (CommandLineExpansionException e) {
+      return KEY_ERROR;
+    }
   }
 
   /**
@@ -69,5 +90,5 @@ public abstract class ActionKeyCacher implements ActionAnalysisMetadata {
       ActionKeyContext actionKeyContext,
       @Nullable ArtifactExpander artifactExpander,
       Fingerprint fp)
-      throws CommandLineExpansionException;
+      throws CommandLineExpansionException, InterruptedException;
 }
