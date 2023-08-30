@@ -130,6 +130,7 @@ public final class DarwinSandboxedSpawnRunnerTest extends SandboxedSpawnRunnerTe
             sandboxBase,
             /* sandboxfsProcess= */ null,
             /* sandboxfsMapSymlinkTargets= */ false,
+            /* useLockedInputs= */ false,
             treeDeleter);
     doSimpleExecutionTest(runner);
   }
@@ -143,6 +144,7 @@ public final class DarwinSandboxedSpawnRunnerTest extends SandboxedSpawnRunnerTe
             sandboxBase,
             /* sandboxfsProcess= */ null,
             /* sandboxfsMapSymlinkTargets= */ false,
+            /* useLockedInputs= */ false,
             treeDeleter);
     Spawn spawn =
         new SpawnBuilder("cp", "params/param-file", "out")
@@ -184,6 +186,7 @@ public final class DarwinSandboxedSpawnRunnerTest extends SandboxedSpawnRunnerTe
             sandboxBase,
             sandboxfsProcess,
             /* sandboxfsMapSymlinkTargets= */ false,
+            /* useLockedInputs= */ false,
             treeDeleter);
     doSimpleExecutionTest(runner);
   }

@@ -109,6 +109,8 @@ final class DarwinSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
   private final Path sandboxBase;
   @Nullable private final SandboxfsProcess sandboxfsProcess;
   private final boolean sandboxfsMapSymlinkTargets;
+
+  private final boolean useLockedInputs;
   private final TreeDeleter treeDeleter;
 
   /**
@@ -136,6 +138,7 @@ final class DarwinSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
       Path sandboxBase,
       @Nullable SandboxfsProcess sandboxfsProcess,
       boolean sandboxfsMapSymlinkTargets,
+      boolean useLockedInputs,
       TreeDeleter treeDeleter)
       throws IOException, InterruptedException {
     super(cmdEnv);
@@ -149,6 +152,7 @@ final class DarwinSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
     this.sandboxBase = sandboxBase;
     this.sandboxfsProcess = sandboxfsProcess;
     this.sandboxfsMapSymlinkTargets = sandboxfsMapSymlinkTargets;
+    this.useLockedInputs = useLockedInputs;
     this.treeDeleter = treeDeleter;
   }
 
@@ -299,6 +303,16 @@ final class DarwinSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
               statisticsPath);
         }
       };
+    } else if (useLockedInputs) {
+      return new DarwinLockedInputsSandboxedSpawn(execRoot, environment, commandLine, spawn.getMnemonic()) {
+        @Override
+        public void createFileSystem() throws IOException, InterruptedException {
+          writeLockedInputsConfig(
+              sandboxConfigPath,
+              inputs,
+              outputs);
+        }
+      };
     } else {
       return new SymlinkedSandboxedSpawn(
           sandboxPath,
@@ -374,6 +388,52 @@ final class DarwinSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
     }
   }
 
+  private void writeLockedInputsConfig(
+      Path sandboxConfigPath,
+      SandboxInputs inputs,
+      SandboxOutputs outputs)
+      throws IOException {
+    try (PrintWriter out =
+        new PrintWriter(
+            new BufferedWriter(
+                new OutputStreamWriter(sandboxConfigPath.getOutputStream(), UTF_8)))) {
+      // Note: In Apple's sandbox configuration language, the *last* matching rule wins.
+      out.println("(version 1)");
+      out.println("(debug deny)");
+      out.println("(allow default)");
+      out.println("(allow process-exec (with no-sandbox) (literal \"/bin/ps\"))");
+
+      // By default, everything is read-only.
+      out.println("(deny file-write*)");
+
+      out.println("(allow file-write*");
+      for (Path path : alwaysWritableDirs) {
+        out.println("    (subpath \"" + path.getPathString() + "\")");
+      }
+      for (PathFragment path : outputs.files()) {
+        out.println("    (path \"" + path.getPathString() + "\")");
+      }
+      out.println(")");
+
+      out.println("(deny file-read*");
+      out.println("    (subpath \"" + execRoot + "\")");
+      out.println(")");
+      out.println("(allow file-read*");
+      ImmutableSet.Builder<PathFragment> inputPaths = ImmutableSet.builder();
+      for (PathFragment path : inputs.getFiles().keySet()) {
+        inputPaths.add(path);
+        PathFragment parent = path;
+        while (parent.getParentDirectory() != null) {
+          parent = parent.getParentDirectory();
+          inputPaths.add(parent);
+        }
+      }
+      for (PathFragment path : inputPaths.build()) {
+        out.println("    (path \"" + path.getPathString() + "\")");
+      }
+      out.println(")");
+    }
+  }
   @Override
   public String getName() {
     return "darwin-sandbox";

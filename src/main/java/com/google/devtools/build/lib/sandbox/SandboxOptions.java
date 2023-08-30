@@ -376,6 +376,14 @@ public class SandboxOptions extends OptionsBase {
   public boolean useHermetic;
 
   @Option(
+      name = "experimental_use_locked_inputs_sandbox",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
+      effectTags = {OptionEffectTag.EXECUTION}
+  )
+  public boolean useLockedInputs;
+
+  @Option(
       name = "incompatible_sandbox_hermetic_tmp",
       defaultValue = "false",
       documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,

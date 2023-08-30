@@ -63,6 +63,7 @@ java_library(
     srcs = [
         "AbstractContainerizingSandboxedSpawn.java",
         "CopyingSandboxedSpawn.java",
+        "DarwinLockedInputsSandboxedSpawn.java",
         "HardlinkedSandboxedSpawn.java",
         "SandboxStash.java",
         "SandboxedSpawn.java",

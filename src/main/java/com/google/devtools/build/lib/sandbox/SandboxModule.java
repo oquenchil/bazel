@@ -371,6 +371,7 @@ public final class SandboxModule extends BlazeModule {
                   sandboxBase,
                   sandboxfsProcess,
                   options.sandboxfsMapSymlinkTargets,
+                  options.useLockedInputs,
                   treeDeleter));
       spawnRunners.add(spawnRunner);
       builder.registerStrategy(
