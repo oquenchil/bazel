@@ -34,10 +34,8 @@ import com.google.devtools.build.lib.shell.Command;
 import com.google.devtools.build.lib.shell.CommandException;
 import com.google.devtools.build.lib.shell.CommandResult;
 import com.google.devtools.build.lib.util.OS;
-import com.google.devtools.build.lib.vfs.FileSystem;
-import com.google.devtools.build.lib.vfs.Path;
-import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.build.lib.vfs.Root;
+import com.google.devtools.build.lib.vfs.*;
+
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
@@ -308,6 +306,8 @@ final class DarwinSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
         @Override
         public void createFileSystem() throws IOException, InterruptedException {
           writeLockedInputsConfig(
+                  execRoot,
+              spawn.getRunfilesSupplier().getRunfilesDirs(),
               sandboxConfigPath,
               inputs,
               outputs);
@@ -389,6 +389,8 @@ final class DarwinSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
   }
 
   private void writeLockedInputsConfig(
+          Path execRoot,
+      ImmutableSet<PathFragment> runfilesDirs,
       Path sandboxConfigPath,
       SandboxInputs inputs,
       SandboxOutputs outputs)
@@ -410,28 +412,56 @@ final class DarwinSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
       for (Path path : alwaysWritableDirs) {
         out.println("    (subpath \"" + path.getPathString() + "\")");
       }
-      for (PathFragment path : outputs.files()) {
-        out.println("    (path \"" + path.getPathString() + "\")");
+      ImmutableList.Builder<PathFragment> outputPathsBuilder = ImmutableList.builder();
+      outputPathsBuilder.addAll(outputs.files());
+      outputPathsBuilder.addAll(outputs.dirs());
+      ImmutableList<PathFragment> outputPaths = outputPathsBuilder.build();
+      for (PathFragment path : outputPaths) {
+        out.println("    (path \"" + execRoot.getRelative(path.getPathString()) + "\")");
       }
       out.println(")");
-
       out.println("(deny file-read*");
       out.println("    (subpath \"" + execRoot + "\")");
       out.println(")");
-      out.println("(allow file-read*");
-      ImmutableSet.Builder<PathFragment> inputPaths = ImmutableSet.builder();
-      for (PathFragment path : inputs.getFiles().keySet()) {
-        inputPaths.add(path);
-        PathFragment parent = path;
-        while (parent.getParentDirectory() != null) {
-          parent = parent.getParentDirectory();
-          inputPaths.add(parent);
-        }
-      }
-      for (PathFragment path : inputPaths.build()) {
-        out.println("    (path \"" + path.getPathString() + "\")");
+      out.println("(allow file-read* file-write-mode");
+      for (PathFragment path : outputPaths) {
+        out.println("    (path \"" + execRoot.getRelative(path.getPathString()) + "\")");
+        out.println("    (path \"" + execRoot.getRelative(path.getParentDirectory().getPathString()) + "\")");
       }
       out.println(")");
+      out.println("(allow file-read*");
+      ImmutableSet.Builder<String> inputPaths = ImmutableSet.builder();
+      for (RootedPath path : inputs.getFiles().values()) {
+        if (path != null) {
+          inputPaths.add(path.asPath().getPathString());
+          RootedPath parent = path;
+          while (parent.getParentDirectory() != null) {
+            parent = parent.getParentDirectory();
+            inputPaths.add(parent.asPath().getPathString());
+          }
+        }
+      }
+      for (var symlinks : inputs.getSymlinks().entrySet()) {
+        for (PathFragment path : ImmutableList.of(symlinks.getKey(), symlinks.getValue())) {
+          if (path != null) {
+            inputPaths.add(path.getPathString());
+            PathFragment parent = path;
+            while (parent.getParentDirectory() != null) {
+              parent = parent.getParentDirectory();
+              inputPaths.add(parent.getPathString());
+            }
+          }
+        }
+      }
+      for (String path : inputPaths.build()) {
+        out.println("    (path \"" + path + "\")");
+      }
+
+      for (PathFragment runfilesDir : runfilesDirs) {
+        out.println("    (subpath \"" + execRoot.getRelative(runfilesDir).getPathString() + "\")");
+      }
+      out.println(")");
+      out.println("(allow file-read-metadata)");
     }
   }
   @Override
