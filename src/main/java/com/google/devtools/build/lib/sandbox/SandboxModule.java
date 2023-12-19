@@ -77,7 +77,7 @@ public final class SandboxModule extends BlazeModule {
 
   /** Path to the location of the sandboxes. */
   @Nullable private Path sandboxBase;
-  private static final int POOL_SIZE = 12;
+  private static final int POOL_SIZE = 4;
   private final ExecutorService inputCreationPool =
       Executors.newFixedThreadPool(
           POOL_SIZE, new ThreadFactoryBuilder().setNameFormat("create-input-thread-%d").build());

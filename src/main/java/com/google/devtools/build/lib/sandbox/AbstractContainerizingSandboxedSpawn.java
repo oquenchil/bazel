@@ -25,6 +25,7 @@ import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.sandbox.SandboxHelpers.SandboxInputs;
 import com.google.devtools.build.lib.sandbox.SandboxHelpers.SandboxOutputs;
+import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -176,14 +177,32 @@ public abstract class AbstractContainerizingSandboxedSpawn implements SandboxedS
       Set<PathFragment> inputsToCreate, LinkedHashSet<PathFragment> dirsToCreate)
       throws IOException, InterruptedException {}
 
-  private void addBatch(List<Future<Void>> futures, List<Runnable> currentBatch) {
+  private static class WorkEntry {
+    Path file1;
+    Path file2;
+    PathFragment file3;
+    public enum Op {
+      SYMLINK,
+      COPY,
+      EMPTY
+    };
+    Op op;
+  }
+  private void addBatch(List<Future<Void>> futures, List<WorkEntry> currentBatch) {
     futures.add(inputCreationPool.submit(() -> {
-      for (Runnable task : currentBatch) {
-        task.run();
+      for (WorkEntry task : currentBatch) {
+        if (task.op == WorkEntry.Op.COPY) {
+          copyFile(task.file1, task.file2);
+        } else if (task.op == WorkEntry.Op.EMPTY) {
+          FileSystemUtils.createEmptyFile(task.file1);
+        } else {
+          task.file1.createSymbolicLink(task.file3);
+        }
       }
       return null;
     }));
   }
+
 
   /**
    * Creates all inputs needed for this spawn's sandbox.
@@ -193,60 +212,62 @@ public abstract class AbstractContainerizingSandboxedSpawn implements SandboxedS
    * @param inputs All the inputs for this spawn.
    */
   void createInputs(Set<PathFragment> inputsToCreate, SandboxInputs inputs)
-      throws IOException, InterruptedException {
+      throws InterruptedException {
     int inputsPerBatch = (int)Math.ceil(inputsToCreate.size() / ((ThreadPoolExecutor) inputCreationPool).getCorePoolSize());
+    System.out.println("inputs per batch" + inputsPerBatch);
     List<Future<Void>> futures = new ArrayList<>();
-    List<Runnable> currentBatch = new ArrayList<>(inputsPerBatch);
-    for (PathFragment fragment : inputsToCreate) {
-      if (Thread.interrupted()) {
-        throw new InterruptedException("Interrupted creating inputs");
-      }
-      Path key = sandboxExecRoot.getRelative(fragment);
-      if (inputs.getFiles().containsKey(fragment)) {
-        RootedPath fileDest = inputs.getFiles().get(fragment);
-        if (fileDest != null) {
-          // currentBatch.add(() -> {
-          //   try {
-              copyFile(fileDest.asPath(), key);
-          //   } catch (IOException e){
-          //     throw new RuntimeException(e);
-          //   }
-          // });
-        } else {
-          // currentBatch.add(() -> {
-          //   try {
-              FileSystemUtils.createEmptyFile(key);
-          //   } catch (IOException e){
-          //     throw new RuntimeException(e);
-          //   }
-          // });
+    List<WorkEntry> currentBatch = new ArrayList<>(inputsPerBatch);
+
+    try (SilentCloseable c = Profiler.instance().profile("sandbox.createInputsLoop")) {
+      for (PathFragment fragment : inputsToCreate) {
+        if (Thread.interrupted()) {
+          throw new InterruptedException("Interrupted creating inputs");
         }
-      } else if (inputs.getSymlinks().containsKey(fragment)) {
-        PathFragment symlinkDest = inputs.getSymlinks().get(fragment);
-        if (symlinkDest != null) {
-          // currentBatch.add(() -> {
-          //   try {
-              key.createSymbolicLink(symlinkDest);
-          //   } catch (IOException e){
-          //     throw new RuntimeException(e);
-          //   }
-          // });
+        Path key = sandboxExecRoot.getRelative(fragment);
+        if (inputs.getFiles().containsKey(fragment)) {
+          RootedPath fileDest = inputs.getFiles().get(fragment);
+          if (fileDest != null) {
+            WorkEntry workEntry = new WorkEntry();
+            workEntry.op = WorkEntry.Op.COPY;
+            workEntry.file1 = fileDest.asPath();
+            workEntry.file2 = key;
+            currentBatch.add(workEntry);
+          } else {
+            WorkEntry workEntry = new WorkEntry();
+            workEntry.op = WorkEntry.Op.EMPTY;
+            workEntry.file1 = key;
+            currentBatch.add(workEntry);
+          }
+        } else if (inputs.getSymlinks().containsKey(fragment)) {
+          PathFragment symlinkDest = inputs.getSymlinks().get(fragment);
+          if (symlinkDest != null) {
+            WorkEntry workEntry = new WorkEntry();
+            workEntry.op = WorkEntry.Op.SYMLINK;
+            workEntry.file1 = key;
+            workEntry.file3 = symlinkDest;
+            currentBatch.add(workEntry);
+          }
+        }
+
+        if (currentBatch.size() == inputsPerBatch) {
+          addBatch(futures, currentBatch);
+          currentBatch = new ArrayList<>(inputsPerBatch);
         }
       }
-      //
-      // if (currentBatch.size() == inputsPerBatch) {
-      //   addBatch(futures, currentBatch);
-      //   currentBatch = new ArrayList<>(inputsPerBatch);
-      // }
+      addBatch(futures, currentBatch);
     }
-    // addBatch(futures, currentBatch);
-    // for (Future<Void> future : futures) {
-    //   try {
-    //     future.get();
-    //   } catch (ExecutionException e) {
-    //     throw new RuntimeException(e);
-    //   }
-    // }
+    try (SilentCloseable c = Profiler.instance().profile("sandbox.createInputsFutures")) {
+      int i = 1;
+      for (Future<Void> future : futures) {
+        try {
+          System.out.println("[" + i++ + "] Before future get:" + System.currentTimeMillis());
+          future.get();
+          System.out.println("[" + i++ + "] After future get:" + System.currentTimeMillis());
+        } catch (ExecutionException e) {
+          throw new RuntimeException(e);
+        }
+      }
+    }
     System.out.println("Futures: " + futures.size());
   }
 
