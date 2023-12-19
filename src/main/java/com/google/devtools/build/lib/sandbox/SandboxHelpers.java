@@ -35,6 +35,7 @@ import com.google.devtools.build.lib.actions.cache.VirtualActionInput;
 import com.google.devtools.build.lib.actions.cache.VirtualActionInput.EmptyActionInput;
 import com.google.devtools.build.lib.analysis.test.TestConfiguration;
 import com.google.devtools.build.lib.cmdline.LabelConstants;
+import com.google.devtools.build.lib.exec.TreeDeleter;
 import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.Sandbox;
 import com.google.devtools.build.lib.server.FailureDetails.Sandbox.Code;
@@ -61,6 +62,7 @@ import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import javax.annotation.Nullable;
 
 /**
  * Helper methods that are shared by the different sandboxing strategies.
@@ -130,7 +132,18 @@ public final class SandboxHelpers {
       SandboxInputs inputs,
       Set<PathFragment> inputsToCreate,
       Set<PathFragment> dirsToCreate,
-      Path workDir)
+      Path workDir) throws IOException, InterruptedException {
+    cleanExisting(root, inputs, inputsToCreate, dirsToCreate, workDir,
+        /* treeDeleter= */ null);
+  }
+
+  public static void cleanExisting(
+      Path root,
+      SandboxInputs inputs,
+      Set<PathFragment> inputsToCreate,
+      Set<PathFragment> dirsToCreate,
+      Path workDir,
+      @Nullable TreeDeleter treeDeleter)
       throws IOException, InterruptedException {
     // To avoid excessive scanning of dirsToCreate for prefix dirs, we prepopulate this set of
     // prefixes.
@@ -145,7 +158,7 @@ public final class SandboxHelpers {
         parent = parent.getParentDirectory();
       }
     }
-    cleanRecursively(root, inputs, inputsToCreate, dirsToCreate, workDir, prefixDirs);
+    cleanRecursively(root, inputs, inputsToCreate, dirsToCreate, workDir, prefixDirs, treeDeleter);
   }
 
   /**
@@ -158,7 +171,8 @@ public final class SandboxHelpers {
       Set<PathFragment> inputsToCreate,
       Set<PathFragment> dirsToCreate,
       Path workDir,
-      Set<PathFragment> prefixDirs)
+      Set<PathFragment> prefixDirs,
+      @Nullable TreeDeleter treeDeleter)
       throws IOException, InterruptedException {
     Path execroot = workDir.getParentDirectory();
     for (Dirent dirent : root.readdir(Symlinks.NOFOLLOW)) {
@@ -185,17 +199,17 @@ public final class SandboxHelpers {
             && absPath.readSymbolicLink().equals(destination.get())) {
           inputsToCreate.remove(pathRelativeToWorkDir);
         } else if (absPath.isDirectory()) {
-          absPath.deleteTree();
+          treeDeleter.moveThenDeleteTree(absPath);
         } else {
           absPath.delete();
         }
       } else if (DIRECTORY.equals(dirent.getType())) {
         if (dirsToCreate.contains(pathRelativeToWorkDir)
             || prefixDirs.contains(pathRelativeToWorkDir)) {
-          cleanRecursively(absPath, inputs, inputsToCreate, dirsToCreate, workDir, prefixDirs);
+          cleanRecursively(absPath, inputs, inputsToCreate, dirsToCreate, workDir, prefixDirs, treeDeleter);
           dirsToCreate.remove(pathRelativeToWorkDir);
         } else {
-          absPath.deleteTree();
+          treeDeleter.moveThenDeleteTree(absPath);
         }
       } else if (!inputsToCreate.contains(pathRelativeToWorkDir)) {
         absPath.delete();

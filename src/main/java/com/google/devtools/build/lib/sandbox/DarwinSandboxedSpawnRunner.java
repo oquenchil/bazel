@@ -267,6 +267,7 @@ final class DarwinSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
           outputs,
           writableDirs,
           treeDeleter,
+          null,
           /* sandboxDebugPath= */ null,
           statisticsPath,
           spawn.getMnemonic()) {

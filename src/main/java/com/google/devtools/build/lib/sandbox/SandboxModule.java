@@ -20,6 +20,7 @@ import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.eventbus.Subscribe;
 import com.google.common.flogger.GoogleLogger;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.devtools.build.lib.actions.ExecException;
 import com.google.devtools.build.lib.actions.ForbiddenActionInputException;
 import com.google.devtools.build.lib.actions.Spawn;
@@ -57,6 +58,9 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.annotation.Nullable;
 
@@ -73,6 +77,10 @@ public final class SandboxModule extends BlazeModule {
 
   /** Path to the location of the sandboxes. */
   @Nullable private Path sandboxBase;
+  private static final int POOL_SIZE = 12;
+  private final ExecutorService inputCreationPool =
+      Executors.newFixedThreadPool(
+          POOL_SIZE, new ThreadFactoryBuilder().setNameFormat("create-input-thread-%d").build());
 
   /**
    * Collection of spawn runner instantiated during the executor setup.
@@ -191,8 +199,11 @@ public final class SandboxModule extends BlazeModule {
 
   private void setup(CommandEnvironment cmdEnv, SpawnStrategyRegistry.Builder builder)
       throws IOException, InterruptedException {
+    ((ThreadPoolExecutor) inputCreationPool).prestartAllCoreThreads();
+    Thread.sleep(5000);
     SandboxOptions options = checkNotNull(env.getOptions().getOptions(SandboxOptions.class));
     sandboxBase = computeSandboxBase(options, env);
+    Path trashBase = sandboxBase.getRelative("_moved_trash_dir");
 
     SandboxHelpers helpers = new SandboxHelpers();
 
@@ -210,7 +221,7 @@ public final class SandboxModule extends BlazeModule {
       }
     } else {
       if (!(treeDeleter instanceof AsynchronousTreeDeleter)) {
-        treeDeleter = new AsynchronousTreeDeleter();
+        treeDeleter = new AsynchronousTreeDeleter(trashBase);
       }
     }
     SandboxStash.initialize(env.getWorkspaceName(), env.getOutputBase(), options);
@@ -225,6 +236,7 @@ public final class SandboxModule extends BlazeModule {
     }
     firstBuild = false;
     sandboxBase.createDirectoryAndParents();
+    trashBase.createDirectory();
 
     PathFragment windowsSandboxPath = PathFragment.create(options.windowsSandboxPath);
     boolean windowsSandboxSupported;
@@ -304,6 +316,7 @@ public final class SandboxModule extends BlazeModule {
                   cmdEnv,
                   sandboxBase,
                   timeoutKillDelay,
+                  inputCreationPool,
                   treeDeleter));
       spawnRunners.add(spawnRunner);
       builder.registerStrategy(

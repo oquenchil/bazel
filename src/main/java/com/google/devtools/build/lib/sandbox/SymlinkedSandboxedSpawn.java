@@ -26,6 +26,7 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
 import java.util.LinkedHashSet;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
 import javax.annotation.Nullable;
 
 /**
@@ -46,6 +47,7 @@ public class SymlinkedSandboxedSpawn extends AbstractContainerizingSandboxedSpaw
       SandboxOutputs outputs,
       Set<Path> writableDirs,
       TreeDeleter treeDeleter,
+      ExecutorService inputCreationPool,
       @Nullable Path sandboxDebugPath,
       @Nullable Path statisticsPath,
       String mnemonic) {
@@ -58,6 +60,7 @@ public class SymlinkedSandboxedSpawn extends AbstractContainerizingSandboxedSpaw
         outputs,
         writableDirs,
         treeDeleter,
+        inputCreationPool,
         sandboxDebugPath,
         statisticsPath,
         mnemonic);
@@ -82,7 +85,8 @@ public class SymlinkedSandboxedSpawn extends AbstractContainerizingSandboxedSpaw
           inputs,
           inputsToCreate,
           dirsToCreate,
-          sandboxExecRoot);
+          sandboxExecRoot,
+          treeDeleter);
     }
   }
 

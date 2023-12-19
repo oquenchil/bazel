@@ -19,7 +19,10 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.devtools.build.lib.exec.TreeDeleter;
+import com.google.devtools.build.lib.profiler.Profiler;
+import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.sandbox.SandboxHelpers.SandboxInputs;
 import com.google.devtools.build.lib.sandbox.SandboxHelpers.SandboxOutputs;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
@@ -27,8 +30,17 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 
@@ -45,10 +57,11 @@ public abstract class AbstractContainerizingSandboxedSpawn implements SandboxedS
   final SandboxInputs inputs;
   final SandboxOutputs outputs;
   private final Set<Path> writableDirs;
-  private final TreeDeleter treeDeleter;
+  protected final TreeDeleter treeDeleter;
   @Nullable private final Path sandboxDebugPath;
   @Nullable private final Path statisticsPath;
   private final String mnemonic;
+  private final ExecutorService inputCreationPool;
 
   public AbstractContainerizingSandboxedSpawn(
       Path sandboxPath,
@@ -62,6 +75,22 @@ public abstract class AbstractContainerizingSandboxedSpawn implements SandboxedS
       @Nullable Path sandboxDebugPath,
       @Nullable Path statisticsPath,
       String mnemonic) {
+    this(sandboxPath, sandboxExecRoot, arguments, environment, inputs, outputs, writableDirs, treeDeleter, null, sandboxDebugPath, statisticsPath, mnemonic);
+  }
+
+  public AbstractContainerizingSandboxedSpawn(
+      Path sandboxPath,
+      Path sandboxExecRoot,
+      ImmutableList<String> arguments,
+      ImmutableMap<String, String> environment,
+      SandboxInputs inputs,
+      SandboxOutputs outputs,
+      Set<Path> writableDirs,
+      TreeDeleter treeDeleter,
+      ExecutorService inputCreationPool,
+      @Nullable Path sandboxDebugPath,
+      @Nullable Path statisticsPath,
+      String mnemonic) {
     this.sandboxPath = sandboxPath;
     this.sandboxExecRoot = sandboxExecRoot;
     this.arguments = arguments;
@@ -70,6 +99,7 @@ public abstract class AbstractContainerizingSandboxedSpawn implements SandboxedS
     this.outputs = outputs;
     this.writableDirs = writableDirs;
     this.treeDeleter = treeDeleter;
+    this.inputCreationPool = inputCreationPool;
     this.sandboxDebugPath = sandboxDebugPath;
     this.statisticsPath = statisticsPath;
     this.mnemonic = mnemonic;
@@ -118,25 +148,42 @@ public abstract class AbstractContainerizingSandboxedSpawn implements SandboxedS
             .filter(p -> p.startsWith(sandboxExecRoot))
             .map(p -> p.relativeTo(sandboxExecRoot))
             .collect(Collectors.toSet());
-    SandboxHelpers.populateInputsAndDirsToCreate(
-        writableSandboxDirs,
-        inputsToCreate,
-        dirsToCreate,
-        Iterables.concat(
-            ImmutableSet.of(), inputs.getFiles().keySet(), inputs.getSymlinks().keySet()),
-        outputs);
+    try (SilentCloseable c = Profiler.instance().profile("sandbox.populateInputsAndDirsToCreate")) {
+      SandboxHelpers.populateInputsAndDirsToCreate(
+          writableSandboxDirs,
+          inputsToCreate,
+          dirsToCreate,
+          Iterables.concat(
+              ImmutableSet.of(), inputs.getFiles().keySet(), inputs.getSymlinks().keySet()),
+          outputs);
+    }
 
     // Allow subclasses to filter out inputs and dirs that don't need to be created.
-    filterInputsAndDirsToCreate(inputsToCreate, dirsToCreate);
+    try (SilentCloseable c = Profiler.instance().profile("sandbox.filterInputsAndDirsToCreate")) {
+      filterInputsAndDirsToCreate(inputsToCreate, dirsToCreate);
+    }
 
     // Finally create what needs creating.
-    SandboxHelpers.createDirectories(dirsToCreate, sandboxExecRoot, /* strict=*/ true);
-    createInputs(inputsToCreate, inputs);
+    try (SilentCloseable c = Profiler.instance().profile("sandbox.createDirectories")) {
+      SandboxHelpers.createDirectories(dirsToCreate, sandboxExecRoot, /* strict=*/ true);
+    }
+    try (SilentCloseable c = Profiler.instance().profile("sandbox.createInputs")) {
+      createInputs(inputsToCreate, inputs);
+    }
   }
 
   protected void filterInputsAndDirsToCreate(
       Set<PathFragment> inputsToCreate, LinkedHashSet<PathFragment> dirsToCreate)
       throws IOException, InterruptedException {}
+
+  private void addBatch(List<Future<Void>> futures, List<Runnable> currentBatch) {
+    futures.add(inputCreationPool.submit(() -> {
+      for (Runnable task : currentBatch) {
+        task.run();
+      }
+      return null;
+    }));
+  }
 
   /**
    * Creates all inputs needed for this spawn's sandbox.
@@ -145,8 +192,11 @@ public abstract class AbstractContainerizingSandboxedSpawn implements SandboxedS
    *     exist if we're reusing a previously existing sandbox.
    * @param inputs All the inputs for this spawn.
    */
-  void createInputs(Iterable<PathFragment> inputsToCreate, SandboxInputs inputs)
+  void createInputs(Set<PathFragment> inputsToCreate, SandboxInputs inputs)
       throws IOException, InterruptedException {
+    int inputsPerBatch = (int)Math.ceil(inputsToCreate.size() / ((ThreadPoolExecutor) inputCreationPool).getCorePoolSize());
+    List<Future<Void>> futures = new ArrayList<>();
+    List<Runnable> currentBatch = new ArrayList<>(inputsPerBatch);
     for (PathFragment fragment : inputsToCreate) {
       if (Thread.interrupted()) {
         throw new InterruptedException("Interrupted creating inputs");
@@ -155,17 +205,49 @@ public abstract class AbstractContainerizingSandboxedSpawn implements SandboxedS
       if (inputs.getFiles().containsKey(fragment)) {
         RootedPath fileDest = inputs.getFiles().get(fragment);
         if (fileDest != null) {
-          copyFile(fileDest.asPath(), key);
+          // currentBatch.add(() -> {
+          //   try {
+              copyFile(fileDest.asPath(), key);
+          //   } catch (IOException e){
+          //     throw new RuntimeException(e);
+          //   }
+          // });
         } else {
-          FileSystemUtils.createEmptyFile(key);
+          // currentBatch.add(() -> {
+          //   try {
+              FileSystemUtils.createEmptyFile(key);
+          //   } catch (IOException e){
+          //     throw new RuntimeException(e);
+          //   }
+          // });
         }
       } else if (inputs.getSymlinks().containsKey(fragment)) {
         PathFragment symlinkDest = inputs.getSymlinks().get(fragment);
         if (symlinkDest != null) {
-          key.createSymbolicLink(symlinkDest);
+          // currentBatch.add(() -> {
+          //   try {
+              key.createSymbolicLink(symlinkDest);
+          //   } catch (IOException e){
+          //     throw new RuntimeException(e);
+          //   }
+          // });
         }
       }
+      //
+      // if (currentBatch.size() == inputsPerBatch) {
+      //   addBatch(futures, currentBatch);
+      //   currentBatch = new ArrayList<>(inputsPerBatch);
+      // }
     }
+    // addBatch(futures, currentBatch);
+    // for (Future<Void> future : futures) {
+    //   try {
+    //     future.get();
+    //   } catch (ExecutionException e) {
+    //     throw new RuntimeException(e);
+    //   }
+    // }
+    System.out.println("Futures: " + futures.size());
   }
 
   protected abstract void copyFile(Path source, Path target) throws IOException;

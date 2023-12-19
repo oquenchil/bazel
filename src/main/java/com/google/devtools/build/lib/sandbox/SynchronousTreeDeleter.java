@@ -27,5 +27,10 @@ public class SynchronousTreeDeleter implements TreeDeleter {
   }
 
   @Override
+  public void moveThenDeleteTree(Path path) throws IOException {
+    deleteTree(path);
+  }
+
+  @Override
   public void shutdown() {}
 }

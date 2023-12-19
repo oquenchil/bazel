@@ -22,6 +22,7 @@ import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.vfs.Path;
 import java.io.IOException;
 import java.time.Duration;
+import java.util.concurrent.ExecutorService;
 
 /** Strategy that uses sandboxing to execute a process. */
 public final class LinuxSandboxedStrategy extends AbstractSpawnStrategy {
@@ -48,6 +49,7 @@ public final class LinuxSandboxedStrategy extends AbstractSpawnStrategy {
       CommandEnvironment cmdEnv,
       Path sandboxBase,
       Duration timeoutKillDelay,
+      ExecutorService inputCreationPool,
       TreeDeleter treeDeleter)
       throws IOException {
     Path inaccessibleHelperFile = LinuxSandboxUtil.getInaccessibleHelperFile(sandboxBase);
@@ -60,6 +62,7 @@ public final class LinuxSandboxedStrategy extends AbstractSpawnStrategy {
         inaccessibleHelperFile,
         inaccessibleHelperDir,
         timeoutKillDelay,
+        inputCreationPool,
         treeDeleter);
   }
 }

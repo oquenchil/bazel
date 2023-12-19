@@ -32,6 +32,8 @@ public interface TreeDeleter {
    */
   void deleteTree(Path path) throws IOException;
 
+  void moveThenDeleteTree(Path path) throws IOException;
+
   /** Shuts down the tree deleter and cleans up pending operations, if any. */
   void shutdown();
 }

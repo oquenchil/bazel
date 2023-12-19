@@ -61,6 +61,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.SortedMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.annotation.Nullable;
 
@@ -138,6 +139,7 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
   private final TreeDeleter treeDeleter;
   private final Reporter reporter;
   private final ImmutableList<Root> packageRoots;
+  private final ExecutorService inputCreationPool;
   private String cgroupsDir;
 
   /**
@@ -157,6 +159,7 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
       Path inaccessibleHelperFile,
       Path inaccessibleHelperDir,
       Duration timeoutKillDelay,
+      ExecutorService inputCreationPool,
       TreeDeleter treeDeleter) {
     super(cmdEnv);
     this.helpers = helpers;
@@ -170,6 +173,7 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
     this.inaccessibleHelperDir = inaccessibleHelperDir;
     this.timeoutKillDelay = timeoutKillDelay;
     this.localEnvProvider = new PosixLocalEnvProvider(cmdEnv.getClientEnv());
+    this.inputCreationPool = inputCreationPool;
     this.treeDeleter = treeDeleter;
     this.reporter = cmdEnv.getReporter();
     this.packageRoots = cmdEnv.getPackageLocator().getPathEntries();
@@ -374,6 +378,7 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
           outputs,
           writableDirs,
           treeDeleter,
+          inputCreationPool,
           sandboxDebugPath,
           statisticsPath,
           spawn.getMnemonic());
