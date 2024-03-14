@@ -68,6 +68,7 @@ java_library(
         "CopyingSandboxedSpawn.java",
         "DirsMerkleTree.java",
         "HardlinkedSandboxedSpawn.java",
+        "MerkleStashSandboxedSpawn.java",
         "SandboxStash.java",
         "SandboxedSpawn.java",
         "SymlinkedSandboxedSpawn.java",

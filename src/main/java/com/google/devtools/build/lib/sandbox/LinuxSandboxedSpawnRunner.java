@@ -249,7 +249,8 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
     // The exec root. Necessary because the working directory contains symlinks to the execroot.
     Path withinSandboxExecRoot = execRoot;
 
-    boolean useHermeticTmp = useHermeticTmp();
+    SandboxOptions sandboxOptions = getSandboxOptions();
+    boolean useHermeticTmp = useHermeticTmp() && !sandboxOptions.experimentalMerkleStashing;
 
     if (useHermeticTmp) {
       // The directory which will be mounted at /tmp in the sandbox
@@ -300,21 +301,21 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
         getWritableDirs(
             sandboxExecRoot, useHermeticTmp ? withinSandboxExecRoot : sandboxExecRoot, environment);
     Duration timeout = context.getTimeout();
-    SandboxOptions sandboxOptions = getSandboxOptions();
 
     boolean createNetworkNamespace =
         !(allowNetwork || Spawns.requiresNetwork(spawn, sandboxOptions.defaultSandboxAllowNetwork));
     LinuxSandboxCommandLineBuilder commandLineBuilder =
         LinuxSandboxCommandLineBuilder.commandLineBuilder(linuxSandbox)
             .addExecutionInfo(spawn.getExecutionInfo())
-            .setWritableFilesAndDirectories(writableDirs)
             .setTmpfsDirectories(ImmutableSet.copyOf(getSandboxOptions().sandboxTmpfsPath))
-            .setBindMounts(
-                prepareAndGetBindMounts(blazeDirs, inputs, sandboxExecRootBase, sandboxTmp))
             .setUseFakeHostname(getSandboxOptions().sandboxFakeHostname)
             .setEnablePseudoterminal(getSandboxOptions().sandboxExplicitPseudoterminal)
             .setCreateNetworkNamespace(createNetworkNamespace ? NETNS_WITH_LOOPBACK : NO_NETNS)
             .setKillDelay(timeoutKillDelay);
+    if (!sandboxOptions.experimentalMerkleStashing) {
+      commandLineBuilder.setWritableFilesAndDirectories(writableDirs).setBindMounts(
+          prepareAndGetBindMounts(blazeDirs, inputs, sandboxExecRootBase, sandboxTmp));
+    }
 
     Path sandboxDebugPath = null;
     if (sandboxOptions.sandboxDebug) {
@@ -362,6 +363,26 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
           sandboxDebugPath,
           statisticsPath,
           sandboxOptions.sandboxDebug,
+          spawn.getMnemonic());
+    } else if (sandboxOptions.experimentalMerkleStashing) {
+      DirsMerkleTree.Result resultMerkleTree = null;
+      try (SilentCloseable c = Profiler.instance().profile("sandbox.buildMerkleTree")) {
+        resultMerkleTree = DirsMerkleTree.buildTree(inputs);
+      }
+      return new MerkleStashSandboxedSpawn(
+          resultMerkleTree,
+          execRoot,
+          sandboxPath,
+          sandboxExecRoot,
+          commandLineBuilder.buildForCommand(spawn.getArguments()),
+          environment,
+          inputs,
+          outputs,
+          writableDirs,
+          treeDeleter,
+          sandboxDebugPath,
+          statisticsPath,
+          makeInteractiveDebugArguments(commandLineBuilder, sandboxOptions),
           spawn.getMnemonic());
     } else {
       return new SymlinkedSandboxedSpawn(

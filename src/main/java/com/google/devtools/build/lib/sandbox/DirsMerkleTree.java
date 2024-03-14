@@ -34,21 +34,26 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * TODO: On linux IIUC 246 different bytes are allowed in dir names. For now we will use hashes
+ *  but for a checked in implementation, more lower dirs can be squeezed per overlayfs mount using
+ *  those 246 characters.
+ *
+ *  TODO: check if --sandbox_base works (on tmpfs too)
+ */
 public class DirsMerkleTree {
 
   private static Set<String> merkelSet = Sets.newConcurrentHashSet();
   private static final String STASHED_DIR = "_stashed_dirs";
+
   private static final AtomicInteger symlinksCreated = new AtomicInteger(0);
   private static final boolean DEBUG = false;
 
   static class Result {
     List<PathFragment> dirsToCreate = new ArrayList<>();
-    List<Map.Entry<String, String>> mountPairs  = new ArrayList<>();
+    List<String> lowerDirs = new ArrayList<>();
 
     Map<PathFragment, PathFragment>  stashedSymlinksToCreate = new HashMap<>();
-
-    Set<PathFragment> symlinksToSkip = new HashSet<>();
-
   }
 
   static class PathStackNode {
@@ -60,7 +65,7 @@ public class DirsMerkleTree {
     List<PathStackNode> children = new ArrayList<>();
 
     void computeHash() {
-      Hasher hasher = Hashing.goodFastHash(10).newHasher();
+      Hasher hasher = Hashing.goodFastHash(32).newHasher();
       hasher.putString(path, StandardCharsets.UTF_8);
       for (PathFragment filename : files) {
         hasher.putString(filename.getBaseName(), StandardCharsets.UTF_8);
@@ -188,28 +193,33 @@ public class DirsMerkleTree {
         if (DEBUG) {
           System.out.println("Mounting paths [root] for " + root.hash);
         }
-        computeMountPaths(root, result.mountPairs, result.symlinksToSkip);
+        computeMountPaths(root, result.lowerDirs);
       } else {
-        stashNode(root, result, result.symlinksToSkip);
+        stashNode(root, result);
       }
     }
     return result;
   }
 
-  private static void stashNode(PathStackNode node, Result result, Set<PathFragment> symlinksToSkip) {
+  private static String getNodeStashDir(PathStackNode node) {
+    return String.format("%s/%s/%s", STASHED_DIR, node.hash, node.path);
+  }
+
+  private static void stashNode(PathStackNode node, Result result) {
     merkelSet.add(node.hash);
 
-    result.dirsToCreate.add(PathFragment.create(STASHED_DIR + "/" + node.hash));
-
+    String nodeStashDir = getNodeStashDir(node);
+    // TODO: Create parents too.
+    result.dirsToCreate.add(PathFragment.create(nodeStashDir));
     for (PathFragment file : node.files) {
       // TODO: Add filenames in this dir to list to be stashed, this will have to be symlinked later
       // during createFileSystem
       // TODO: Store in a table, previous real symlink path target ->  _stashed_dir target
       // TODO: instead of symlinking path to dest, we symlink the stashed dir to inputs.getFiles().get(fragment);
       if (DEBUG) {
-        System.out.println("Symlink: " + file + " --> " + STASHED_DIR + "/" + node.hash+ "/" + file.getBaseName());
+        System.out.println("Symlink: " + file + " --> " + nodeStashDir + "/" + file.getBaseName());
       }
-      result.stashedSymlinksToCreate.put(file, PathFragment.create(STASHED_DIR + "/" + node.hash + "/" + file.getBaseName()));
+      result.stashedSymlinksToCreate.put(file, PathFragment.create(nodeStashDir + "/" + file.getBaseName()));
 
       // 3 types
       // Symlinks that are already stashed, dir gets mounted, nothing to do
@@ -217,42 +227,37 @@ public class DirsMerkleTree {
       // Symlinks that aren't affected by any of this, this can be identified by them not starting with bazel-out.
     }
 
-    addMountPair(result.mountPairs, node.hash, node.path);
+    addLowerDir(result.lowerDirs, node.hash);
     for (PathStackNode child : node.children) {
-      result.dirsToCreate.add(PathFragment.create(STASHED_DIR + "/" + node.hash + "/" + child.basename));
       if (merkelSet.contains(child.hash)) {
         if (DEBUG) {
           System.out.println("Mounting paths for " + child.hash);
         }
-        computeMountPaths(child, result.mountPairs, symlinksToSkip);
+        computeMountPaths(child, result.lowerDirs);
       } else {
-        stashNode(child, result, symlinksToSkip);
+        stashNode(child, result);
       }
     }
   }
 
-  private static void computeMountPaths(PathStackNode node, List<Map.Entry<String, String>> mountPairs,
-      Set<PathFragment> symlinksToSkip) {
+  private static void computeMountPaths(PathStackNode node, List<String> lowerDirs) {
     Preconditions.checkState(merkelSet.contains(node.hash));
-    for (PathFragment file : node.files) {
-      symlinksToSkip.add(file);
-    }
-    addMountPair(mountPairs, node.hash, node.path);
+    addLowerDir(lowerDirs, node.hash);
     for (PathStackNode child : node.children) {
       if (DEBUG) {
         System.out.println("Mounting paths [recursive] for " + child.hash);
       }
-      computeMountPaths(child, mountPairs, symlinksToSkip);
+      computeMountPaths(child, lowerDirs);
     }
   }
 
-  private static void addMountPair(List<Map.Entry<String, String>> mountPairs, String hash, String target) {
+  private static void addLowerDir(List<String> lowerDirs, String hash) {
     String source = STASHED_DIR + "/" + hash;
     // TODO: These paths need to be prefixed with execroot, NOT sandbox execroot which changes
     //  between actions
     if (DEBUG) {
-      System.out.println("Mount pair " + target + " , " + source);
+      System.out.println("Mount path:" + source);
     }
-    mountPairs.add(Map.entry(target, source));
+    lowerDirs.add(source);
   }
 }

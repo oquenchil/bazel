@@ -18,6 +18,7 @@ import static com.google.devtools.build.lib.sandbox.LinuxSandboxCommandLineBuild
 import static com.google.devtools.build.lib.sandbox.LinuxSandboxCommandLineBuilder.NetworkNamespace.NETNS_WITH_LOOPBACK;
 
 import com.google.auto.value.AutoValue;
+import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -53,6 +54,9 @@ public class LinuxSandboxCommandLineBuilder {
   private final Path linuxSandboxPath;
   private Path hermeticSandboxPath;
   private Path workingDirectory;
+  private Path currentSandboxPath;
+  private Path execPath;
+  private String lowdirs;
   private Duration timeout;
   private Duration killDelay;
   private boolean persistentProcess;
@@ -234,6 +238,24 @@ public class LinuxSandboxCommandLineBuilder {
     return this;
   }
 
+  @CanIgnoreReturnValue
+  public LinuxSandboxCommandLineBuilder setExecPath(Path path) {
+    this.execPath = path;
+    return this;
+  }
+
+  @CanIgnoreReturnValue
+  public LinuxSandboxCommandLineBuilder setCurrentSandboxPath(Path path) {
+    this.currentSandboxPath = path;
+    return this;
+  }
+
+  @CanIgnoreReturnValue
+  public LinuxSandboxCommandLineBuilder setOverlayfsLowdirs(List<String> lowdirs) {
+    this.lowdirs = Joiner.on(":").join(lowdirs);
+    return this;
+  }
+
   /** Incorporates settings from a spawn's execution info. */
   @CanIgnoreReturnValue
   public LinuxSandboxCommandLineBuilder addExecutionInfo(Map<String, String> executionInfo) {
@@ -314,6 +336,15 @@ public class LinuxSandboxCommandLineBuilder {
     }
     if (cgroupsDir != null) {
       commandLineBuilder.add("-C", cgroupsDir);
+    }
+    if (execPath != null) {
+      commandLineBuilder.add("-X", execPath.getPathString());
+    }
+    if (currentSandboxPath != null) {
+      commandLineBuilder.add("-Y", currentSandboxPath.getPathString());
+    }
+    if (lowdirs != null) {
+      commandLineBuilder.add("-Z", lowdirs);
     }
     commandLineBuilder.add("--");
     commandLineBuilder.addAll(commandArguments);

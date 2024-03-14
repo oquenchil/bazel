@@ -369,6 +369,13 @@ public class SandboxOptions extends OptionsBase {
               + " Requires cgroups v1 or v2 and permissions for the users to the cgroups dir.")
   public int memoryLimitMb;
 
+  @Option(
+      name = "experimental_merkle_stashing",
+      documentationCategory =  OptionDocumentationCategory.EXECUTION_STRATEGY,
+      effectTags = {OptionEffectTag.EXECUTION},
+      defaultValue = "false")
+  public boolean experimentalMerkleStashing;
+
   /** Converter for the number of threads used for asynchronous tree deletion. */
   public static final class AsyncTreeDeletesConverter extends ResourceConverter.IntegerConverter {
     public AsyncTreeDeletesConverter() {
