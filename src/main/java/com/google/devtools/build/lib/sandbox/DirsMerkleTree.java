@@ -15,7 +15,6 @@
 package com.google.devtools.build.lib.sandbox;
 
 import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
@@ -32,7 +31,9 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Lock;
 
 /**
  * TODO: On linux IIUC 246 different bytes are allowed in dir names. For now we will use hashes
@@ -43,7 +44,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class DirsMerkleTree {
 
-  private static Set<String> merkelSet = Sets.newConcurrentHashSet();
+  public static Set<String> merkleSet = Sets.newConcurrentHashSet();
+  public static Map<String, Lock> merkleSetLocks = new ConcurrentHashMap<>();
   private static final String STASHED_DIR = "_stashed_dirs";
 
   private static final AtomicInteger symlinksCreated = new AtomicInteger(0);
@@ -80,15 +82,14 @@ public class DirsMerkleTree {
   public static Result buildTree(SandboxInputs sandboxInputs) {
     List<PathStackNode> roots = new ArrayList<>();
     List<PathStackNode> pathStack = new ArrayList<>();
+    PathStackNode rootFolderNode = new PathStackNode();
+    rootFolderNode.path = ".";
 
     try (SilentCloseable c = Profiler.instance().profile("DirsMerkelTree.buildCurrentTree")) {
       for (var entry : sandboxInputs.getFiles().entrySet()) {
-        List<String> tokenizedPath = new ArrayList<>();
-        int i = 0;
-        PathFragment path = entry.getKey();
-          if (path.getPathString().startsWith("bazel-out")) {
-            continue;
-          }
+          List<String> tokenizedPath = new ArrayList<>();
+          int i = 0;
+          PathFragment path = entry.getKey();
           if (entry.getValue() != null && entry.getValue().asPath().isDirectory()) {
             throw new RuntimeException("plf: Some files are dirs");
           }
@@ -115,42 +116,38 @@ public class DirsMerkleTree {
           // Pop nodes from stack which we won't see again. We know we won't see them because the
           // SandboxInputs are sorted alphabetically. We can compute the hash of the popped nodes
           // already since we won't see any other files contained within those directories.
-          popPathStackNodes(pathStack, roots, i);
+          popPathStackNodes(pathStack, i);
 
           // Add new nodes to the stack representing the segments of the current path
           for (int j = i; j < tokenizedPath.size(); j++) {
             PathStackNode pathStackNode = new PathStackNode();
             pathStackNode.path = Joiner.on("/").join(tokenizedPath.subList(0, j + 1));
             pathStackNode.basename = tokenizedPath.get(j);
-            if (!pathStack.isEmpty()) {
-              pathStack.get(pathStack.size() - 1).children.add(pathStackNode);
-            }
-            if (pathStack.size() == 0) {
+            if (pathStack.isEmpty()) {
               roots.add(pathStackNode);
+            } else {
+              pathStack.get(pathStack.size() - 1).children.add(pathStackNode);
             }
             pathStack.add(pathStackNode);
           }
           if (pathStack.isEmpty()) {
-            // TODO: are we here when we have files in the root?
-            // TODO: make this nice later, for now I just want a number
-            PathStackNode pathStackNode = new PathStackNode();
-            //pathStackNode.path = filename;
-            pathStackNode.path = ".";
-            pathStackNode.files.add(path);
-            roots.add(pathStackNode);
+            rootFolderNode.files.add(path);
           } else {
             pathStack.get(pathStack.size() - 1).files.add(path);
           }
       }
-      popPathStackNodes(pathStack, roots, 0);
+      popPathStackNodes(pathStack, 0);
+      if (!rootFolderNode.files.isEmpty()) {
+          rootFolderNode.computeHash();
+          roots.add(rootFolderNode);
+      }
     }
-
 
       // for (PathStackNode root : roots) {
       //   debugTraversePathStackNode(root, /* depth= */ 0);
       // }
 
-      return checkAndPopulateCache(roots);
+    return checkAndPopulateCache(roots);
   }
 
   private static void debugTraversePathStackNode(PathStackNode node, int depth) {
@@ -176,7 +173,7 @@ public class DirsMerkleTree {
     //Preconditions.checkState(node.files.size() + node.children.size()  == childBasenames.size());
   }
 
-  private static void popPathStackNodes(List<PathStackNode> pathStack, List<PathStackNode> roots, int toIndex) {
+  private static void popPathStackNodes(List<PathStackNode> pathStack, int toIndex) {
     while (pathStack.size() > toIndex) {
       PathStackNode pathStackNode = pathStack.remove(pathStack.size() - 1);
       pathStackNode.computeHash();
@@ -186,10 +183,7 @@ public class DirsMerkleTree {
   private static Result checkAndPopulateCache(List<PathStackNode> roots) {
     Result result = new Result();
     for (PathStackNode root : roots) {
-      if (root.basename == null) {
-        // TODO: File is in root dir, add it
-        throw new RuntimeException("Shouldn't be here first examples");
-      } else if (merkelSet.contains(root.hash)) {
+      if (merkleSet.contains(root.hash)) {
         if (DEBUG) {
           System.out.println("Mounting paths [root] for " + root.hash);
         }
@@ -202,20 +196,16 @@ public class DirsMerkleTree {
   }
 
   private static String getNodeStashDir(PathStackNode node) {
+    if (node.path.equals(".")) {
+        return String.format("%s/%s", STASHED_DIR, node.hash);
+    }
     return String.format("%s/%s/%s", STASHED_DIR, node.hash, node.path);
   }
 
   private static void stashNode(PathStackNode node, Result result) {
-    merkelSet.add(node.hash);
-
     String nodeStashDir = getNodeStashDir(node);
-    // TODO: Create parents too.
     result.dirsToCreate.add(PathFragment.create(nodeStashDir));
     for (PathFragment file : node.files) {
-      // TODO: Add filenames in this dir to list to be stashed, this will have to be symlinked later
-      // during createFileSystem
-      // TODO: Store in a table, previous real symlink path target ->  _stashed_dir target
-      // TODO: instead of symlinking path to dest, we symlink the stashed dir to inputs.getFiles().get(fragment);
       if (DEBUG) {
         System.out.println("Symlink: " + file + " --> " + nodeStashDir + "/" + file.getBaseName());
       }
@@ -229,7 +219,7 @@ public class DirsMerkleTree {
 
     addLowerDir(result.lowerDirs, node.hash);
     for (PathStackNode child : node.children) {
-      if (merkelSet.contains(child.hash)) {
+      if (merkleSet.contains(child.hash)) {
         if (DEBUG) {
           System.out.println("Mounting paths for " + child.hash);
         }
@@ -241,7 +231,7 @@ public class DirsMerkleTree {
   }
 
   private static void computeMountPaths(PathStackNode node, List<String> lowerDirs) {
-    Preconditions.checkState(merkelSet.contains(node.hash));
+    //Preconditions.checkState(merkelSet.contains(node.hash));
     addLowerDir(lowerDirs, node.hash);
     for (PathStackNode child : node.children) {
       if (DEBUG) {
@@ -253,11 +243,9 @@ public class DirsMerkleTree {
 
   private static void addLowerDir(List<String> lowerDirs, String hash) {
     String source = STASHED_DIR + "/" + hash;
-    // TODO: These paths need to be prefixed with execroot, NOT sandbox execroot which changes
-    //  between actions
     if (DEBUG) {
       System.out.println("Mount path:" + source);
     }
-    lowerDirs.add(source);
+    lowerDirs.add(hash);
   }
 }

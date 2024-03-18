@@ -19,6 +19,7 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.devtools.build.lib.sandbox.LinuxSandboxCommandLineBuilder.NetworkNamespace.NETNS_WITH_LOOPBACK;
 import static com.google.devtools.build.lib.sandbox.LinuxSandboxCommandLineBuilder.NetworkNamespace.NO_NETNS;
 
+import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -365,10 +366,13 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
           sandboxOptions.sandboxDebug,
           spawn.getMnemonic());
     } else if (sandboxOptions.experimentalMerkleStashing) {
+      commandLineBuilder.setExecPath(execRoot);
+      commandLineBuilder.setCurrentSandboxPath(sandboxPath);
       DirsMerkleTree.Result resultMerkleTree = null;
       try (SilentCloseable c = Profiler.instance().profile("sandbox.buildMerkleTree")) {
         resultMerkleTree = DirsMerkleTree.buildTree(inputs);
       }
+      commandLineBuilder.setOverlayfsLowdirs(resultMerkleTree.lowerDirs);
       return new MerkleStashSandboxedSpawn(
           resultMerkleTree,
           execRoot,

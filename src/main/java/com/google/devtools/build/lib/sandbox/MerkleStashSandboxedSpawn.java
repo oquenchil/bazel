@@ -14,8 +14,6 @@
 
 package com.google.devtools.build.lib.sandbox;
 
-import static com.google.common.base.Strings.isNullOrEmpty;
-
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.exec.TreeDeleter;
@@ -23,25 +21,28 @@ import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.SilentCloseable;
 import com.google.devtools.build.lib.sandbox.SandboxHelpers.SandboxInputs;
 import com.google.devtools.build.lib.sandbox.SandboxHelpers.SandboxOutputs;
-import com.google.devtools.build.lib.util.CommandDescriptionForm;
-import com.google.devtools.build.lib.util.CommandFailureUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
-import java.util.Optional;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import javax.annotation.Nullable;
 
 /**
  * Creates an execRoot for a Spawn that contains input files as symlinks to their original
  * destination.
  */
-public class MerkleStashSandboxedSpawn extends SymlinkedSandboxedSpawn {
+public class MerkleStashSandboxedSpawn extends AbstractContainerizingSandboxedSpawn {
 
   private final DirsMerkleTree.Result dirsMerkleTreeResult;
   private final Path execRoot;
 
   private final Path sandboxPath;
+  private final Path upperDir;
 
   public MerkleStashSandboxedSpawn(
       DirsMerkleTree.Result dirsMerkleTreeResult,
@@ -69,27 +70,90 @@ public class MerkleStashSandboxedSpawn extends SymlinkedSandboxedSpawn {
         treeDeleter,
         sandboxDebugPath,
         statisticsPath,
-        interactiveDebugArguments,
         mnemonic);
     this.dirsMerkleTreeResult = dirsMerkleTreeResult;
     this.execRoot = execRoot;
     this.sandboxPath = sandboxPath;
+    this.upperDir = sandboxPath.getRelative("upper");
   }
 
   @Override
   public void createFileSystem() throws IOException, InterruptedException {
-    try (SilentCloseable c = Profiler.instance().profile("sandbox.createFileSystem")) {
-      super.createFileSystem();
-      for (PathFragment directory : dirsMerkleTreeResult.dirsToCreate) {
-        // TODO: this can be done faster by issuing individual mkdir calls for the directories above
-        //  the execroot
-        execRoot.getRelative(directory).createDirectoryAndParents();
+      upperDir.createDirectoryAndParents();
+      Set<String> newDirsCreated = new HashSet<>();
+      List<String> newDirsWaited = new ArrayList<>();
+
+      try {
+        try (SilentCloseable c = Profiler.instance().profile("sandbox.firstLoop")) {
+          for (PathFragment directory : dirsMerkleTreeResult.dirsToCreate) {
+            String hash = directory.toString().substring(14, 22);
+            if (!DirsMerkleTree.merkleSet.contains(hash)) {
+              DirsMerkleTree.merkleSetLocks.putIfAbsent(hash, new ReentrantLock());
+              Lock lock = DirsMerkleTree.merkleSetLocks.get(hash);
+              if (lock.tryLock()) {
+                if (!DirsMerkleTree.merkleSet.contains(hash)) {
+                  try (SilentCloseable d = Profiler.instance().profile("sandbox.firstLoopCreateDir")) {
+                  execRoot.getRelative(directory).createDirectoryAndParents();
+                  // String dirParent = "";
+                  // for (String segment : directory.segments()) {
+                  //   dirParent += segment + "/";
+                  //   try (SilentCloseable d = Profiler.instance().profile("sandbox.firstLoopCreateDir")) {
+                  //     execRoot.getRelative(dirParent).createDirectory();
+                  //   }
+                  }
+                  newDirsCreated.add(hash);
+                }
+              } else {
+                newDirsWaited.add(hash);
+              }
+            }
+          }
+        }
+
+        try (SilentCloseable c = Profiler.instance().profile("sandbox.secondLoop")) {
+          for (var symlinkEntry : dirsMerkleTreeResult.stashedSymlinksToCreate.entrySet()) {
+            String hash = symlinkEntry.getValue().toString().substring(14, 22);
+            if (newDirsCreated.contains(hash)) {
+              execRoot.getRelative(symlinkEntry.getValue())
+                  .createSymbolicLink(execRoot.getRelative(symlinkEntry.getKey()));
+            }
+          }
+        }
+
+        try (SilentCloseable c = Profiler.instance().profile("sandbox.thirdLoop")) {
+          for (String newDir : newDirsCreated) {
+            DirsMerkleTree.merkleSet.add(newDir);
+            DirsMerkleTree.merkleSetLocks.get(newDir).unlock();
+          }
+        }
+
+        try (SilentCloseable c = Profiler.instance().profile("sandbox.fourthLoop")) {
+          for (String newDir : newDirsWaited) {
+            Lock lock = DirsMerkleTree.merkleSetLocks.get(newDir);
+            lock.lock();
+            lock.unlock();
+          }
+        }
+
+        // Add output dirs
+        for (PathFragment file : outputs.files().values()) {
+          upperDir.getRelative(file.getParentDirectory()).createDirectoryAndParents();
+        }
+        for (PathFragment dir : outputs.dirs().values()) {
+          upperDir.getRelative(dir).createDirectoryAndParents();
+        }
+      } catch (IOException e) {
+        throw new IllegalStateException(e);
       }
-      for (var symlinkEntry : dirsMerkleTreeResult.stashedSymlinksToCreate.entrySet()) {
-        execRoot.getRelative(symlinkEntry.getKey())
-            .createSymbolicLink(execRoot.getRelative(symlinkEntry.getValue()));
-      }
-    }
-    // Create upperdir in C++ binary.
+  }
+
+  @Override
+  public void copyOutputs(Path execRoot) throws IOException {
+    SandboxHelpers.moveOutputs(outputs, upperDir, execRoot);
+  }
+
+  @Override
+  protected void copyFile(Path source, Path target) throws IOException {
+    throw new IllegalStateException();
   }
 }

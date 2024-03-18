@@ -41,8 +41,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <filesystem>
+#include <iostream>
 #include <string>
 #include <unordered_set>
+
+#include "src/main/cpp/util/strings.h"
 
 #ifndef MS_REC
 // Some systems do not define MS_REC in sys/mount.h. We might be able to grab it
@@ -68,6 +72,7 @@
 #include "src/main/tools/logging.h"
 #include "src/main/tools/process-tools.h"
 
+namespace fs = std::filesystem;
 
 static int global_child_pid;
 
@@ -456,9 +461,7 @@ static void EnterWorkingDirectory() {
   }
 }
 
-static void ForwardSignal(int signum) {
-  kill(-global_child_pid, signum);
-}
+static void ForwardSignal(int signum) { kill(-global_child_pid, signum); }
 
 static void SpawnChild() {
   PRINT_DEBUG("calling fork...");
@@ -659,6 +662,87 @@ static void ChangeRoot() {
   }
 }
 
+void DoOverlayWithMultipleLowdirsMount() {
+  std::string sb_path = opt.current_sandbox_path;
+
+  int bottom_layer_mount = 0;
+  std::string bottom_layer_mount_dir = sb_path + "/bottom_layer_mounts";
+  fs::create_directories(bottom_layer_mount_dir);
+
+  std::string empty_dir = sb_path + "/empty_dir";
+  fs::create_directories(empty_dir);
+
+  std::vector<std::string> stashed_lowdirs =
+      blaze_util::Split(opt.lowdirs, ':');
+
+  auto prev_curr_path = fs::current_path();
+  fs::current_path(opt.exec_path + "/_stashed_dirs");
+  std::string lowdirs = "";
+  int lowdirs_count = 0;
+  for (int i = 0; i < stashed_lowdirs.size(); i++) {
+    std::string lowdir = stashed_lowdirs[i];
+    // Got to 1300 by trial and error. Not sure what this depends on.
+    if ((lowdirs + lowdir).size() >= 1300) {
+      lowdirs.pop_back();
+      std::string target =
+          bottom_layer_mount_dir + "/" + std::to_string(bottom_layer_mount++);
+      std::string options = "lowerdir=" + lowdirs;
+      fs::create_directories(target);
+      if (mount("overlay", target.c_str(), "overlay", 0, options.c_str()) < 0) {
+        std::cerr << "Error lower mounting" << errno << std::endl;
+        exit(1);
+      }
+      lowdirs_count = 0;
+      lowdirs = "";
+    }
+    lowdirs += lowdir + ":";
+    lowdirs_count++;
+  }
+  if (lowdirs_count > 0) {
+    if (lowdirs_count == 1) {
+      // Special case. overlayfs mount with a single lowerdir and no uppedir
+      // fails. This empty dir can probably be placed in a shared location to
+      // avoid creating it more than once.
+      lowdirs += empty_dir;
+    } else {
+      // Remove trailing colon
+      lowdirs.pop_back();
+    }
+    std::string options = "lowerdir=" + lowdirs;
+    std::string target =
+        bottom_layer_mount_dir + "/" + std::to_string(bottom_layer_mount++);
+    fs::create_directories(target);
+    if (mount("overlay", target.c_str(), "overlay", 0, options.c_str()) < 0) {
+      std::cerr << "Error last lower mounting" << errno << std::endl;
+      exit(1);
+    }
+    lowdirs = "";
+  }
+  fs::current_path(prev_curr_path);
+
+  std::string options = "lowerdir=";
+  for (int i = 0; i < bottom_layer_mount; i++) {
+    options += std::to_string(i) + ":";
+  }
+  options.pop_back();
+
+  // upper already created within Java.
+  std::string upper = sb_path + "/upper";
+  std::string work = sb_path + "/work";
+  fs::create_directories(work);
+
+  options += ",upperdir=" + upper + ",workdir=" + work;
+
+  fs::current_path(bottom_layer_mount_dir);
+  std::string target = sb_path + "/execroot/_main";
+  fs::create_directories(target);
+  if (mount("overlay", target.c_str(), "overlay", 0, options.c_str()) < 0) {
+    std::cerr << "Error mounting" << errno << std::endl;
+    exit(1);
+  }
+  fs::current_path(sb_path + "/execroot/_main");
+}
+
 int Pid1Main(void *args) {
   PRINT_DEBUG("Pid1Main started");
 
@@ -691,6 +775,8 @@ int Pid1Main(void *args) {
     MountProc();
     MountAllMounts();
     ChangeRoot();
+  } else if (!opt.exec_path.empty()) {
+    DoOverlayWithMultipleLowdirsMount();
   } else {
     MountFilesystems();
     MakeFilesystemMostlyReadOnly();

@@ -70,6 +70,10 @@ struct Options {
   std::string cgroups_dir;
   // Command to run (--)
   std::vector<char *> args;
+
+  std::string exec_path;
+  std::string current_sandbox_path;
+  std::string lowdirs;
 };
 
 extern struct Options opt;

@@ -102,7 +102,7 @@ static void ParseCommandLine(unique_ptr<vector<char *>> args) {
   int c;
   bool source_specified = false;
   while ((c = getopt(args->size(), args->data(),
-                     ":W:T:t:il:L:w:e:M:m:S:h:pC:HnNRUPD:")) != -1) {
+                     ":W:T:t:il:L:w:e:M:m:S:h:pC:HnNRUPD:X:Y:Z:")) != -1) {
     if (c != 'M' && c != 'm') source_specified = false;
     switch (c) {
       case 'W':
@@ -253,6 +253,30 @@ static void ParseCommandLine(unique_ptr<vector<char *>> args) {
         break;
       case ':':
         Usage(args->front(), "Flag -%c requires an argument", optopt);
+        break;
+      case 'X':
+        if (opt.exec_path.empty()) {
+          opt.exec_path.assign(optarg);
+        } else {
+          Usage(args->front(),
+                "Cannot write exec path to more than one destination.");
+        }
+        break;
+      case 'Y':
+        if (opt.current_sandbox_path.empty()) {
+          opt.current_sandbox_path.assign(optarg);
+        } else {
+          Usage(args->front(),
+                "Cannot write current sandbox path to more than one destination.");
+        }
+        break;
+      case 'Z':
+        if (opt.lowdirs.empty()) {
+          opt.lowdirs.assign(optarg);
+        } else {
+          Usage(args->front(),
+                "Cannot write exec path to more than one destination.");
+        }
         break;
     }
   }
