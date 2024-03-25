@@ -14,6 +14,7 @@
 
 package com.google.devtools.build.lib.sandbox;
 
+import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.exec.TreeDeleter;
@@ -93,15 +94,11 @@ public class MerkleStashSandboxedSpawn extends AbstractContainerizingSandboxedSp
               if (lock.tryLock()) {
                 if (!DirsMerkleTree.merkleSet.contains(hash)) {
                   try (SilentCloseable d = Profiler.instance().profile("sandbox.firstLoopCreateDir")) {
-                  execRoot.getRelative(directory).createDirectoryAndParents();
-                  // String dirParent = "";
-                  // for (String segment : directory.segments()) {
-                  //   dirParent += segment + "/";
-                  //   try (SilentCloseable d = Profiler.instance().profile("sandbox.firstLoopCreateDir")) {
-                  //     execRoot.getRelative(dirParent).createDirectory();
-                  //   }
+                    execRoot.getRelative(directory).createDirectoryAndParents();
                   }
                   newDirsCreated.add(hash);
+                } else {
+                  lock.unlock();
                 }
               } else {
                 newDirsWaited.add(hash);
@@ -135,12 +132,14 @@ public class MerkleStashSandboxedSpawn extends AbstractContainerizingSandboxedSp
           }
         }
 
-        // Add output dirs
-        for (PathFragment file : outputs.files().values()) {
-          upperDir.getRelative(file.getParentDirectory()).createDirectoryAndParents();
-        }
-        for (PathFragment dir : outputs.dirs().values()) {
-          upperDir.getRelative(dir).createDirectoryAndParents();
+        try (SilentCloseable c = Profiler.instance().profile("sandbox.fifthLoop")) {
+          // Add output dirs
+          for (PathFragment file : outputs.files().values()) {
+            upperDir.getRelative(file.getParentDirectory()).createDirectoryAndParents();
+          }
+          for (PathFragment dir : outputs.dirs().values()) {
+            upperDir.getRelative(dir).createDirectoryAndParents();
+          }
         }
       } catch (IOException e) {
         throw new IllegalStateException(e);

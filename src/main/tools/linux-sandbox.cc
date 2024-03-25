@@ -39,6 +39,8 @@
 
 #include "src/main/tools/linux-sandbox.h"
 
+#include <iostream>
+
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>

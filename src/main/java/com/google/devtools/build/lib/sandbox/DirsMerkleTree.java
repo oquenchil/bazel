@@ -48,8 +48,6 @@ public class DirsMerkleTree {
   public static Map<String, Lock> merkleSetLocks = new ConcurrentHashMap<>();
   private static final String STASHED_DIR = "_stashed_dirs";
 
-  private static final AtomicInteger symlinksCreated = new AtomicInteger(0);
-  private static final boolean DEBUG = false;
 
   static class Result {
     List<PathFragment> dirsToCreate = new ArrayList<>();
@@ -59,193 +57,61 @@ public class DirsMerkleTree {
   }
 
   static class PathStackNode {
-    String basename;
-    String path;
+    PathFragment path;
     List<PathFragment> files = new ArrayList<>();
     String hash;
 
-    List<PathStackNode> children = new ArrayList<>();
 
     void computeHash() {
       Hasher hasher = Hashing.goodFastHash(32).newHasher();
-      hasher.putString(path, StandardCharsets.UTF_8);
+      hasher.putString(path.toString(), StandardCharsets.UTF_8);
       for (PathFragment filename : files) {
         hasher.putString(filename.getBaseName(), StandardCharsets.UTF_8);
-      }
-      for (PathStackNode child : children) {
-        hasher.putString(child.hash, StandardCharsets.UTF_8);
       }
       hash = hasher.hash().toString();
     }
   }
   // Implementation that exploits inputs being sorted
   public static Result buildTree(SandboxInputs sandboxInputs) {
-    List<PathStackNode> roots = new ArrayList<>();
-    List<PathStackNode> pathStack = new ArrayList<>();
-    PathStackNode rootFolderNode = new PathStackNode();
-    rootFolderNode.path = ".";
-
+    Map<PathFragment, PathStackNode> nodes = new HashMap<>();
+    PathStackNode rootNode = new PathStackNode();
+    Result result = new Result();
     try (SilentCloseable c = Profiler.instance().profile("DirsMerkelTree.buildCurrentTree")) {
       for (var entry : sandboxInputs.getFiles().entrySet()) {
-          List<String> tokenizedPath = new ArrayList<>();
-          int i = 0;
-          PathFragment path = entry.getKey();
-          if (entry.getValue() != null && entry.getValue().asPath().isDirectory()) {
-            throw new RuntimeException("plf: Some files are dirs");
-          }
-          // Tokenize current path
-          PathFragment currPath = path.getParentDirectory();
-          while (!currPath.isEmpty()) {
-            tokenizedPath.add(currPath.getBaseName());
-            currPath = currPath.getParentDirectory();
-          }
-          // Find top most stack node that is in currPath
-          if (!tokenizedPath.isEmpty()) {
-            tokenizedPath = Lists.reverse(tokenizedPath);
-            String currSegment = tokenizedPath.get(0);
-            while (i < tokenizedPath.size() && i < pathStack.size() && pathStack.get(
-                i).basename.equals(
-                currSegment)) {
-              i++;
-              if (i < tokenizedPath.size()) {
-                currSegment = tokenizedPath.get(i);
-              }
-            }
-          }
-
-          // Pop nodes from stack which we won't see again. We know we won't see them because the
-          // SandboxInputs are sorted alphabetically. We can compute the hash of the popped nodes
-          // already since we won't see any other files contained within those directories.
-          popPathStackNodes(pathStack, i);
-
-          // Add new nodes to the stack representing the segments of the current path
-          for (int j = i; j < tokenizedPath.size(); j++) {
-            PathStackNode pathStackNode = new PathStackNode();
-            pathStackNode.path = Joiner.on("/").join(tokenizedPath.subList(0, j + 1));
-            pathStackNode.basename = tokenizedPath.get(j);
-            if (pathStack.isEmpty()) {
-              roots.add(pathStackNode);
-            } else {
-              pathStack.get(pathStack.size() - 1).children.add(pathStackNode);
-            }
-            pathStack.add(pathStackNode);
-          }
-          if (pathStack.isEmpty()) {
-            rootFolderNode.files.add(path);
+        PathFragment parent = entry.getKey().getParentDirectory();
+        PathStackNode parentNode = nodes.get(parent);
+        if (parentNode == null) {
+          if (parent.isEmpty()) {
+            parentNode = rootNode;
           } else {
-            pathStack.get(pathStack.size() - 1).files.add(path);
+            parentNode = new PathStackNode();
+            parentNode.path = parent;
+            nodes.put(parent, parentNode);
           }
-      }
-      popPathStackNodes(pathStack, 0);
-      if (!rootFolderNode.files.isEmpty()) {
-          rootFolderNode.computeHash();
-          roots.add(rootFolderNode);
-      }
-    }
-
-      // for (PathStackNode root : roots) {
-      //   debugTraversePathStackNode(root, /* depth= */ 0);
-      // }
-
-    return checkAndPopulateCache(roots);
-  }
-
-  private static void debugTraversePathStackNode(PathStackNode node, int depth) {
-    if (DEBUG) {
-      StringBuilder prefixBuilder = new StringBuilder();
-      for (int i = 0; i < depth - 1; i++) {
-        prefixBuilder.append("-");
-      }
-      System.out.println(prefixBuilder.toString() + node.basename);
-      prefixBuilder.append("-");
-      String prefix = prefixBuilder.toString();
-      for (PathFragment file : node.files) {
-        System.out.println(prefix + file.getBaseName());
-      }
-    }
-    Set<String> childBasenames = Sets.newHashSet();
-    childBasenames.addAll(node.files.stream().map(PathFragment::getBaseName).collect(
-        ImmutableList.toImmutableList()));
-    for (PathStackNode child : node.children) {
-      debugTraversePathStackNode(child, depth + 1);
-      childBasenames.add(child.basename);
-    }
-    //Preconditions.checkState(node.files.size() + node.children.size()  == childBasenames.size());
-  }
-
-  private static void popPathStackNodes(List<PathStackNode> pathStack, int toIndex) {
-    while (pathStack.size() > toIndex) {
-      PathStackNode pathStackNode = pathStack.remove(pathStack.size() - 1);
-      pathStackNode.computeHash();
-    }
-  }
-
-  private static Result checkAndPopulateCache(List<PathStackNode> roots) {
-    Result result = new Result();
-    for (PathStackNode root : roots) {
-      if (merkleSet.contains(root.hash)) {
-        if (DEBUG) {
-          System.out.println("Mounting paths [root] for " + root.hash);
         }
-        computeMountPaths(root, result.lowerDirs);
-      } else {
-        stashNode(root, result);
+        parentNode.files.add(entry.getKey());
+      }
+      for (var entry : nodes.entrySet()) {
+        PathStackNode node = entry.getValue();
+        node.computeHash();
+        String nodeStashDir = getNodeStashDir(node);
+        if (!merkleSet.contains(node.hash)) {
+          result.dirsToCreate.add(PathFragment.create(nodeStashDir));
+          for (PathFragment file : node.files) {
+            result.stashedSymlinksToCreate.put(file,
+                PathFragment.create(nodeStashDir + "/" + file.getBaseName()));
+          }
+        }
+        result.lowerDirs.add(node.hash);
       }
     }
     return result;
   }
 
   private static String getNodeStashDir(PathStackNode node) {
-    if (node.path.equals(".")) {
-        return String.format("%s/%s", STASHED_DIR, node.hash);
+    if (node.path == null) {
+      return String.format("%s/%s", STASHED_DIR, node.hash);
     }
     return String.format("%s/%s/%s", STASHED_DIR, node.hash, node.path);
-  }
-
-  private static void stashNode(PathStackNode node, Result result) {
-    String nodeStashDir = getNodeStashDir(node);
-    result.dirsToCreate.add(PathFragment.create(nodeStashDir));
-    for (PathFragment file : node.files) {
-      if (DEBUG) {
-        System.out.println("Symlink: " + file + " --> " + nodeStashDir + "/" + file.getBaseName());
-      }
-      result.stashedSymlinksToCreate.put(file, PathFragment.create(nodeStashDir + "/" + file.getBaseName()));
-
-      // 3 types
-      // Symlinks that are already stashed, dir gets mounted, nothing to do
-      // Symlinks part of a stash that is being created now, taken care of by stashedSymlinksToCreate
-      // Symlinks that aren't affected by any of this, this can be identified by them not starting with bazel-out.
-    }
-
-    addLowerDir(result.lowerDirs, node.hash);
-    for (PathStackNode child : node.children) {
-      if (merkleSet.contains(child.hash)) {
-        if (DEBUG) {
-          System.out.println("Mounting paths for " + child.hash);
-        }
-        computeMountPaths(child, result.lowerDirs);
-      } else {
-        stashNode(child, result);
-      }
-    }
-  }
-
-  private static void computeMountPaths(PathStackNode node, List<String> lowerDirs) {
-    //Preconditions.checkState(merkelSet.contains(node.hash));
-    addLowerDir(lowerDirs, node.hash);
-    for (PathStackNode child : node.children) {
-      if (DEBUG) {
-        System.out.println("Mounting paths [recursive] for " + child.hash);
-      }
-      computeMountPaths(child, lowerDirs);
-    }
-  }
-
-  private static void addLowerDir(List<String> lowerDirs, String hash) {
-    String source = STASHED_DIR + "/" + hash;
-    if (DEBUG) {
-      System.out.println("Mount path:" + source);
-    }
-    lowerDirs.add(hash);
   }
 }
