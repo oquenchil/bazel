@@ -84,7 +84,8 @@ public class SymlinkedSandboxedSpawnTest {
             /* sandboxDebugPath= */ null,
             /* statisticsPath= */ null,
             /* interactiveDebugArguments= */ null,
-            "SomeMnemonic");
+            "SomeMnemonic",
+            /* inputCreationPool= */ null);
 
     symlinkedExecRoot.createFileSystem();
 
@@ -116,7 +117,8 @@ public class SymlinkedSandboxedSpawnTest {
             /* sandboxDebugPath= */ null,
             /* statisticsPath= */ null,
             /* interactiveDebugArguments= */ null,
-            "SomeMnemonic");
+            "SomeMnemonic",
+            /* inputCreationPool= */ null);
     symlinkedExecRoot.createFileSystem();
 
     FileSystemUtils.createEmptyFile(outputFile);

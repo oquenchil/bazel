@@ -33,6 +33,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
 import javax.annotation.Nullable;
 
 /**
@@ -58,7 +59,8 @@ public class SymlinkedSandboxedSpawn extends AbstractContainerizingSandboxedSpaw
       @Nullable Path sandboxDebugPath,
       @Nullable Path statisticsPath,
       @Nullable ImmutableList<String> interactiveDebugArguments,
-      String mnemonic) {
+      String mnemonic,
+      ExecutorService inputCreationPool) {
     super(
         sandboxPath,
         sandboxExecRoot,
@@ -70,7 +72,8 @@ public class SymlinkedSandboxedSpawn extends AbstractContainerizingSandboxedSpaw
         treeDeleter,
         sandboxDebugPath,
         statisticsPath,
-        mnemonic);
+        mnemonic,
+        inputCreationPool);
     this.mnemonic = isNullOrEmpty(mnemonic) ? "_NoMnemonic_" : mnemonic;
     this.interactiveDebugArguments = interactiveDebugArguments;
   }
@@ -103,7 +106,7 @@ public class SymlinkedSandboxedSpawn extends AbstractContainerizingSandboxedSpaw
     Map<PathFragment, StashContents> stashContentsMap = new HashMap<>();
     for (var entry : Iterables.concat(
         inputs.getFiles().entrySet().stream().map(
-            x -> Map.entry(x.getKey(), x.getValue().asPath().asFragment())).collect(ImmutableList.toImmutableList()), inputs.getSymlinks().entrySet()))  {
+            x -> Map.entry(x.getKey(), x.getValue() == null ? PathFragment.EMPTY_FRAGMENT : x.getValue().asPath().asFragment())).collect(ImmutableList.toImmutableList()), inputs.getSymlinks().entrySet()))  {
       PathFragment parent = entry.getKey().getParentDirectory();
       boolean parentWasPresent = true;
       if (!stashContentsMap.containsKey(parent)) {

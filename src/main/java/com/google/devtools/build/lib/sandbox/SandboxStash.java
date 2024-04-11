@@ -324,9 +324,15 @@ public class SandboxStash {
     }
   }
 
+  public static Map<String, Integer> statistics = new ConcurrentHashMap<>();
+
   /** Cleans up the entire current stash, if any. Cleaning may be asynchronous. */
   static void clean(TreeDeleter treeDeleter, Path sandboxBase) {
     // TODO: Uncomment, this is only to benchmark invalidated actions.
+
+    for (var entry : SandboxStash.statistics.entrySet()) {
+      System.out.println(":" + entry.getKey() + " : " + entry.getValue());
+    }
     // Path stashDir = getStashBase(sandboxBase);
     // if (!stashDir.isDirectory()) {
     //   return;

@@ -218,7 +218,8 @@ public final class LinuxSandboxedSpawnRunnerTest extends SandboxedSpawnRunnerTes
         commandEnvironment,
         sandboxBase,
         /*timeoutKillDelay=*/ Duration.ofSeconds(2),
-        treeDeleter);
+        treeDeleter,
+        /* inputCreationPool= */ null);
   }
 
   private SpawnExecutionContextForTesting createSpawnExecutionContext(Spawn spawn) {

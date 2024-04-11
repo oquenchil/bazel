@@ -31,10 +31,18 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 
@@ -56,6 +64,8 @@ public abstract class AbstractContainerizingSandboxedSpawn implements SandboxedS
   @Nullable private final Path statisticsPath;
   private final String mnemonic;
 
+  private final ExecutorService inputCreationPool;
+
   public AbstractContainerizingSandboxedSpawn(
       Path sandboxPath,
       Path sandboxExecRoot,
@@ -67,7 +77,8 @@ public abstract class AbstractContainerizingSandboxedSpawn implements SandboxedS
       TreeDeleter treeDeleter,
       @Nullable Path sandboxDebugPath,
       @Nullable Path statisticsPath,
-      String mnemonic) {
+      String mnemonic,
+      ExecutorService inputCreationPool) {
     this.sandboxPath = sandboxPath;
     this.sandboxExecRoot = sandboxExecRoot;
     this.arguments = arguments;
@@ -79,6 +90,7 @@ public abstract class AbstractContainerizingSandboxedSpawn implements SandboxedS
     this.sandboxDebugPath = sandboxDebugPath;
     this.statisticsPath = statisticsPath;
     this.mnemonic = mnemonic;
+    this.inputCreationPool = inputCreationPool;
   }
 
   @Override
@@ -112,6 +124,7 @@ public abstract class AbstractContainerizingSandboxedSpawn implements SandboxedS
   public String getMnemonic() {
     return mnemonic;
   }
+
 
   @Override
   public void createFileSystem() throws IOException, InterruptedException {
@@ -160,6 +173,33 @@ public abstract class AbstractContainerizingSandboxedSpawn implements SandboxedS
       Set<PathFragment> inputsToCreate, Set<PathFragment> dirsToCreate)
       throws IOException, InterruptedException { return null; }
 
+  private static class WorkEntry {
+    Path file1;
+    Path file2;
+    PathFragment file3;
+    public enum Op {
+      SYMLINK,
+      COPY,
+      EMPTY
+    };
+    Op op;
+  }
+  private void addBatch(List<Future<Void>> futures, List<WorkEntry> currentBatch) {
+    futures.add(inputCreationPool.submit(() -> {
+      for (WorkEntry task : currentBatch) {
+        if (task.op == WorkEntry.Op.COPY) {
+          copyFile(task.file1, task.file2);
+          SandboxStash.statistics.put(task.file1.getParentDirectory().getPathString(), SandboxStash.statistics.getOrDefault(task.file1.getParentDirectory().getPathString(), 0) + 1);
+        } else if (task.op == WorkEntry.Op.EMPTY) {
+          FileSystemUtils.createEmptyFile(task.file1);
+        } else {
+          task.file1.createSymbolicLink(task.file3);
+        }
+      }
+      return null;
+    }));
+  }
+
   /**
    * Creates all inputs needed for this spawn's sandbox.
    *
@@ -167,27 +207,67 @@ public abstract class AbstractContainerizingSandboxedSpawn implements SandboxedS
    *     exist if we're reusing a previously existing sandbox.
    * @param inputs All the inputs for this spawn.
    */
-  void createInputs(Iterable<PathFragment> inputsToCreate, SandboxInputs inputs)
-      throws IOException, InterruptedException {
-    for (PathFragment fragment : inputsToCreate) {
-      if (Thread.interrupted()) {
-        throw new InterruptedException("Interrupted creating inputs");
-      }
-      Path key = sandboxExecRoot.getRelative(fragment);
-      if (inputs.getFiles().containsKey(fragment)) {
-        RootedPath fileDest = inputs.getFiles().get(fragment);
-        if (fileDest != null) {
-          copyFile(fileDest.asPath(), key);
-        } else {
-          FileSystemUtils.createEmptyFile(key);
+  void createInputs(Set<PathFragment> inputsToCreateSet, SandboxInputs inputs)
+      throws InterruptedException {
+    List<PathFragment> inputsToCreate = new ArrayList<>(inputsToCreateSet);
+    int inputsPerBatch = (int)Math.ceil(inputsToCreate.size() / ((ThreadPoolExecutor) inputCreationPool).getCorePoolSize());
+    // System.out.println("inputs per batch" + inputsPerBatch);
+    List<Future<Void>> futures = new ArrayList<>();
+    List<WorkEntry> currentBatch = new ArrayList<>(inputsPerBatch);
+
+    Collections.shuffle(inputsToCreate);
+
+    try (SilentCloseable c = Profiler.instance().profile("sandbox.createInputsLoop")) {
+      for (PathFragment fragment : inputsToCreate) {
+        if (Thread.interrupted()) {
+          throw new InterruptedException("Interrupted creating inputs");
         }
-      } else if (inputs.getSymlinks().containsKey(fragment)) {
-        PathFragment symlinkDest = inputs.getSymlinks().get(fragment);
-        if (symlinkDest != null) {
-          key.createSymbolicLink(symlinkDest);
+        Path key = sandboxExecRoot.getRelative(fragment);
+        if (inputs.getFiles().containsKey(fragment)) {
+          RootedPath fileDest = inputs.getFiles().get(fragment);
+          if (fileDest != null) {
+            WorkEntry workEntry = new WorkEntry();
+            workEntry.op = WorkEntry.Op.COPY;
+            workEntry.file1 = fileDest.asPath();
+            workEntry.file2 = key;
+            currentBatch.add(workEntry);
+          } else {
+            WorkEntry workEntry = new WorkEntry();
+            workEntry.op = WorkEntry.Op.EMPTY;
+            workEntry.file1 = key;
+            currentBatch.add(workEntry);
+          }
+        } else if (inputs.getSymlinks().containsKey(fragment)) {
+          PathFragment symlinkDest = inputs.getSymlinks().get(fragment);
+          if (symlinkDest != null) {
+            WorkEntry workEntry = new WorkEntry();
+            workEntry.op = WorkEntry.Op.SYMLINK;
+            workEntry.file1 = key;
+            workEntry.file3 = symlinkDest;
+            currentBatch.add(workEntry);
+          }
+        }
+
+        if (currentBatch.size() == inputsPerBatch) {
+          addBatch(futures, currentBatch);
+          currentBatch = new ArrayList<>(inputsPerBatch);
+        }
+      }
+      addBatch(futures, currentBatch);
+    }
+    try (SilentCloseable c = Profiler.instance().profile("sandbox.createInputsFutures")) {
+      int i = 1;
+      for (Future<Void> future : futures) {
+        try {
+          //System.out.println("[" + i++ + "] Before future get:" + System.currentTimeMillis());
+          future.get();
+          //System.out.println("[" + i++ + "] After future get:" + System.currentTimeMillis());
+        } catch (ExecutionException e) {
+          throw new RuntimeException(e);
         }
       }
     }
+    //System.out.println("Futures: " + futures.size());
   }
 
   protected abstract void copyFile(Path source, Path target) throws IOException;

@@ -64,6 +64,7 @@ import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.annotation.Nullable;
 
@@ -140,6 +141,7 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
   private final Reporter reporter;
   private final ImmutableList<Root> packageRoots;
   private String cgroupsDir;
+  private final ExecutorService inputCreationPool;
 
   /**
    * Creates a sandboxed spawn runner that uses the {@code linux-sandbox} tool.
@@ -158,7 +160,8 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
       Path inaccessibleHelperFile,
       Path inaccessibleHelperDir,
       Duration timeoutKillDelay,
-      TreeDeleter treeDeleter) {
+      TreeDeleter treeDeleter,
+      ExecutorService inputCreationPool) {
     super(cmdEnv);
     this.helpers = helpers;
     this.fileSystem = cmdEnv.getRuntime().getFileSystem();
@@ -174,6 +177,7 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
     this.treeDeleter = treeDeleter;
     this.reporter = cmdEnv.getReporter();
     this.packageRoots = cmdEnv.getPackageLocator().getPathEntries();
+    this.inputCreationPool = inputCreationPool;
   }
 
   private void createDirectoryWithinSandboxTmp(Path sandboxTmp, Path withinSandboxDirectory)
@@ -376,7 +380,8 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
           sandboxDebugPath,
           statisticsPath,
           makeInteractiveDebugArguments(commandLineBuilder, sandboxOptions),
-          spawn.getMnemonic());
+          spawn.getMnemonic(),
+          inputCreationPool);
     }
   }
 

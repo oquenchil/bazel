@@ -356,7 +356,8 @@ public class AbstractContainerizingSandboxedSpawnTest {
         mock(TreeDeleter.class),
         /* sandboxDebugPath= */ null,
         /* statisticsPath= */ null,
-        "Mnemonic") {
+        "Mnemonic",
+        /* inputCreationPool= */ null) {
 
       @Override
       protected void copyFile(Path source, Path target) {
