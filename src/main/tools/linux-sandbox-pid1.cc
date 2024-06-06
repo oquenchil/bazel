@@ -45,6 +45,8 @@
 #include <string>
 #include <unordered_set>
 
+#include "src/main/tools/linux-landlock.h"
+
 #ifndef MS_REC
 // Some systems do not define MS_REC in sys/mount.h. We might be able to grab it
 // from linux/fs.h instead (cf. #2667).
@@ -297,8 +299,8 @@ static void MountFilesystems() {
     }
   }
 
-  if (mount(opt.working_dir.c_str(), opt.working_dir.c_str(), nullptr, MS_BIND,
-            nullptr) < 0) {
+  if (mount(opt.working_dir.c_str(), opt.working_dir.c_str(), nullptr,
+            MS_BIND | MS_REC, nullptr) < 0) {
     DIE("mount(%s, %s, nullptr, MS_BIND, nullptr)", opt.working_dir.c_str(),
         opt.working_dir.c_str());
   }
@@ -483,9 +485,7 @@ static void EnterWorkingDirectory() {
   }
 }
 
-static void ForwardSignal(int signum) {
-  kill(-global_child_pid, signum);
-}
+static void ForwardSignal(int signum) { kill(-global_child_pid, signum); }
 
 static void SpawnChild() {
   PRINT_DEBUG("calling fork...");
@@ -715,6 +715,8 @@ int Pid1Main(void *sync_pipe_param) {
   // SpawnChild below.
   IgnoreSignal(SIGTTIN);
   IgnoreSignal(SIGTTOU);
+
+  LockInputsWithLandlock(opt.landlock_files_path);
 
   // Fork the child process.
   SpawnChild();

@@ -51,6 +51,7 @@ public class LinuxSandboxCommandLineBuilder {
   private boolean enablePseudoterminal = false;
   private boolean useDebugMode = false;
   private boolean sigintSendsSigterm = false;
+  private Path landlockFilesPath;
 
   private LinuxSandboxCommandLineBuilder(Path linuxSandboxPath, List<String> commandArguments) {
     this.linuxSandboxPath = linuxSandboxPath;
@@ -189,6 +190,11 @@ public class LinuxSandboxCommandLineBuilder {
     return this;
   }
 
+  public LinuxSandboxCommandLineBuilder setLandlockFilesPath(Path landlockFilesPath) {
+    this.landlockFilesPath = landlockFilesPath;
+    return this;
+  }
+
   /** Incorporates settings from a spawn's execution info. */
   @CanIgnoreReturnValue
   public LinuxSandboxCommandLineBuilder addExecutionInfo(Map<String, String> executionInfo) {
@@ -262,6 +268,9 @@ public class LinuxSandboxCommandLineBuilder {
     }
     if (sigintSendsSigterm) {
       commandLineBuilder.add("-i");
+    }
+    if (landlockFilesPath != null) {
+      commandLineBuilder.add("-k", landlockFilesPath.getPathString());
     }
     commandLineBuilder.add("--");
     commandLineBuilder.addAll(commandArguments);

@@ -76,6 +76,8 @@ cc_binary(
         "//src/conditions:openbsd": ["dummy-sandbox.c"],
         "//src/conditions:windows": ["dummy-sandbox.c"],
         "//conditions:default": [
+            "linux-landlock.cc",
+            "linux-landlock.h",
             "linux-sandbox.cc",
             "linux-sandbox.h",
             "linux-sandbox-options.cc",

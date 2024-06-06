@@ -17,6 +17,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+
 #include <string>
 #include <vector>
 
@@ -59,6 +60,7 @@ struct Options {
   bool debug;
   // Improved hermetic build using whitelisting strategy (-h)
   bool hermetic;
+  std::string landlock_files_path;
   // The sandbox root directory (-s)
   std::string sandbox_root;
   // Command to run (--)

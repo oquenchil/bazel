@@ -76,6 +76,7 @@ public final class LinuxSandboxedStrategy extends AbstractSpawnStrategy {
         timeoutKillDelay,
         sandboxfsProcess,
         sandboxfsMapSymlinkTargets,
-        treeDeleter);
+        treeDeleter,
+        cmdEnv.getOptions().getOptions(SandboxOptions.class).useLockedInputs);
   }
 }

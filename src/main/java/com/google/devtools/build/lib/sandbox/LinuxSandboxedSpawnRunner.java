@@ -14,6 +14,7 @@
 
 package com.google.devtools.build.lib.sandbox;
 
+
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -44,20 +45,27 @@ import com.google.devtools.build.lib.server.FailureDetails.Sandbox.Code;
 import com.google.devtools.build.lib.shell.Command;
 import com.google.devtools.build.lib.shell.CommandException;
 import com.google.devtools.build.lib.util.OS;
+import com.google.devtools.build.lib.vfs.Dirent;
 import com.google.devtools.build.lib.vfs.FileStatus;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.lib.vfs.Symlinks;
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.SortedMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.annotation.Nullable;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 /** Spawn runner that uses linux sandboxing APIs to execute a local subprocess. */
 final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
@@ -117,6 +125,7 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
   private final FileSystem fileSystem;
   private final BlazeDirectories blazeDirs;
   private final Path execRoot;
+  private ImmutableList<Path> readableSystemDirs;
   private final boolean allowNetwork;
   private final Path linuxSandbox;
   private final Path sandboxBase;
@@ -126,6 +135,7 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
   private final Duration timeoutKillDelay;
   @Nullable private final SandboxfsProcess sandboxfsProcess;
   private final boolean sandboxfsMapSymlinkTargets;
+  private final boolean useLockedInputs;
   private final TreeDeleter treeDeleter;
   private final Reporter reporter;
 
@@ -151,7 +161,8 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
       Duration timeoutKillDelay,
       @Nullable SandboxfsProcess sandboxfsProcess,
       boolean sandboxfsMapSymlinkTargets,
-      TreeDeleter treeDeleter) {
+      TreeDeleter treeDeleter,
+      boolean useLockedInputs) {
     super(cmdEnv);
     this.helpers = helpers;
     this.fileSystem = cmdEnv.getRuntime().getFileSystem();
@@ -168,6 +179,7 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
     this.localEnvProvider = new PosixLocalEnvProvider(cmdEnv.getClientEnv());
     this.treeDeleter = treeDeleter;
     this.reporter = cmdEnv.getReporter();
+    this.useLockedInputs = useLockedInputs;
   }
 
   @Override
@@ -225,12 +237,27 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
 
     Duration timeout = context.getTimeout();
 
+    SortedMap<Path, Path> bindMounts = getBindMounts(blazeDirs, sandboxExecRoot, sandboxTmp);
+    if (useLockedInputs) {
+      ImmutableSet.Builder<Path> additionalWriteableDirs =  ImmutableSet.<Path>builder().addAll(getWritableDirs(
+          execRoot, environment));
+      for (PathFragment outputDir : LandlockSandboxedSpawn.getMountPointsFromOutputDirs(
+          LandlockSandboxedSpawn.getOutputDirs(outputs))) {
+        bindMounts.put(execRoot.getRelative(outputDir), sandboxExecRoot.getRelative(outputDir));
+        additionalWriteableDirs.add(execRoot.getRelative(outputDir));
+      }
+      // FIXME: making everything writable for now because Kleaf writes in some weird place
+      // under common/host_tools.
+      additionalWriteableDirs.add(fileSystem.getPath("/"));
+      writableDirs = additionalWriteableDirs.build();
+    }
+
     LinuxSandboxCommandLineBuilder commandLineBuilder =
         LinuxSandboxCommandLineBuilder.commandLineBuilder(linuxSandbox, spawn.getArguments())
             .addExecutionInfo(spawn.getExecutionInfo())
             .setWritableFilesAndDirectories(writableDirs)
             .setTmpfsDirectories(ImmutableSet.copyOf(getSandboxOptions().sandboxTmpfsPath))
-            .setBindMounts(getBindMounts(blazeDirs, sandboxExecRoot, sandboxTmp))
+            .setBindMounts(bindMounts)
             .setUseFakeHostname(getSandboxOptions().sandboxFakeHostname)
             .setEnablePseudoterminal(getSandboxOptions().sandboxExplicitPseudoterminal)
             .setCreateNetworkNamespace(
@@ -282,6 +309,29 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
           treeDeleter,
           statisticsPath,
           getSandboxOptions().sandboxDebug);
+    } else if (useLockedInputs) {
+      if (readableSystemDirs == null) {
+        readableSystemDirs = findReadableSystemDirs();
+      }
+      final Path landlockAccesibleFilesListPath = sandboxPath.getRelative("landlock-files.sb");
+      if (useLockedInputs) {
+        commandLineBuilder.setWorkingDirectory(execRoot);
+        commandLineBuilder.setLandlockFilesPath(landlockAccesibleFilesListPath);
+      }
+      return new LandlockSandboxedSpawn(
+          sandboxPath,
+          execRoot,
+          sandboxExecRoot,
+          environment,
+          commandLineBuilder.build(),
+          inputs,
+          outputs,
+          readableSystemDirs,
+          landlockAccesibleFilesListPath,
+          writableDirs,
+          spawn.getRunfilesSupplier().getRunfilesDirs(),
+          treeDeleter,
+          spawn.getMnemonic());
     } else {
       return new SymlinkedSandboxedSpawn(
           sandboxPath,
@@ -505,5 +555,35 @@ final class LinuxSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
     }
 
     super.cleanupSandboxBase(sandboxBase, treeDeleter);
+  }
+
+  private ImmutableList<Path> findReadableSystemDirs() throws IOException, InterruptedException {
+    ImmutableSet.Builder<Path> forbiddenDirsBuilder = ImmutableSet.builder();
+    for (Path path : ImmutableList.of(execRoot, blazeDirs.getWorkspace())) {
+      Path dir = path;
+      while (dir != null) {
+        forbiddenDirsBuilder.add(dir);
+        dir = dir.getParentDirectory();
+      }
+    }
+    ImmutableSet<Path> forbiddenDirs = forbiddenDirsBuilder.build();
+
+    ImmutableList.Builder<Path> readableSystemDirs = ImmutableList.builder();
+    for (Path path : ImmutableList.of(execRoot, blazeDirs.getWorkspace())) {
+      Path parent = path.getParentDirectory();
+      while (parent != null) {
+        for (Dirent dirent : parent.readdir(Symlinks.FOLLOW)) {
+          if (Thread.interrupted()) {
+            throw new InterruptedException();
+          }
+          Path currentPath = parent.getChild(dirent.getName());
+          if (!forbiddenDirs.contains(currentPath)) {
+            readableSystemDirs.add(currentPath);
+          }
+        }
+        parent = parent.getParentDirectory();
+      }
+    }
+    return readableSystemDirs.build();
   }
 }

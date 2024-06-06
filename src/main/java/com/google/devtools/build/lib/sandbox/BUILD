@@ -21,6 +21,7 @@ java_library(
         "DockerSandboxedSpawnRunner.java",
         "DockerSandboxedStrategy.java",
         "HardlinkedSandboxedSpawn.java",
+        "LandlockSandboxedSpawn.java",
         "LinuxSandboxUtil.java",
         "LinuxSandboxedSpawnRunner.java",
         "LinuxSandboxedStrategy.java",

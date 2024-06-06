@@ -23,6 +23,7 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -98,7 +99,7 @@ static void ParseCommandLine(unique_ptr<vector<char *>> args) {
   bool source_specified = false;
 
   while ((c = getopt(args->size(), args->data(),
-                     ":W:T:t:il:L:w:e:M:m:S:h:HNRUPD")) != -1) {
+                     ":W:T:t:il:L:w:e:M:m:S:h:Hk:NRUPD")) != -1) {
     if (c != 'M' && c != 'm') source_specified = false;
     switch (c) {
       case 'W':
@@ -196,6 +197,16 @@ static void ParseCommandLine(unique_ptr<vector<char *>> args) {
         break;
       case 'H':
         opt.fake_hostname = true;
+        break;
+      case 'k':
+        if (opt.landlock_files_path.empty()) {
+          ValidateIsAbsolutePath(optarg, args->front(), static_cast<char>(c));
+          opt.landlock_files_path.assign(optarg);
+        } else {
+          Usage(
+              args->front(),
+              "Cannot write landlock accessible files to more than one file.");
+        }
         break;
       case 'N':
         opt.create_netns = true;
