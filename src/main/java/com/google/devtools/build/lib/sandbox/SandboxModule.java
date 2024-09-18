@@ -50,6 +50,8 @@ import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.Fingerprint;
 import com.google.devtools.build.lib.util.OS;
+import com.google.devtools.build.lib.util.ResourceUsage;
+import com.google.devtools.build.lib.util.ResourceUsage.PressureStallIndicatorMetric;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -142,7 +144,7 @@ public final class SandboxModule extends BlazeModule {
       return resolvedSandboxBase.getRelative(dirName);
     }
   }
-
+  Thread thread;
   @Override
   public void beforeCommand(CommandEnvironment env) {
     // We can't assert that env is null because the Blaze runtime does not guarantee that
@@ -152,6 +154,21 @@ public final class SandboxModule extends BlazeModule {
 
     // Don't attempt cleanup unless the executor is initialized.
     shouldCleanupSandboxBase = false;
+    thread = new Thread(){
+      public void run(){
+        while (true) {
+          System.out.println("" + ResourceUsage.readPressureStallIndicator(
+              ResourceUsage.PressureStallIndicatorResource.IO,
+              PressureStallIndicatorMetric.FULL));
+          try {
+            Thread.sleep(200);
+          } catch (Exception e) {
+          }
+        }
+      }
+    };
+
+    thread.start();
   }
 
   @Override
@@ -576,6 +593,11 @@ public final class SandboxModule extends BlazeModule {
 
   @Override
   public void afterCommand() {
+    try {
+      thread.interrupt();
+    } catch (Exception e) {
+
+    }
     checkNotNull(env, "env not initialized; was beforeCommand called?");
 
     SandboxOptions options = env.getOptions().getOptions(SandboxOptions.class);

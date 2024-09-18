@@ -50,6 +50,8 @@ import com.google.devtools.build.lib.sandbox.cgroups.VirtualCgroupFactory;
 import com.google.devtools.build.lib.shell.Command;
 import com.google.devtools.build.lib.shell.CommandException;
 import com.google.devtools.build.lib.util.OS;
+import com.google.devtools.build.lib.util.ResourceUsage;
+import com.google.devtools.build.lib.util.ResourceUsage.PressureStallIndicatorMetric;
 import com.google.devtools.build.lib.vfs.FileStatus;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.Path;
